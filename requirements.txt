@@ -1,0 +1,50 @@
+# Core FastAPI
+fastapi==0.115.0
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# Database
+sqlalchemy==2.0.23
+asyncpg==0.30.0
+alembic==1.12.1
+psycopg2-binary==2.9.9
+
+# Supabase client
+supabase==2.0.3
+
+# Geolocation
+geopy==2.4.0
+
+# Email
+resend==0.7.0
+emails==0.6
+jinja2==3.1.2
+
+# HTTP client
+httpx==0.24.1
+
+# Environment variables
+python-dotenv==1.0.0
+
+# CORS & Multipart
+python-multipart==0.0.6
+
+# Payment Gateway
+razorpay==1.4.1
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+email-validator==2.1.0
+bcrypt==4.1.1
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Redis (Optional - for caching)
+redis==5.0.1
+
+# Rate Limiting
+slowapi==0.1.9

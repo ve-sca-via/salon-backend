@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Salon Platform</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding: 40px;
+            margin: -40px -40px 30px -40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px 10px 0 0;
+            color: white;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+        }
+        .emoji {
+            font-size: 64px;
+            margin-bottom: 15px;
+            animation: bounce 2s infinite;
+        }
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {transform: translateY(0);}
+            40% {transform: translateY(-20px);}
+            60% {transform: translateY(-10px);}
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .welcome-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .welcome-box h2 {
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .feature-card {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 2px solid #eee;
+        }
+        .feature-icon {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .feature-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .feature-desc {
+            font-size: 13px;
+            color: #666;
+        }
+        .steps {
+            counter-reset: step-counter;
+            list-style: none;
+            padding: 0;
+            margin: 20px 0;
+        }
+        .steps li {
+            counter-increment: step-counter;
+            padding: 15px 0;
+            position: relative;
+            padding-left: 50px;
+            border-bottom: 1px solid #eee;
+        }
+        .steps li:last-child {
+            border-bottom: none;
+        }
+        .steps li:before {
+            content: counter(step-counter);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: bold;
+            border-radius: 50%;
+            width: 35px;
+            height: 35px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: absolute;
+            left: 0;
+            top: 12px;
+        }
+        .button {
+            display: inline-block;
+            padding: 15px 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 30px;
+            font-weight: bold;
+            font-size: 16px;
+            margin: 20px 0;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        .info-box {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">🎊</div>
+            <h1>Welcome Aboard!</h1>
+            <p style="margin: 10px 0 0 0; opacity: 0.95; font-size: 18px;">Your salon is now live on our platform</p>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ owner_name }},</p>
+
+            <div class="welcome-box">
+                <h2>{{ salon_name }}</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.95; font-size: 16px;">
+                    is now active and ready to accept bookings! 🚀
+                </p>
+            </div>
+
+            <p>
+                Congratulations on completing your registration! We're thrilled to have you as part of our growing 
+                community of salon professionals. Your journey to reaching more customers starts now.
+            </p>
+
+            <h2 style="color: #333; margin-top: 30px;">🎯 What's Next?</h2>
+            <ol class="steps">
+                <li>
+                    <strong>Complete Your Profile</strong><br>
+                    <small style="color: #666;">Add photos, services, and staff to make your salon stand out</small>
+                </li>
+                <li>
+                    <strong>Set Your Availability</strong><br>
+                    <small style="color: #666;">Configure business hours and staff schedules</small>
+                </li>
+                <li>
+                    <strong>Start Accepting Bookings</strong><br>
+                    <small style="color: #666;">Customers can now discover and book your services</small>
+                </li>
+                <li>
+                    <strong>Build Your Reputation</strong><br>
+                    <small style="color: #666;">Deliver great service and collect positive reviews</small>
+                </li>
+            </ol>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{{ vendor_portal_url }}" class="button">Access Vendor Portal →</a>
+            </div>
+
+            <h2 style="color: #333; margin-top: 30px;">✨ Platform Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">📅</div>
+                    <div class="feature-title">Booking Management</div>
+                    <div class="feature-desc">Real-time booking notifications and calendar</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">💅</div>
+                    <div class="feature-title">Unlimited Services</div>
+                    <div class="feature-desc">Add as many services as you offer</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">👥</div>
+                    <div class="feature-title">Staff Management</div>
+                    <div class="feature-desc">Manage unlimited staff members</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⭐</div>
+                    <div class="feature-title">Customer Reviews</div>
+                    <div class="feature-desc">Build trust with authentic reviews</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">💰</div>
+                    <div class="feature-title">Revenue Tracking</div>
+                    <div class="feature-desc">Monitor your earnings and bookings</div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎁</div>
+                    <div class="feature-title">Free Services</div>
+                    <div class="feature-desc">Offer free consultations or trials</div>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <h3 style="margin-top: 0; color: #3b82f6;">💡 Pro Tips for Success</h3>
+                <ul style="margin: 10px 0; padding-left: 20px; line-height: 2;">
+                    <li>Upload high-quality photos of your salon and work</li>
+                    <li>Keep your availability calendar up to date</li>
+                    <li>Respond promptly to booking inquiries</li>
+                    <li>Encourage satisfied customers to leave reviews</li>
+                    <li>Offer special promotions to attract new customers</li>
+                </ul>
+            </div>
+
+            <div style="background-color: #fff9e6; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
+                <h3 style="margin-top: 0; color: #f57c00;">📞 Need Help Getting Started?</h3>
+                <p style="margin: 0; line-height: 1.8;">
+                    Our support team is here to help you make the most of the platform. If you have any questions 
+                    or need assistance setting up your salon profile, don't hesitate to reach out!
+                </p>
+            </div>
+
+            <p style="margin-top: 30px;">
+                We're excited to see your salon thrive on our platform. Here's to your success!
+            </p>
+
+            <p style="margin-top: 20px;">
+                Best wishes,<br>
+                <strong>Team Salon Platform</strong>
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                <strong>Vendor Portal:</strong> <a href="{{ vendor_portal_url }}" style="color: #667eea;">{{ vendor_portal_url }}</a>
+            </p>
+            <p>
+                Questions? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Cancelled</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #ff6b6b;
+        }
+        .header h1 {
+            color: #ff6b6b;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .cancellation-box {
+            background-color: #fff5f5;
+            border-left: 4px solid #ff6b6b;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .refund-box {
+            background-color: #f0fdf4;
+            border: 2px solid #4CAF50;
+            padding: 25px;
+            margin: 20px 0;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .refund-box .amount {
+            font-size: 36px;
+            font-weight: bold;
+            color: #4CAF50;
+            margin: 10px 0;
+        }
+        .info-table {
+            width: 100%;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .info-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .info-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .info-table tr:last-child td {
+            border-bottom: none;
+        }
+        .timeline {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .button {
+            display: inline-block;
+            padding: 15px 30px;
+            background-color: #667eea;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">🔄</div>
+            <h1>Booking Cancelled</h1>
+            <p style="font-size: 18px; color: #666; margin: 10px 0 0 0;">Your appointment has been cancelled</p>
+        </div>
+
+        <div class="content">
+            <p>Hi {{ customer_name }},</p>
+
+            <p>This email confirms that your booking has been successfully cancelled.</p>
+
+            <div class="cancellation-box">
+                <h3 style="margin-top: 0; color: #ff6b6b;">📋 Cancelled Booking Details</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px 0;">Salon:</td>
+                        <td style="padding: 8px 0; font-weight: bold;">{{ salon_name }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0;">Service:</td>
+                        <td style="padding: 8px 0; font-weight: bold;">{{ service_name }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0;">Date:</td>
+                        <td style="padding: 8px 0; font-weight: bold;">{{ booking_date }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0;">Time:</td>
+                        <td style="padding: 8px 0; font-weight: bold;">{{ booking_time }}</td>
+                    </tr>
+                </table>
+            </div>
+
+            {% if cancellation_reason %}
+            <div style="background-color: #fff9e6; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <strong>Reason for cancellation:</strong><br>
+                {{ cancellation_reason }}
+            </div>
+            {% endif %}
+
+            {% if refund_amount > 0 %}
+            <div class="refund-box">
+                <div style="color: #666; font-size: 16px;">💰 Refund Amount</div>
+                <div class="amount">₹{{ "%.2f"|format(refund_amount) }}</div>
+                <div style="color: #666; font-size: 14px; margin-top: 10px;">
+                    The refund will be processed to your original payment method
+                </div>
+            </div>
+
+            <div class="timeline">
+                <h3 style="margin-top: 0; color: #3b82f6;">⏱️ Refund Timeline</h3>
+                <ul style="margin: 10px 0; padding-left: 20px; line-height: 2;">
+                    <li><strong>Bank Transfer:</strong> 3-5 business days</li>
+                    <li><strong>Credit/Debit Card:</strong> 5-7 business days</li>
+                    <li><strong>UPI:</strong> 2-3 business days</li>
+                </ul>
+                <p style="margin: 15px 0 0 0; font-size: 14px; color: #666;">
+                    You'll receive a confirmation email once the refund is processed.
+                </p>
+            </div>
+            {% else %}
+            <div style="background-color: #f0f9ff; padding: 20px; border-radius: 5px; margin: 20px 0;">
+                <p style="margin: 0;">
+                    <strong>Note:</strong> No payment was made for this booking, so no refund is necessary.
+                </p>
+            </div>
+            {% endif %}
+
+            <h2 style="color: #333; margin-top: 30px;">💡 We're Sorry to See You Cancel</h2>
+            <p>
+                We understand that plans change. If there's anything we could have done better, 
+                we'd love to hear your feedback to improve our service.
+            </p>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="#" class="button">Book Another Appointment</a>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #333;">📞 Need Help?</h3>
+                <p style="margin: 0; line-height: 1.8;">
+                    If you have any questions about this cancellation or the refund process, 
+                    our support team is here to help. Feel free to reach out at any time.
+                </p>
+            </div>
+
+            <p style="margin-top: 30px;">
+                We hope to serve you again soon!<br>
+                <strong>Team Salon Platform</strong>
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                Questions? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

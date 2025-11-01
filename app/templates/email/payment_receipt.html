@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Receipt</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #4CAF50;
+        }
+        .header h1 {
+            color: #4CAF50;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .receipt-box {
+            border: 2px solid #4CAF50;
+            border-radius: 10px;
+            padding: 25px;
+            margin: 20px 0;
+            background: linear-gradient(to bottom, #ffffff 0%, #f0fdf4 100%);
+        }
+        .receipt-header {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 2px dashed #ccc;
+            margin-bottom: 20px;
+        }
+        .receipt-header h2 {
+            margin: 0;
+            color: #4CAF50;
+            font-size: 24px;
+        }
+        .receipt-id {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            font-family: monospace;
+        }
+        .receipt-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .receipt-row:last-child {
+            border-bottom: none;
+        }
+        .receipt-label {
+            color: #666;
+        }
+        .receipt-value {
+            font-weight: bold;
+            text-align: right;
+        }
+        .total-row {
+            background-color: #4CAF50;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .total-row .label {
+            font-size: 18px;
+        }
+        .total-row .amount {
+            font-size: 28px;
+            font-weight: bold;
+        }
+        .breakdown-table {
+            width: 100%;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .breakdown-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .breakdown-table td:first-child {
+            color: #666;
+        }
+        .breakdown-table td:last-child {
+            font-weight: bold;
+            text-align: right;
+        }
+        .breakdown-table tr:last-child td {
+            border-bottom: none;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .info-box {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 25px;
+            background-color: #667eea;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin: 10px 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">🧾</div>
+            <h1>Payment Receipt</h1>
+            <p style="font-size: 18px; color: #666; margin: 10px 0 0 0;">Thank you for your payment</p>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ customer_name }},</p>
+
+            <p>This is to confirm that we have successfully received your payment.</p>
+
+            <div class="receipt-box">
+                <div class="receipt-header">
+                    <h2>RECEIPT</h2>
+                    <div class="receipt-id">Transaction ID: {{ payment_id }}</div>
+                    <div style="margin-top: 10px;">
+                        <span class="status-badge">✓ PAID</span>
+                    </div>
+                </div>
+
+                <div class="receipt-row">
+                    <div class="receipt-label">Date & Time</div>
+                    <div class="receipt-value">{{ payment_date or "Just now" }}</div>
+                </div>
+
+                <div class="receipt-row">
+                    <div class="receipt-label">Payment Type</div>
+                    <div class="receipt-value" style="text-transform: capitalize;">
+                        {{ payment_type.replace('_', ' ') }}
+                    </div>
+                </div>
+
+                {% if salon_name %}
+                <div class="receipt-row">
+                    <div class="receipt-label">Salon</div>
+                    <div class="receipt-value">{{ salon_name }}</div>
+                </div>
+                {% endif %}
+
+                <div class="receipt-row">
+                    <div class="receipt-label">Payment Method</div>
+                    <div class="receipt-value">Razorpay</div>
+                </div>
+
+                {% if service_amount and convenience_fee %}
+                <div style="margin-top: 20px;">
+                    <h3 style="margin: 0 0 15px 0; color: #333; font-size: 16px;">Amount Breakdown</h3>
+                    <table class="breakdown-table">
+                        <tr>
+                            <td>Service Charge</td>
+                            <td>₹{{ "%.2f"|format(service_amount) }}</td>
+                        </tr>
+                        <tr>
+                            <td>Convenience Fee</td>
+                            <td>₹{{ "%.2f"|format(convenience_fee) }}</td>
+                        </tr>
+                    </table>
+                </div>
+                {% endif %}
+
+                <div class="total-row">
+                    <div class="label">Total Amount Paid</div>
+                    <div class="amount">₹{{ "%.2f"|format(amount) }}</div>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <h3 style="margin-top: 0; color: #3b82f6;">📌 Important Information</h3>
+                <ul style="margin: 10px 0; padding-left: 20px; line-height: 2;">
+                    <li>This is a computer-generated receipt and does not require a signature</li>
+                    <li>Please keep this email for your records</li>
+                    <li>For any queries, please quote the Transaction ID mentioned above</li>
+                    {% if payment_type == 'booking_payment' %}
+                    <li>Your booking is now confirmed</li>
+                    {% elif payment_type == 'registration_fee' %}
+                    <li>Your salon account is now active</li>
+                    {% endif %}
+                </ul>
+            </div>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="#" class="button">Download PDF Receipt</a>
+                <a href="#" class="button" style="background-color: #4CAF50;">View Transaction Details</a>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #333;">🔒 Secure Payment</h3>
+                <p style="margin: 0; line-height: 1.8; font-size: 14px;">
+                    Your payment was processed securely through Razorpay's encrypted payment gateway. 
+                    Your financial information is protected with industry-standard security protocols.
+                </p>
+            </div>
+
+            <p style="margin-top: 30px;">
+                Thank you for choosing our platform!<br>
+                <strong>Team Salon Platform</strong>
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                Questions about this payment? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px; margin-top: 15px;">
+                This is an automated email. Please do not reply directly to this message.
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

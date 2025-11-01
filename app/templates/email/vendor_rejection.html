@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Submission Update</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #ff6b6b;
+        }
+        .header h1 {
+            color: #ff6b6b;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .rejection-box {
+            background-color: #fff5f5;
+            border-left: 4px solid #ff6b6b;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .info-box {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .info-table {
+            width: 100%;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .info-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .info-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .info-table tr:last-child td {
+            border-bottom: none;
+        }
+        .tips {
+            background-color: #fff9e6;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .tips h3 {
+            margin-top: 0;
+            color: #f57c00;
+        }
+        .tips ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">📋</div>
+            <h1>Submission Update</h1>
+            <p style="font-size: 18px; color: #666; margin: 10px 0 0 0;">Regarding your salon submission</p>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ rm_name }},</p>
+
+            <p>We wanted to update you on the status of your salon submission:</p>
+
+            <div class="info-table">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td>Salon Name</td>
+                        <td><strong>{{ salon_name }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Owner Name</td>
+                        <td>{{ owner_name }}</td>
+                    </tr>
+                    <tr>
+                        <td>Status</td>
+                        <td><strong style="color: #ff6b6b;">Requires Revision</strong></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="rejection-box">
+                <h3 style="margin-top: 0; color: #ff6b6b;">📝 Admin Feedback</h3>
+                <p style="margin: 0; font-size: 15px; line-height: 1.8;">
+                    {{ rejection_reason }}
+                </p>
+            </div>
+
+            <div class="info-box">
+                <h3 style="margin-top: 0; color: #3b82f6;">🔄 What This Means</h3>
+                <p style="margin: 0;">
+                    The admin team has reviewed your submission and has requested some changes or additional information. 
+                    This is not a permanent rejection - you can address the feedback and resubmit the salon for approval.
+                </p>
+            </div>
+
+            <div class="tips">
+                <h3>💡 Tips for Resubmission</h3>
+                <ul style="line-height: 1.8;">
+                    <li>Carefully review the admin feedback above</li>
+                    <li>Ensure all required documents are complete and valid</li>
+                    <li>Verify salon contact information is accurate</li>
+                    <li>Check that photos are clear and professional</li>
+                    <li>Confirm business hours and location details</li>
+                    <li>Reach out to the salon owner if additional info is needed</li>
+                </ul>
+            </div>
+
+            <h2 style="color: #333; margin-top: 30px;">📞 Next Steps</h2>
+            <ol style="line-height: 2;">
+                <li>Review the admin feedback carefully</li>
+                <li>Contact the salon owner ({{ owner_name }}) to address the issues</li>
+                <li>Gather any missing or updated information</li>
+                <li>Submit a new request with the corrections</li>
+            </ol>
+
+            <p style="margin-top: 30px; padding: 15px; background-color: #f0f9ff; border-radius: 5px;">
+                <strong>💪 Don't be discouraged!</strong> This is a normal part of the quality assurance process. 
+                Many successful salons on our platform went through revisions before approval.
+            </p>
+
+            <p style="margin-top: 30px;">
+                If you need clarification on the feedback or have any questions, please contact our support team. 
+                We're here to help you succeed!
+            </p>
+
+            <p style="margin-top: 30px;">
+                Best regards,<br>
+                <strong>Admin Team</strong><br>
+                Salon Platform
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                Need help? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

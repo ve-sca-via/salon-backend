@@ -1,0 +1,87 @@
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+from typing import Optional
+from app.services.geocoding import geocoding_service
+from app.services.supabase_service import supabase_service
+
+
+router = APIRouter(prefix="/api/location", tags=["location"])
+
+
+class GeocodeRequest(BaseModel):
+    address: str
+
+
+class GeocodeResponse(BaseModel):
+    latitude: float
+    longitude: float
+    address: str
+
+
+class NearbySalonsResponse(BaseModel):
+    salons: list
+    count: int
+    query: dict
+
+
+@router.post("/geocode", response_model=GeocodeResponse)
+async def geocode_address(request: GeocodeRequest):
+    """
+    Convert address to coordinates
+    Keeps API key secure on backend
+    """
+    coordinates = await geocoding_service.geocode_address(request.address)
+    
+    if not coordinates:
+        raise HTTPException(status_code=404, detail="Address not found")
+    
+    lat, lon = coordinates
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "address": request.address
+    }
+
+
+@router.get("/reverse-geocode")
+async def reverse_geocode(
+    lat: float = Query(..., description="Latitude"),
+    lon: float = Query(..., description="Longitude")
+):
+    """
+    Convert coordinates to address
+    """
+    address = await geocoding_service.reverse_geocode(lat, lon)
+    
+    if not address:
+        raise HTTPException(status_code=404, detail="Location not found")
+    
+    return {"address": address, "latitude": lat, "longitude": lon}
+
+
+@router.get("/salons/nearby", response_model=NearbySalonsResponse)
+async def get_salons_nearby(
+    lat: float = Query(..., description="User latitude"),
+    lon: float = Query(..., description="User longitude"),
+    radius: float = Query(10.0, description="Search radius in kilometers", ge=0.5, le=50),
+    limit: int = Query(50, description="Maximum results", ge=1, le=100)
+):
+    """
+    Get salons near the specified location
+    Uses PostGIS function for efficient distance calculation
+    Much faster than Python-based Haversine calculation
+    """
+    try:
+        salons = supabase_service.get_nearby_salons(lat, lon, radius, limit)
+        
+        return {
+            "salons": salons,
+            "count": len(salons),
+            "query": {
+                "latitude": lat,
+                "longitude": lon,
+                "radius_km": radius
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
