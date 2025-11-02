@@ -54,44 +54,34 @@ async def get_vendor_requests(
         
         response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
         
-        logger.info(f"Fetched {len(response.data)} vendor requests, now fetching RM profiles...")
-        
         # Manually fetch RM profile data for each request
-        for idx, request in enumerate(response.data):
+        for request in response.data:
             rm_id = request.get('rm_id')
-            logger.info(f"Processing request {idx + 1}: rm_id = {rm_id}")
             
             if rm_id:
                 try:
                     # Fetch RM profile
-                    logger.info(f"Fetching rm_profiles for {rm_id}...")
-                    rm_response = supabase.table("rm_profiles").select("*").eq("id", rm_id).single().execute()
+                    rm_response = supabase.table("rm_profiles").select("*").eq("id", rm_id).execute()
                     
-                    logger.info(f"RM profile response: {rm_response.data}")
-                    
-                    if rm_response.data:
-                        # Fetch user profile
-                        logger.info(f"Fetching profiles for {rm_id}...")
-                        profile_response = supabase.table("profiles").select("*").eq("id", rm_id).single().execute()
+                    if rm_response.data and len(rm_response.data) > 0:
+                        rm_data = rm_response.data[0]
                         
-                        logger.info(f"Profile response: {profile_response.data}")
+                        # Fetch user profile
+                        profile_response = supabase.table("profiles").select("*").eq("id", rm_id).execute()
                         
                         # Combine data - use 'profiles' (plural) to match frontend expectation
-                        request['rm_profile'] = {
-                            **rm_response.data,
-                            'profiles': profile_response.data if profile_response.data else None
-                        }
+                        profile_data = profile_response.data[0] if profile_response.data and len(profile_response.data) > 0 else None
                         
-                        logger.info(f"✅ Fetched RM profile for {rm_id}: {profile_response.data.get('full_name') if profile_response.data else 'No profile'}")
+                        request['rm_profile'] = {
+                            **rm_data,
+                            'profiles': profile_data
+                        }
                     else:
-                        logger.warning(f"No rm_profiles data found for {rm_id}")
+                        request['rm_profile'] = None
                 except Exception as e:
-                    logger.error(f"❌ Failed to fetch RM profile for {rm_id}: {str(e)}", exc_info=True)
+                    logger.error(f"Failed to fetch RM profile for {rm_id}: {str(e)}")
                     request['rm_profile'] = None
-            else:
-                logger.warning(f"Request {idx + 1} has no rm_id")
         
-        logger.info(f"Fetched {len(response.data)} vendor requests with RM profiles")
         return response.data
     
     except Exception as e:
@@ -195,8 +185,8 @@ async def approve_vendor_request(
             "city": request_data["city"],
             "state": request_data["state"],
             "pincode": request_data["pincode"],
-            "latitude": request_data["latitude"],
-            "longitude": request_data["longitude"],
+            "latitude": request_data.get("latitude") or 0.0,
+            "longitude": request_data.get("longitude") or 0.0,
             "gst_number": request_data.get("gst_number"),
             "business_license": request_data.get("business_license"),
             "registration_fee_amount": registration_fee,
@@ -208,10 +198,17 @@ async def approve_vendor_request(
         salon_response = supabase.table("salons").insert(salon_data).execute()
         salon_id = salon_response.data[0]["id"] if salon_response.data else None
         
-        # Update RM score
+        # Update RM score - Get current values first
+        rm_profile_response = supabase.table("rm_profiles").select(
+            "total_score, total_approved_salons"
+        ).eq("id", request_data["rm_id"]).single().execute()
+        
+        current_score = rm_profile_response.data.get("total_score", 0) if rm_profile_response.data else 0
+        current_approved = rm_profile_response.data.get("total_approved_salons", 0) if rm_profile_response.data else 0
+        
         supabase.table("rm_profiles").update({
-            "total_score": supabase.rpc("increment", {"x": rm_score}),
-            "total_approved_salons": supabase.rpc("increment", {"x": 1})
+            "total_score": current_score + rm_score,
+            "total_approved_salons": current_approved + 1
         }).eq("id", request_data["rm_id"]).execute()
         
         # Add score history
@@ -229,20 +226,21 @@ async def approve_vendor_request(
             owner_email=request_data["owner_email"]
         )
         
-        # Create registration URL with JWT token
-        registration_url = f"{settings.VENDOR_PORTAL_URL}/register?token={registration_token}"
-        
-        # Send approval email to vendor
-        email_sent = await email_service.send_vendor_approval_email(
-            to_email=request_data["owner_email"],
-            owner_name=request_data["owner_name"],
-            salon_name=request_data["business_name"],
-            registration_url=registration_url,
-            registration_fee=registration_fee
-        )
-        
-        if not email_sent:
-            logger.warning(f"Failed to send approval email to {request_data['owner_email']}")
+        # Send approval email to vendor (non-blocking)
+        try:
+            email_sent = email_service.send_vendor_approval_email(
+                to_email=request_data["owner_email"],
+                owner_name=request_data["owner_name"],
+                salon_name=request_data["business_name"],
+                registration_token=registration_token,
+                registration_fee=registration_fee
+            )
+            
+            if not email_sent:
+                logger.warning(f"Failed to send approval email to {request_data['owner_email']}")
+        except Exception as email_error:
+            logger.error(f"Email service error: {str(email_error)}")
+            # Continue with approval even if email fails
         
         logger.info(f"Vendor request {request_id} approved. Salon created: {salon_id}")
         

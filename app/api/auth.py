@@ -288,6 +288,73 @@ async def logout(current_user: TokenData = Depends(get_current_user)):
         )
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh")
+async def refresh_access_token(request: RefreshTokenRequest):
+    """
+    Refresh access token using refresh token
+    - Validates refresh token
+    - Returns new access token
+    - Extends session
+    """
+    try:
+        # Verify refresh token and extract data
+        from app.core.auth import verify_refresh_token
+        
+        token_data = verify_refresh_token(request.refresh_token)
+        
+        # Fetch current user profile to ensure user still exists and is active
+        profile_response = supabase_service.table("profiles").select(
+            "*"
+        ).eq("id", token_data["sub"]).single().execute()
+        
+        if not profile_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        profile = profile_response.data
+        
+        # Check if user is still active
+        if not profile.get("is_active", True):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is inactive"
+            )
+        
+        # Create new access token with updated data
+        new_token_data = {
+            "sub": profile["id"],
+            "email": profile["email"],
+            "role": profile.get("role", "customer")
+        }
+        
+        new_access_token = create_access_token(new_token_data)
+        new_refresh_token = create_refresh_token(new_token_data)
+        
+        logger.info(f"Token refreshed for user: {profile['email']}")
+        
+        return {
+            "success": True,
+            "access_token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": "bearer"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token"
+        )
+
+
 @router.get("/me")
 async def get_current_user_profile(current_user: TokenData = Depends(get_current_user)):
     """
@@ -318,39 +385,5 @@ async def get_current_user_profile(current_user: TokenData = Depends(get_current
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch profile"
-        )
-
-
-@router.post("/refresh")
-async def refresh_access_token(refresh_token: str):
-    """
-    Refresh access token using refresh token
-    - Validates refresh token
-    - Issues new access token
-    """
-    try:
-        from app.core.auth import verify_token
-        
-        # Verify refresh token
-        token_data = verify_token(refresh_token)
-        
-        # Create new access token
-        new_access_token = create_access_token({
-            "sub": token_data.sub,
-            "email": token_data.email,
-            "role": token_data.role
-        })
-        
-        return {
-            "success": True,
-            "access_token": new_access_token,
-            "token_type": "bearer"
-        }
-    
-    except Exception as e:
-        logger.error(f"Token refresh error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
         )
 

@@ -44,6 +44,19 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
+            # Check if email sending is enabled
+            if not settings.EMAIL_ENABLED:
+                logger.info("=" * 80)
+                logger.info("📧 EMAIL (DEV MODE - NOT SENT)")
+                logger.info("=" * 80)
+                logger.info(f"To: {to_email}")
+                logger.info(f"Subject: {subject}")
+                logger.info("-" * 80)
+                logger.info("HTML Body Preview (first 500 chars):")
+                logger.info(html_body[:500] + "..." if len(html_body) > 500 else html_body)
+                logger.info("=" * 80)
+                return True
+            
             # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject

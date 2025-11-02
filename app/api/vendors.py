@@ -2,8 +2,9 @@
 Vendor API Endpoints
 Handles vendor registration completion, salon management, services, staff, and bookings
 """
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Body
 from typing import List, Optional
+from pydantic import BaseModel
 from supabase import create_client, Client
 from app.core.config import settings
 from app.core.auth import (
@@ -37,29 +38,43 @@ supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVIC
 
 
 # =====================================================
+# REQUEST MODELS
+# =====================================================
+
+class CompleteRegistrationRequest(BaseModel):
+    token: str
+    password: str
+    confirm_password: str
+
+
+# =====================================================
 # REGISTRATION COMPLETION
 # =====================================================
 
 @router.post("/complete-registration")
-async def complete_registration(
-    token: str,
-    password: str,
-    confirm_password: str
-):
+async def complete_registration(request: CompleteRegistrationRequest):
     """
     Complete vendor registration after admin approval
     - Verify token
     - Create auth user
+    - Create profile
     - Link to salon
     """
     try:
         # Verify JWT registration token
-        token_data = verify_registration_token(token)
+        token_data = verify_registration_token(request.token)
         salon_id = token_data["salon_id"]
         request_id = token_data["request_id"]
         vendor_email = token_data["email"]
         
-        if password != confirm_password:
+        # Get vendor request data for owner name
+        request_response = supabase.table("vendor_join_requests").select("owner_name").eq(
+            "id", request_id
+        ).single().execute()
+        
+        owner_name = request_response.data.get("owner_name") if request_response.data else "Vendor"
+        
+        if request.password != request.confirm_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Passwords do not match"
@@ -68,7 +83,7 @@ async def complete_registration(
         # Create Supabase auth user
         auth_response = supabase.auth.admin.create_user({
             "email": vendor_email,
-            "password": password,
+            "password": request.password,
             "email_confirm": True  # Auto-confirm email
         })
         
@@ -80,24 +95,42 @@ async def complete_registration(
         
         user_id = auth_response.user.id
         
-        # TODO: Create vendor profile
-        # profile_data = {
-        #     "id": auth_response.user.id,
-        #     "email": vendor_email,
-        #     "full_name": owner_name,
-        #     "role": "vendor"
-        # }
+        # Create vendor profile
+        profile_data = {
+            "id": user_id,
+            "email": vendor_email,
+            "full_name": owner_name,
+            "role": "vendor",
+            "is_active": True,
+            "email_verified": True
+        }
         
-        # TODO: Link vendor to salon
-        # supabase.table("salons").update({
-        #     "vendor_id": auth_response.user.id
-        # }).eq("id", salon_id).execute()
+        supabase.table("profiles").insert(profile_data).execute()
         
-        logger.info(f"Vendor registration completed")
+        # Link vendor to salon
+        supabase.table("salons").update({
+            "vendor_id": user_id
+        }).eq("id", salon_id).execute()
+        
+        # Generate access and refresh tokens
+        access_token = create_access_token(user_id)
+        refresh_token = create_refresh_token(user_id)
+        
+        logger.info(f"Vendor registration completed for {vendor_email}")
         
         return {
             "success": True,
-            "message": "Registration completed. Please pay registration fee to activate account."
+            "message": "Registration completed successfully!",
+            "data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "user": {
+                    "id": user_id,
+                    "email": vendor_email,
+                    "full_name": owner_name,
+                    "role": "vendor"
+                }
+            }
         }
     
     except HTTPException:

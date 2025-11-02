@@ -139,6 +139,52 @@ def verify_token(token: str) -> TokenPayload:
         )
 
 
+def verify_refresh_token(token: str) -> dict:
+    """
+    Verify and decode JWT refresh token
+    
+    Args:
+        token: JWT refresh token string
+    
+    Returns:
+        Dictionary with token data
+    
+    Raises:
+        HTTPException: If token is invalid or expired
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+        
+        user_id: str = payload.get("sub")
+        email: str = payload.get("email")
+        role: str = payload.get("role")
+        
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        return {
+            "sub": user_id,
+            "email": email,
+            "role": role
+        }
+    
+    except JWTError as e:
+        logger.error(f"Refresh token verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 # =====================================================
 # AUTHENTICATION DEPENDENCIES
 # =====================================================

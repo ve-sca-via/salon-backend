@@ -243,16 +243,28 @@ async def get_rm_dashboard(current_user: TokenData = Depends(require_rm)):
     """Get RM dashboard statistics"""
     try:
         rm_id = current_user.user_id
-        # Get RM profile
-        profile_response = supabase.table("rm_profiles").select("*").eq("id", rm_id).single().execute()
         
-        if not profile_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="RM profile not found"
-            )
+        # Get RM profile - use maybe_single() to handle 0 results
+        profile_response = supabase.table("rm_profiles").select("*").eq("id", rm_id).execute()
         
-        profile = profile_response.data
+        # If profile doesn't exist, create it
+        if not profile_response.data or len(profile_response.data) == 0:
+            logger.info(f"RM profile not found for {rm_id}, creating new profile")
+            
+            # Create new RM profile
+            new_profile = {
+                "id": rm_id,
+                "employee_id": f"RM{rm_id[:8].upper()}",  # Generate employee ID
+                "total_score": 0,
+                "total_salons_added": 0,
+                "total_approved_salons": 0,
+                "is_active": True
+            }
+            
+            create_response = supabase.table("rm_profiles").insert(new_profile).execute()
+            profile = create_response.data[0] if create_response.data else new_profile
+        else:
+            profile = profile_response.data[0]
         
         # Get pending requests count
         pending_count = supabase.table("vendor_join_requests").select(

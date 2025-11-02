@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # =====================================================
     # EMAIL CONFIGURATION
     # =====================================================
+    EMAIL_ENABLED: bool = Field(default=False)  # Toggle email sending (False = log only)
     EMAIL_FROM: str = Field(default="noreply@salonplatform.com")
     EMAIL_FROM_NAME: str = Field(default="Salon Management Platform")
     
