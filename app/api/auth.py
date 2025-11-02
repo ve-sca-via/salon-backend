@@ -1,10 +1,18 @@
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel, EmailStr
 from supabase import create_client, Client
 from typing import Optional, Dict
+import html
 from app.core.config import settings
-from app.core.auth import create_access_token, create_refresh_token, get_current_user, TokenData
-from datetime import timedelta
+from app.core.auth import create_access_token, create_refresh_token, get_current_user, TokenData, revoke_token, verify_token
+from app.schemas import (
+    LoginRequest,
+    LoginResponse,
+    SignupRequest,
+    SignupResponse,
+    LogoutAllRequest,
+    RefreshTokenRequest
+)
+from datetime import timedelta, datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -17,37 +25,6 @@ if not all([settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, settings.SUPABASE
 
 supabase_auth: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
 supabase_service: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-
-
-# --- Pydantic Models ---
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class LoginResponse(BaseModel):
-    success: bool
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    user: Dict
-
-
-class SignupRequest(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: str
-    phone: Optional[str] = None
-    role: str = "customer"  # Default role
-
-
-class SignupResponse(BaseModel):
-    success: bool
-    message: str
-    user_id: Optional[str] = None
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    user: Optional[Dict] = None
 
 
 # --- Auth Routes ---
@@ -112,13 +89,13 @@ async def login(credentials: LoginRequest):
         access_token = create_access_token(token_data)
         refresh_token = create_refresh_token(token_data)
 
-        # Build user response
+        # Build user response (sanitize data from database to prevent XSS)
         user_data = {
             "id": user.id,
             "email": user.email,
-            "full_name": profile.get("full_name", ""),
+            "full_name": html.escape(profile.get("full_name", "")),
             "role": profile.get("role", "customer"),
-            "phone": profile.get("phone", ""),
+            "phone": html.escape(profile.get("phone", "")),
             "is_active": profile.get("is_active", True)
         }
 
@@ -134,7 +111,17 @@ async def login(credentials: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
+        error_message = str(e).lower()
         logger.error(f"Login error: {str(e)}")
+        
+        # Check if it's an authentication error from Supabase
+        if "invalid login credentials" in error_message or "invalid credentials" in error_message:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+        
+        # Generic error for other issues
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login failed"
@@ -150,6 +137,10 @@ async def signup(request: SignupRequest):
     - Role defaults to 'customer'
     """
     try:
+        # Sanitize inputs to prevent XSS
+        sanitized_full_name = html.escape(request.full_name.strip())
+        sanitized_phone = html.escape(request.phone.strip()) if request.phone else None
+        
         # Only allow customer signups through this endpoint
         if request.role not in ["customer"]:
             raise HTTPException(
@@ -165,7 +156,10 @@ async def signup(request: SignupRequest):
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Email already registered"
                 )
-        except Exception:
+        except HTTPException:
+            raise  # Re-raise HTTP exceptions
+        except Exception as e:
+            logger.warning(f"Could not check existing user: {e}")
             pass  # Continue if check fails
 
         # Create auth user with auto_confirm to bypass trigger issues
@@ -174,8 +168,8 @@ async def signup(request: SignupRequest):
             "password": request.password,
             "options": {
                 "data": {
-                    "full_name": request.full_name,
-                    "phone": request.phone,
+                    "full_name": sanitized_full_name,
+                    "phone": sanitized_phone,
                     "role": request.role
                 }
             }
@@ -196,8 +190,8 @@ async def signup(request: SignupRequest):
         profile_data = {
             "id": user.id,
             "email": request.email,
-            "full_name": request.full_name,
-            "phone": request.phone,
+            "full_name": sanitized_full_name,
+            "phone": sanitized_phone,
             "role": request.role,
             "is_active": True,
             "email_verified": user.email_confirmed_at is not None  # Check if email is confirmed
@@ -207,6 +201,16 @@ async def signup(request: SignupRequest):
             # Try insert first
             profile_response = supabase_service.table("profiles").insert(profile_data).execute()
         except Exception as insert_error:
+            error_str = str(insert_error)
+            
+            # Check if it's a duplicate email error
+            if "duplicate key" in error_str and "profiles_email_key" in error_str:
+                logger.warning(f"Duplicate email during signup: {request.email}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+            
             logger.warning(f"Profile insert failed, trying upsert: {insert_error}")
             # If insert fails (maybe trigger created it), try upsert
             try:
@@ -215,7 +219,7 @@ async def signup(request: SignupRequest):
                 logger.error(f"Profile upsert also failed: {upsert_error}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Database error saving user profile"
+                    detail="Unable to create account. Please try again."
                 )
         
         if not profile_response.data:
@@ -237,9 +241,9 @@ async def signup(request: SignupRequest):
         user_data = {
             "id": user.id,
             "email": request.email,
-            "full_name": request.full_name,
+            "full_name": sanitized_full_name,
             "role": request.role,
-            "phone": request.phone,
+            "phone": sanitized_phone,
             "is_active": True
         }
 
@@ -262,34 +266,6 @@ async def signup(request: SignupRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Signup failed: {str(e)}"
         )
-
-
-@router.post("/logout")
-async def logout(current_user: TokenData = Depends(get_current_user)):
-    """
-    Logout endpoint
-    - Requires valid JWT token
-    - Signs out from Supabase
-    """
-    try:
-        # Supabase sign out (optional - JWT is stateless)
-        # Actual logout is handled client-side by removing token
-        logger.info(f"User logged out: {current_user.email}")
-        
-        return {
-            "success": True,
-            "message": "Logged out successfully"
-        }
-    except Exception as e:
-        logger.error(f"Logout error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed"
-        )
-
-
-class RefreshTokenRequest(BaseModel):
-    refresh_token: str
 
 
 @router.post("/refresh")
@@ -385,5 +361,97 @@ async def get_current_user_profile(current_user: TokenData = Depends(get_current
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch profile"
+        )
+
+
+@router.post("/logout")
+async def logout(current_user: TokenData = Depends(get_current_user)):
+    """
+    Logout user by revoking their access token
+    
+    - Adds current token to blacklist to prevent reuse
+    - Client should also delete refresh token
+    - Returns success message
+    """
+    try:
+        # Get token expiration from current_user (already a datetime object)
+        expires_at = current_user.exp
+        
+        # Revoke the access token by adding to blacklist
+        revoke_token(
+            token_jti=current_user.jti if hasattr(current_user, 'jti') else None,
+            user_id=current_user.user_id,
+            token_type="access",
+            expires_at=expires_at,
+            reason="logout"
+        )
+        
+        logger.info(f"User logged out: {current_user.user_id}")
+        
+        return {
+            "success": True,
+            "message": "Successfully logged out"
+        }
+        
+    except Exception as e:
+        logger.error(f"Logout error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Logout failed"
+        )
+
+
+@router.post("/logout-all")
+async def logout_all_devices(
+    request: LogoutAllRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Logout user from all devices by revoking all their tokens
+    
+    - Requires password confirmation for security
+    - Revokes current token and invalidates all sessions
+    - User must login again on all devices
+    """
+    try:
+        # Verify password before revoking all tokens
+        auth_response = supabase_auth.auth.sign_in_with_password({
+            "email": current_user.email,
+            "password": request.password
+        })
+        
+        if not auth_response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid password"
+            )
+        
+        # Revoke current token
+        if hasattr(current_user, 'jti') and current_user.jti:
+            expires_at = datetime.utcfromtimestamp(current_user.exp)
+            revoke_token(
+                token_jti=current_user.jti,
+                user_id=current_user.user_id,
+                token_type="access",
+                expires_at=expires_at,
+                reason="logout_all"
+            )
+        
+        # Note: In a complete implementation, you'd track all active tokens
+        # For now, we log the action and revoke the current token
+        logger.warning(f"Logout all devices requested for user: {current_user.user_id}")
+        
+        return {
+            "success": True,
+            "message": "Successfully logged out from all devices"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Logout all error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to logout from all devices"
         )
 

@@ -11,9 +11,13 @@ These endpoints leverage:
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Form
 from typing import Optional, List
 from decimal import Decimal
-from app.services.supabase_service import supabase_service
+from supabase import create_client, Client
+from app.core.config import settings
 
 router = APIRouter(prefix="/api/salons", tags=["salons"])
+
+# Initialize Supabase client
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 # ========================================

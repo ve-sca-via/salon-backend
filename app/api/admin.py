@@ -134,6 +134,8 @@ async def approve_vendor_request(
     - Sends email to vendor with registration link
     """
     try:
+        logger.info(f"🔍 Starting approval process for vendor request: {request_id}")
+        
         # Get request details
         request_response = supabase.table("vendor_join_requests").select("*").eq("id", request_id).single().execute()
         
@@ -198,6 +200,8 @@ async def approve_vendor_request(
         salon_response = supabase.table("salons").insert(salon_data).execute()
         salon_id = salon_response.data[0]["id"] if salon_response.data else None
         
+        logger.info(f"✅ Salon created: {salon_id} for business: {request_data['business_name']}")
+        
         # Update RM score - Get current values first
         rm_profile_response = supabase.table("rm_profiles").select(
             "total_score, total_approved_salons"
@@ -210,6 +214,8 @@ async def approve_vendor_request(
             "total_score": current_score + rm_score,
             "total_approved_salons": current_approved + 1
         }).eq("id", request_data["rm_id"]).execute()
+        
+        logger.info(f"📊 RM score updated: +{rm_score} points (Total: {current_score + rm_score})")
         
         # Add score history
         supabase.table("rm_score_history").insert({
@@ -226,8 +232,11 @@ async def approve_vendor_request(
             owner_email=request_data["owner_email"]
         )
         
+        logger.info(f"🔐 Registration token generated for {request_data['owner_email']}")
+        
         # Send approval email to vendor (non-blocking)
         try:
+            logger.info(f"📧 Attempting to send approval email to {request_data['owner_email']}...")
             email_sent = email_service.send_vendor_approval_email(
                 to_email=request_data["owner_email"],
                 owner_name=request_data["owner_name"],
@@ -237,12 +246,14 @@ async def approve_vendor_request(
             )
             
             if not email_sent:
-                logger.warning(f"Failed to send approval email to {request_data['owner_email']}")
+                logger.warning(f"⚠️ Failed to send approval email to {request_data['owner_email']}")
+            else:
+                logger.info(f"✉️ Approval email sent successfully to {request_data['owner_email']}")
         except Exception as email_error:
-            logger.error(f"Email service error: {str(email_error)}")
+            logger.error(f"❌ Email service error: {str(email_error)}")
             # Continue with approval even if email fails
         
-        logger.info(f"Vendor request {request_id} approved. Salon created: {salon_id}")
+        logger.info(f"✅ Vendor request {request_id} approved successfully. Salon ID: {salon_id}")
         
         return {
             "success": True,
@@ -519,10 +530,15 @@ async def get_dashboard_stats(current_user: TokenData = Depends(require_admin)):
         # Get total salons
         total_salons = supabase.table("salons").select("id", count="exact").execute()
         
-        # Get active salons
+        # Get active salons (subscription_status = 'active')
         active_salons = supabase.table("salons").select(
             "id", count="exact"
-        ).eq("is_active", True).execute()
+        ).eq("subscription_status", "active").execute()
+        
+        # Get pending payment salons
+        pending_payment_salons = supabase.table("salons").select(
+            "id", count="exact"
+        ).eq("subscription_status", "pending").execute()
         
         # Get total bookings today
         today_bookings = supabase.table("bookings").select(
@@ -532,20 +548,32 @@ async def get_dashboard_stats(current_user: TokenData = Depends(require_admin)):
         # Get total RMs
         total_rms = supabase.table("rm_profiles").select("id", count="exact").execute()
         
-        # Get payment stats
-        total_revenue = supabase.table("vendor_payments").select("amount").eq(
-            "status", "success"
+        # Get payment stats from salons table
+        paid_salons = supabase.table("salons").select("payment_amount").eq(
+            "subscription_status", "active"
         ).execute()
         
-        revenue_sum = sum(float(p["amount"]) for p in total_revenue.data) if total_revenue.data else 0
+        # Calculate revenue from salon registration payments
+        revenue_sum = sum(float(s["payment_amount"]) for s in paid_salons.data if s.get("payment_amount")) if paid_salons.data else 0
+        
+        # Get this month's revenue
+        from datetime import datetime
+        current_month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        this_month_payments = supabase.table("salons").select("payment_amount").eq(
+            "subscription_status", "active"
+        ).gte("payment_date", current_month_start).execute()
+        
+        this_month_revenue = sum(float(s["payment_amount"]) for s in this_month_payments.data if s.get("payment_amount")) if this_month_payments.data else 0
         
         return {
             "pending_requests": pending_requests.count if pending_requests else 0,
             "total_salons": total_salons.count if total_salons else 0,
             "active_salons": active_salons.count if active_salons else 0,
+            "pending_payment_salons": pending_payment_salons.count if pending_payment_salons else 0,
             "today_bookings": today_bookings.count if today_bookings else 0,
             "total_rms": total_rms.count if total_rms else 0,
-            "total_revenue": revenue_sum
+            "total_revenue": revenue_sum,
+            "this_month_revenue": this_month_revenue
         }
     
     except Exception as e:

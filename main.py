@@ -1,7 +1,31 @@
+import logging
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api import location, auth, salons, bookings, realtime, admin, rm, vendors, payments, customers
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+# Get logger for this module
+logger = logging.getLogger(__name__)
+
+# Log configuration on startup
+logger.info("="*60)
+logger.info("Starting Salon Management API")
+logger.info(f"Environment: {settings.ENVIRONMENT}")
+logger.info(f"Supabase URL: {settings.SUPABASE_URL}")
+logger.info(f"Service Role Key configured: {bool(settings.SUPABASE_SERVICE_ROLE_KEY)}")
+logger.info(f"Service Role Key length: {len(settings.SUPABASE_SERVICE_ROLE_KEY) if settings.SUPABASE_SERVICE_ROLE_KEY else 0}")
+logger.info(f"Anon Key configured: {bool(settings.SUPABASE_ANON_KEY)}")
+logger.info("="*60)
 
 # Create FastAPI app
 app = FastAPI(
@@ -9,6 +33,9 @@ app = FastAPI(
     description="Multi-role salon management with RM scoring, dynamic fees, and Razorpay integration",
     version="3.0.0"
 )
+
+logger.info("🚀 Salon Management API starting up...")
+logger.info(f"📧 Email sending: {'ENABLED' if settings.EMAIL_ENABLED else 'DISABLED (Dev Mode)'}")
 
 
 # Configure CORS

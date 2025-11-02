@@ -9,54 +9,64 @@ These endpoints leverage:
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from typing import List, Dict, Optional
-from pydantic import BaseModel
-from app.services.supabase_service import supabase_service
+from supabase import create_client, Client
+from app.core.config import settings
+from app.core.auth import get_current_user, TokenData
 from app.services.email import email_service
+from app.schemas import BookingCreate, BookingUpdate
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/bookings", tags=["bookings"])
+router = APIRouter(prefix="/bookings", tags=["bookings"])
 
-
-class BookingCreate(BaseModel):
-    user_id: str
-    salon_id: int
-    salon_name: str
-    booking_date: str
-    booking_time: str
-    services: List[Dict]
-    total_amount: float
-    discount_applied: float = 0
-    final_amount: float
-    notes: Optional[str] = None
-
-
-class BookingUpdate(BaseModel):
-    status: Optional[str] = None
-    notes: Optional[str] = None
-    cancellation_reason: Optional[str] = None
+# Initialize Supabase client
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 @router.get("/")
 async def get_bookings(
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
-    salon_id: Optional[int] = Query(None, description="Filter by salon ID")
+    salon_id: Optional[int] = Query(None, description="Filter by salon ID"),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Get bookings
+    Get bookings - PROTECTED
     
-    RLS automatically enforces:
+    Authorization:
     - Users can only see their own bookings
-    - Salon owners can see bookings for their salons
+    - Salon vendors can see bookings for their salon
     - Admins can see all bookings
     """
     try:
         if user_id:
-            bookings = supabase_service.get_user_bookings(user_id)
+            # Users can only access their own bookings unless admin
+            if current_user.role not in ["admin"] and current_user.user_id != user_id:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Cannot access other users' bookings"
+                )
+            
+            response = supabase.table("bookings").select("*").eq("user_id", user_id).order("booking_date", desc=True).execute()
+            bookings = response.data
         elif salon_id:
-            bookings = supabase_service.get_salon_bookings(salon_id)
+            # Verify salon ownership for vendors
+            if current_user.role == "vendor":
+                salon_check = supabase.table("salons").select("vendor_id").eq("id", salon_id).single().execute()
+                if not salon_check.data or salon_check.data["vendor_id"] != current_user.user_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Cannot access other salons' bookings"
+                    )
+            elif current_user.role not in ["admin"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Insufficient permissions to view salon bookings"
+                )
+            
+            response = supabase.table("bookings").select("*").eq("salon_id", salon_id).order("booking_date", desc=True).execute()
+            bookings = response.data
         else:
             raise HTTPException(status_code=400, detail="Must provide user_id or salon_id")
         
@@ -71,44 +81,84 @@ async def get_bookings(
 
 
 @router.get("/user/{user_id}")
-async def get_user_bookings(user_id: str):
+async def get_user_bookings(
+    user_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
     """
-    Get all bookings for a user
+    Get all bookings for a user - PROTECTED
     
-    RLS ensures users can only see their own bookings
+    Authorization:
+    - Users can only see their own bookings
+    - Admins can see any user's bookings
     """
     try:
-        bookings = supabase_service.get_user_bookings(user_id)
+        # Verify ownership
+        if current_user.role != "admin" and current_user.user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot access other users' bookings"
+            )
+        
+        response = supabase.table("bookings").select("*").eq("user_id", user_id).order("booking_date", desc=True).execute()
+        bookings = response.data
         return {
             "bookings": bookings,
             "count": len(bookings)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/salon/{salon_id}")
-async def get_salon_bookings(salon_id: int):
+async def get_salon_bookings(
+    salon_id: int,
+    current_user: TokenData = Depends(get_current_user)
+):
     """
-    Get all bookings for a salon
+    Get all bookings for a salon - PROTECTED
     
-    RLS ensures only salon owner or admin can see these
+    Authorization:
+    - Salon vendors can only see their own salon's bookings
+    - Admins can see any salon's bookings
     """
     try:
-        bookings = supabase_service.get_salon_bookings(salon_id)
+        # Verify salon ownership for vendors
+        if current_user.role == "vendor":
+            salon_check = supabase.table("salons").select("vendor_id").eq("id", salon_id).single().execute()
+            if not salon_check.data or salon_check.data["vendor_id"] != current_user.user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot access other salons' bookings"
+                )
+        elif current_user.role not in ["admin"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Insufficient permissions to view salon bookings"
+            )
+        
+        response = supabase.table("bookings").select("*").eq("salon_id", salon_id).order("booking_date", desc=True).execute()
+        bookings = response.data
         return {
             "bookings": bookings,
             "count": len(bookings)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{booking_id}")
-async def get_booking(booking_id: str):
-    """Get single booking by ID - RLS enforced"""
+async def get_booking(
+    booking_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Get single booking by ID - PROTECTED"""
     try:
-        response = supabase_service.client.table("bookings")\
+        response = supabase.table("bookings")\
             .select("*, salons(*), salon_services(*)")\
             .eq("id", booking_id)\
             .single()\
@@ -117,7 +167,24 @@ async def get_booking(booking_id: str):
         if not response.data:
             raise HTTPException(status_code=404, detail="Booking not found")
         
-        return response.data
+        booking = response.data
+        
+        # Verify access - user owns booking, or is admin, or is salon vendor
+        is_owner = booking["user_id"] == current_user.user_id
+        is_admin = current_user.role == "admin"
+        is_vendor = False
+        
+        if current_user.role == "vendor":
+            salon_check = supabase.table("salons").select("vendor_id").eq("id", booking["salon_id"]).single().execute()
+            is_vendor = salon_check.data and salon_check.data["vendor_id"] == current_user.user_id
+        
+        if not (is_owner or is_admin or is_vendor):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot access this booking"
+            )
+        
+        return booking
     except HTTPException:
         raise
     except Exception as e:
@@ -125,26 +192,37 @@ async def get_booking(booking_id: str):
 
 
 @router.post("/")
-async def create_booking(booking: BookingCreate):
+async def create_booking(
+    booking: BookingCreate,
+    current_user: TokenData = Depends(get_current_user)
+):
     """
-    Create new booking
+    Create new booking - PROTECTED
     
-    RLS ensures:
+    Authorization:
     - Users can only create bookings for themselves
-    - Field user_id is automatically set to auth.uid()
+    - Admins can create bookings for any user
     """
     try:
+        # Verify user is creating booking for themselves (unless admin)
+        if current_user.role != "admin" and booking.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot create bookings for other users"
+            )
+        
         # Convert Pydantic model to dict
         booking_data = booking.model_dump()
         
         # Create booking
-        created_booking = supabase_service.create_booking(booking_data)
+        response = supabase.table("bookings").insert(booking_data).execute()
+        created_booking = response.data[0] if response.data else None
         
         if not created_booking:
             raise HTTPException(status_code=500, detail="Failed to create booking")
         
         # Get customer details for email
-        customer_response = supabase_service.client.table("profiles")\
+        customer_response = supabase.table("profiles")\
             .select("email, full_name")\
             .eq("id", booking.user_id)\
             .single()\
@@ -186,15 +264,43 @@ async def create_booking(booking: BookingCreate):
 
 
 @router.patch("/{booking_id}")
-async def update_booking(booking_id: str, updates: BookingUpdate):
+async def update_booking(
+    booking_id: str,
+    updates: BookingUpdate,
+    current_user: TokenData = Depends(get_current_user)
+):
     """
-    Update booking
+    Update booking - PROTECTED
     
-    RLS ensures:
-    - Users can only update their own bookings
-    - Admins and salon owners can update bookings
+    Authorization:
+    - Users can update their own bookings
+    - Salon vendors can update bookings for their salon
+    - Admins can update any booking
     """
     try:
+        # Get booking to verify ownership
+        booking_check = supabase.table("bookings").select("user_id, salon_id").eq("id", booking_id).single().execute()
+        
+        if not booking_check.data:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        booking = booking_check.data
+        
+        # Verify access
+        is_owner = booking["user_id"] == current_user.user_id
+        is_admin = current_user.role == "admin"
+        is_vendor = False
+        
+        if current_user.role == "vendor":
+            salon_check = supabase.table("salons").select("vendor_id").eq("id", booking["salon_id"]).single().execute()
+            is_vendor = salon_check.data and salon_check.data["vendor_id"] == current_user.user_id
+        
+        if not (is_owner or is_admin or is_vendor):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot update this booking"
+            )
+        
         update_data = {}
         if updates.status:
             update_data["status"] = updates.status
@@ -203,7 +309,7 @@ async def update_booking(booking_id: str, updates: BookingUpdate):
         if updates.cancellation_reason:
             update_data["cancellation_reason"] = updates.cancellation_reason
         
-        response = supabase_service.client.table("bookings")\
+        response = supabase.table("bookings")\
             .update(update_data)\
             .eq("id", booking_id)\
             .execute()
@@ -221,16 +327,19 @@ async def update_booking(booking_id: str, updates: BookingUpdate):
 @router.post("/{booking_id}/cancel")
 async def cancel_booking(
     booking_id: str,
-    reason: Optional[str] = Body(None)
+    reason: Optional[str] = Body(None),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Cancel booking
+    Cancel booking - PROTECTED
     
-    RLS ensures users can only cancel their own bookings
+    Authorization:
+    - Users can cancel their own bookings
+    - Admins can cancel any booking
     """
     try:
         # Get booking details before cancellation
-        booking_response = supabase_service.client.table("bookings")\
+        booking_response = supabase.table("bookings")\
             .select("*, profiles(email, full_name)")\
             .eq("id", booking_id)\
             .single()\
@@ -241,14 +350,21 @@ async def cancel_booking(
         
         booking_data = booking_response.data
         
-        # Cancel booking
-        success = supabase_service.update_booking_status(
-            booking_id=booking_id,
-            status="cancelled",
-            cancellation_reason=reason
-        )
+        # Verify ownership
+        if current_user.role != "admin" and booking_data["user_id"] != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot cancel other users' bookings"
+            )
         
-        if not success:
+        # Cancel booking
+        update_data = {
+            "status": "cancelled",
+            "cancellation_reason": reason
+        }
+        response = supabase.table("bookings").update(update_data).eq("id", booking_id).execute()
+        
+        if not response.data:
             raise HTTPException(status_code=500, detail="Failed to cancel booking")
         
         # Get refund amount (if applicable)
@@ -289,22 +405,47 @@ async def cancel_booking(
 
 
 @router.post("/{booking_id}/complete")
-async def complete_booking(booking_id: str):
+async def complete_booking(
+    booking_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
     """
-    Mark booking as completed
+    Mark booking as completed - PROTECTED
     
-    RLS ensures only salon owner or admin can complete bookings
+    Authorization:
+    - Only salon vendors can complete bookings for their salon
+    - Admins can complete any booking
     """
     try:
-        success = supabase_service.update_booking_status(
-            booking_id=booking_id,
-            status="completed"
-        )
+        # Get booking to verify salon
+        booking_check = supabase.table("bookings").select("salon_id").eq("id", booking_id).single().execute()
         
-        if not success:
+        if not booking_check.data:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        # Verify vendor owns the salon
+        if current_user.role == "vendor":
+            salon_check = supabase.table("salons").select("vendor_id").eq("id", booking_check.data["salon_id"]).single().execute()
+            if not salon_check.data or salon_check.data["vendor_id"] != current_user.user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot complete bookings for other salons"
+                )
+        elif current_user.role not in ["admin"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Only salon vendors and admins can complete bookings"
+            )
+        
+        update_data = {"status": "completed"}
+        response = supabase.table("bookings").update(update_data).eq("id", booking_id).execute()
+        
+        if not response.data:
             raise HTTPException(status_code=500, detail="Failed to complete booking")
         
         return {"success": True, "message": "Booking completed"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

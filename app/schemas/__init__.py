@@ -93,6 +93,44 @@ class ProfileResponse(ProfileBase, TimestampMixin):
     last_login_at: Optional[datetime] = None
 
 # =====================================================
+# AUTH SCHEMAS (from auth.py inline schemas)
+# =====================================================
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class LoginResponse(BaseModel):
+    success: bool
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: Dict
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str
+    phone: Optional[str] = None
+    role: str = "customer"  # Default role
+
+class SignupResponse(BaseModel):
+    success: bool
+    message: str
+    user_id: Optional[str] = None
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    user: Optional[Dict] = None
+
+class LogoutAllRequest(BaseModel):
+    """Request to logout from all devices"""
+    password: str  # Require password confirmation for security
+
+class RefreshTokenRequest(BaseModel):
+    """Request to refresh access token"""
+    refresh_token: str
+
+# =====================================================
 # RM (RELATIONSHIP MANAGER) SCHEMAS
 # =====================================================
 
@@ -122,6 +160,17 @@ class RMScoreHistoryResponse(BaseModel):
     reason: str
     created_at: datetime
     created_by: Optional[str] = None
+
+# =====================================================
+# VENDOR REGISTRATION SCHEMAS (from vendors.py inline schemas)
+# =====================================================
+
+class CompleteRegistrationRequest(BaseModel):
+    """Schema for vendor registration completion"""
+    token: str
+    full_name: str
+    password: str
+    confirm_password: str
 
 # =====================================================
 # VENDOR JOIN REQUEST SCHEMAS
@@ -326,10 +375,30 @@ class StaffAvailabilityResponse(StaffAvailabilityBase, TimestampMixin):
     staff_id: str
 
 # =====================================================
-# BOOKING SCHEMAS
+# BOOKING SCHEMAS (Updated from bookings.py inline schemas)
 # =====================================================
 
+class BookingCreate(BaseModel):
+    """Schema for creating a new booking - matches current API"""
+    user_id: str
+    salon_id: int
+    salon_name: str
+    booking_date: str
+    booking_time: str
+    services: List[Dict]
+    total_amount: float
+    discount_applied: float = 0
+    final_amount: float
+    notes: Optional[str] = None
+
+class BookingUpdate(BaseModel):
+    """Schema for updating a booking - matches current API"""
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    cancellation_reason: Optional[str] = None
+
 class BookingBase(BaseModel):
+    """Legacy booking schema - kept for compatibility"""
     salon_id: str
     service_id: str
     staff_id: Optional[str] = None
@@ -340,23 +409,23 @@ class BookingBase(BaseModel):
     customer_email: Optional[EmailStr] = None
     special_requests: Optional[str] = None
 
-class BookingCreate(BookingBase):
-    pass
-
-class BookingUpdate(BaseModel):
-    booking_date: Optional[date] = None
-    booking_time: Optional[time] = None
-    staff_id: Optional[str] = None
-    status: Optional[BookingStatus] = None
-    special_requests: Optional[str] = None
-
 class BookingCancellation(BaseModel):
     cancellation_reason: str = Field(..., min_length=10)
 
-class BookingResponse(BookingBase, TimestampMixin):
+class BookingResponse(TimestampMixin):
+    """Legacy booking response schema"""
     id: str
     booking_number: str
     customer_id: str
+    salon_id: str
+    service_id: str
+    staff_id: Optional[str] = None
+    booking_date: date
+    booking_time: time
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[EmailStr] = None
+    special_requests: Optional[str] = None
     duration_minutes: int
     status: BookingStatus
     service_price: float
@@ -468,18 +537,10 @@ class SystemConfigResponse(SystemConfigBase, TimestampMixin):
     updated_by: Optional[str] = None
 
 # =====================================================
-# AUTHENTICATION SCHEMAS
+# AUTHENTICATION SCHEMAS (Legacy - kept for compatibility)
 # =====================================================
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    user: ProfileResponse
+# Note: LoginRequest and LoginResponse are defined above (lines 100-108)
+# Keeping only non-duplicate schemas here
 
 class TokenRefresh(BaseModel):
     refresh_token: str

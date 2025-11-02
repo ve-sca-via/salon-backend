@@ -1,11 +1,15 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
+from supabase import create_client, Client
+from app.core.config import settings
 from app.services.geocoding import geocoding_service
-from app.services.supabase_service import supabase_service
 
 
 router = APIRouter(prefix="/api/location", tags=["location"])
+
+# Initialize Supabase client
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 class GeocodeRequest(BaseModel):
@@ -72,7 +76,18 @@ async def get_salons_nearby(
     Much faster than Python-based Haversine calculation
     """
     try:
-        salons = supabase_service.get_nearby_salons(lat, lon, radius, limit)
+        # Query approved salons within radius using PostGIS
+        response = supabase.rpc(
+            'get_nearby_salons',
+            {
+                'user_lat': lat,
+                'user_lon': lon,
+                'radius_km': radius,
+                'result_limit': limit
+            }
+        ).execute()
+        
+        salons = response.data if response.data else []
         
         return {
             "salons": salons,
@@ -84,4 +99,4 @@ async def get_salons_nearby(
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch nearby salons: {str(e)}")

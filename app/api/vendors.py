@@ -4,7 +4,6 @@ Handles vendor registration completion, salon management, services, staff, and b
 """
 from fastapi import APIRouter, HTTPException, Depends, status, Body
 from typing import List, Optional
-from pydantic import BaseModel
 from supabase import create_client, Client
 from app.core.config import settings
 from app.core.auth import (
@@ -16,7 +15,6 @@ from app.core.auth import (
     create_refresh_token
 )
 from app.schemas import (
-    SalonResponse,
     SalonUpdate,
     ServiceCreate,
     ServiceUpdate,
@@ -25,7 +23,8 @@ from app.schemas import (
     SalonStaffUpdate,
     SalonStaffResponse,
     BookingResponse,
-    SuccessResponse
+    SuccessResponse,
+    CompleteRegistrationRequest
 )
 import logging
 
@@ -35,16 +34,6 @@ router = APIRouter(prefix="/vendors", tags=["Vendors"])
 
 # Initialize Supabase client
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-
-
-# =====================================================
-# REQUEST MODELS
-# =====================================================
-
-class CompleteRegistrationRequest(BaseModel):
-    token: str
-    password: str
-    confirm_password: str
 
 
 # =====================================================
@@ -61,18 +50,20 @@ async def complete_registration(request: CompleteRegistrationRequest):
     - Link to salon
     """
     try:
+        logger.info(f"🔍 Starting vendor registration completion...")
+        
         # Verify JWT registration token
         token_data = verify_registration_token(request.token)
         salon_id = token_data["salon_id"]
         request_id = token_data["request_id"]
         vendor_email = token_data["email"]
         
-        # Get vendor request data for owner name
-        request_response = supabase.table("vendor_join_requests").select("owner_name").eq(
-            "id", request_id
-        ).single().execute()
+        logger.info(f"✅ Token verified for {vendor_email}, salon_id: {salon_id}")
         
-        owner_name = request_response.data.get("owner_name") if request_response.data else "Vendor"
+        # Use full_name from registration request (provided by vendor)
+        vendor_full_name = request.full_name.strip()
+        
+        logger.info(f"📝 Vendor name: {vendor_full_name}")
         
         if request.password != request.confirm_password:
             raise HTTPException(
@@ -80,26 +71,54 @@ async def complete_registration(request: CompleteRegistrationRequest):
                 detail="Passwords do not match"
             )
         
-        # Create Supabase auth user
-        auth_response = supabase.auth.admin.create_user({
-            "email": vendor_email,
-            "password": request.password,
-            "email_confirm": True  # Auto-confirm email
-        })
+        logger.info(f"🔐 Creating Supabase auth user for {vendor_email}...")
         
-        if not auth_response.user:
+        # Create Supabase auth user using admin API
+        try:
+            auth_response = supabase.auth.admin.create_user({
+                "email": vendor_email,
+                "password": request.password,
+                "email_confirm": True,  # Auto-confirm email
+                "user_metadata": {
+                    "role": "vendor",
+                    "full_name": vendor_full_name
+                }
+            })
+            logger.info(f"✅ Auth user created successfully")
+        except Exception as auth_error:
+            logger.error(f"❌ Auth user creation failed: {str(auth_error)}")
+            # Try alternative approach: sign up the user
+            logger.info(f"🔄 Attempting alternative signup method...")
+            auth_response = supabase.auth.sign_up({
+                "email": vendor_email,
+                "password": request.password,
+                "options": {
+                    "data": {
+                        "role": "vendor",
+                        "full_name": vendor_full_name
+                    }
+                }
+            })
+            logger.info(f"✅ User signed up successfully")
+        
+        # Extract user ID from response
+        if hasattr(auth_response, 'user') and auth_response.user:
+            user_id = auth_response.user.id
+        elif isinstance(auth_response, dict) and 'user' in auth_response:
+            user_id = auth_response['user']['id']
+        else:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create user account"
             )
         
-        user_id = auth_response.user.id
+        logger.info(f"👤 User ID: {user_id}")
         
         # Create vendor profile
         profile_data = {
             "id": user_id,
             "email": vendor_email,
-            "full_name": owner_name,
+            "full_name": vendor_full_name,
             "role": "vendor",
             "is_active": True,
             "email_verified": True
@@ -107,16 +126,26 @@ async def complete_registration(request: CompleteRegistrationRequest):
         
         supabase.table("profiles").insert(profile_data).execute()
         
+        logger.info(f"✅ Profile created for {vendor_email}")
+        
         # Link vendor to salon
         supabase.table("salons").update({
             "vendor_id": user_id
         }).eq("id", salon_id).execute()
         
-        # Generate access and refresh tokens
-        access_token = create_access_token(user_id)
-        refresh_token = create_refresh_token(user_id)
+        logger.info(f"🔗 Vendor linked to salon {salon_id}")
         
-        logger.info(f"Vendor registration completed for {vendor_email}")
+        # Generate access and refresh tokens
+        token_data = {
+            "sub": user_id,
+            "email": vendor_email,
+            "role": "vendor"
+        }
+        
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+        
+        logger.info(f"🎉 Vendor registration completed successfully for {vendor_email}")
         
         return {
             "success": True,
@@ -127,7 +156,7 @@ async def complete_registration(request: CompleteRegistrationRequest):
                 "user": {
                     "id": user_id,
                     "email": vendor_email,
-                    "full_name": owner_name,
+                    "full_name": vendor_full_name,
                     "role": "vendor"
                 }
             }
@@ -144,13 +173,86 @@ async def complete_registration(request: CompleteRegistrationRequest):
 
 
 # =====================================================
+# PAYMENT PROCESSING (DEMO)
+# =====================================================
+
+@router.post("/process-payment")
+async def process_payment(current_user: TokenData = Depends(require_vendor)):
+    """
+    Process vendor payment and activate salon (DEMO MODE)
+    In production, this would integrate with actual payment gateway
+    """
+    try:
+        vendor_id = current_user.user_id
+        
+        logger.info(f"💳 Processing payment for vendor: {vendor_id}")
+        
+        # Get vendor's salon
+        salon_response = supabase.table("salons").select("id, business_name").eq(
+            "vendor_id", vendor_id
+        ).single().execute()
+        
+        if not salon_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salon not found"
+            )
+        
+        salon_id = salon_response.data["id"]
+        business_name = salon_response.data.get("business_name", "Salon")
+        
+        logger.info(f"🏪 Found salon: {business_name} (ID: {salon_id})")
+        
+        # Update salon subscription status
+        from datetime import datetime, timedelta
+        
+        payment_data = {
+            "subscription_status": "active",
+            "subscription_start_date": datetime.utcnow().isoformat(),
+            "subscription_end_date": (datetime.utcnow() + timedelta(days=365)).isoformat(),  # 1 year
+            "payment_amount": 5000.00,
+            "payment_date": datetime.utcnow().isoformat()
+        }
+        
+        # Update salon with payment info
+        supabase.table("salons").update(payment_data).eq("id", salon_id).execute()
+        
+        logger.info(f"✅ Payment processed successfully for salon: {business_name}")
+        logger.info(f"📅 Subscription active until: {payment_data['subscription_end_date']}")
+        
+        return {
+            "success": True,
+            "message": "Payment processed successfully! Your salon is now active.",
+            "data": {
+                "subscription_status": "active",
+                "subscription_start_date": payment_data["subscription_start_date"],
+                "subscription_end_date": payment_data["subscription_end_date"],
+                "payment_amount": payment_data["payment_amount"]
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Payment processing failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Payment processing failed: {str(e)}"
+        )
+
+
+# =====================================================
 # SALON MANAGEMENT
 # =====================================================
 
-@router.get("/salon", response_model=SalonResponse)
+@router.get("/salon")
 async def get_own_salon(current_user: TokenData = Depends(require_vendor)):
     """Get own salon details"""
     try:
+        vendor_id = current_user.user_id
+        
+        logger.info(f"🏪 Fetching salon for vendor: {vendor_id}")
+        
         response = supabase.table("salons").select("*").eq("vendor_id", vendor_id).single().execute()
         
         if not response.data:
@@ -159,6 +261,7 @@ async def get_own_salon(current_user: TokenData = Depends(require_vendor)):
                 detail="Salon not found"
             )
         
+        logger.info(f"✅ Salon found: {response.data.get('business_name')}")
         return response.data
     
     except HTTPException:
@@ -171,13 +274,15 @@ async def get_own_salon(current_user: TokenData = Depends(require_vendor)):
         )
 
 
-@router.put("/salon", response_model=SalonResponse)
+@router.put("/salon")
 async def update_own_salon(
     update: SalonUpdate,
     current_user: TokenData = Depends(require_vendor)
 ):
     """Update own salon details"""
     try:
+        vendor_id = current_user.user_id
+        
         # Verify salon exists and belongs to vendor
         check_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -216,6 +321,8 @@ async def get_own_services(
 ):
     """Get all services for own salon"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -251,6 +358,8 @@ async def create_service(
 ):
     """Create new service"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID and verify ownership
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -296,6 +405,8 @@ async def update_service(
 ):
     """Update service"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -342,6 +453,8 @@ async def delete_service(
 ):
     """Delete service"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -390,6 +503,8 @@ async def delete_service(
 async def get_own_staff(current_user: TokenData = Depends(require_vendor)):
     """Get all staff for own salon"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -423,6 +538,8 @@ async def create_staff(
 ):
     """Add new staff member"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID and verify ownership
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -468,6 +585,8 @@ async def update_staff(
 ):
     """Update staff member"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -514,6 +633,8 @@ async def delete_staff(
 ):
     """Delete staff member"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -569,6 +690,8 @@ async def get_salon_bookings(
 ):
     """Get all bookings for own salon"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon ID
         salon_response = supabase.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
         
@@ -616,6 +739,8 @@ async def update_booking_status(
 ):
     """Update booking status (confirm, complete, no-show)"""
     try:
+        vendor_id = current_user.user_id
+        
         # Validate status
         valid_statuses = ["confirmed", "completed", "no_show"]
         if new_status not in valid_statuses:
@@ -680,6 +805,8 @@ async def update_booking_status(
 async def get_vendor_dashboard(current_user: TokenData = Depends(require_vendor)):
     """Get vendor dashboard statistics"""
     try:
+        vendor_id = current_user.user_id
+        
         # Get salon
         salon_response = supabase.table("salons").select("*").eq("vendor_id", vendor_id).single().execute()
         
@@ -721,5 +848,52 @@ async def get_vendor_dashboard(current_user: TokenData = Depends(require_vendor)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch vendor dashboard"
+        )
+
+
+@router.get("/analytics")
+async def get_vendor_analytics(current_user: TokenData = Depends(require_vendor)):
+    """Get vendor analytics for dashboard"""
+    try:
+        vendor_id = current_user.user_id
+        
+        # Get salon
+        salon_response = supabase.table("salons").select("*").eq("vendor_id", vendor_id).single().execute()
+        
+        if not salon_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salon not found"
+            )
+        
+        salon_id = salon_response.data["id"]
+        salon = salon_response.data
+        
+        # Get counts
+        services_response = supabase.table("services").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
+        staff_response = supabase.table("salon_staff").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
+        bookings_response = supabase.table("bookings").select("id, total_amount", count="exact").eq("salon_id", salon_id).execute()
+        pending_response = supabase.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").execute()
+        
+        # Calculate total revenue from completed bookings
+        completed_bookings = supabase.table("bookings").select("total_amount").eq("salon_id", salon_id).eq("status", "completed").execute()
+        total_revenue = sum([b.get("total_amount", 0) for b in completed_bookings.data]) if completed_bookings.data else 0
+        
+        return {
+            "total_bookings": bookings_response.count if bookings_response else 0,
+            "total_revenue": total_revenue,
+            "active_services": services_response.count if services_response else 0,
+            "total_staff": staff_response.count if staff_response else 0,
+            "average_rating": salon.get("average_rating", 0.0),
+            "pending_bookings": pending_response.count if pending_response else 0
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch vendor analytics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch vendor analytics"
         )
 

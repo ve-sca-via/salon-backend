@@ -46,15 +46,8 @@ class EmailService:
         try:
             # Check if email sending is enabled
             if not settings.EMAIL_ENABLED:
-                logger.info("=" * 80)
-                logger.info("📧 EMAIL (DEV MODE - NOT SENT)")
-                logger.info("=" * 80)
-                logger.info(f"To: {to_email}")
-                logger.info(f"Subject: {subject}")
-                logger.info("-" * 80)
-                logger.info("HTML Body Preview (first 500 chars):")
-                logger.info(html_body[:500] + "..." if len(html_body) > 500 else html_body)
-                logger.info("=" * 80)
+                # Log minimal email info in dev mode
+                logger.info(f"📧 DEV MODE - Email not sent to {to_email}: {subject}")
                 return True
             
             # Create message
@@ -116,6 +109,18 @@ class EmailService:
             template = self.env.get_template('vendor_approval.html')
             
             registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
+            
+            # Log registration URL in dev mode for easy testing
+            if not settings.EMAIL_ENABLED:
+                logger.info("=" * 100)
+                logger.info(f"📧 VENDOR APPROVAL EMAIL (DEV MODE - NOT SENT)")
+                logger.info(f"To: {to_email}")
+                logger.info(f"Subject: 🎉 Congratulations! {salon_name} has been approved")
+                logger.info("-" * 100)
+                logger.info(f"🔗 REGISTRATION URL (Click or copy this):")
+                logger.info(f"   {registration_url}")
+                logger.info("=" * 100)
+                return True
             
             html_body = template.render(
                 owner_name=owner_name,
