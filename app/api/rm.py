@@ -88,7 +88,7 @@ async def create_vendor_request(
 # OWN REQUESTS VIEWING
 # =====================================================
 
-@router.get("/vendor-requests", response_model=List[VendorJoinRequestResponse])
+@router.get("/vendor-requests")
 async def get_own_vendor_requests(
     status_filter: Optional[str] = None,
     limit: int = 50,
@@ -101,6 +101,8 @@ async def get_own_vendor_requests(
     """
     try:
         rm_id = current_user.user_id
+        logger.info(f"Fetching vendor requests for RM: {rm_id}")
+        
         query = supabase.table("vendor_join_requests").select("*").eq("rm_id", rm_id)
         
         if status_filter:
@@ -108,13 +110,18 @@ async def get_own_vendor_requests(
         
         response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
         
+        logger.info(f"Found {len(response.data)} vendor requests")
+        if response.data:
+            logger.info(f"Sample request data: {response.data[0]}")
+        
         return response.data
     
     except Exception as e:
         logger.error(f"Failed to fetch vendor requests: {str(e)}")
+        logger.exception(e)  # This will log the full stack trace
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch vendor requests"
+            detail=f"Failed to fetch vendor requests: {str(e)}"
         )
 
 
@@ -208,6 +215,59 @@ async def get_own_profile(current_user: TokenData = Depends(require_rm)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch RM profile"
+        )
+
+
+@router.put("/profile")
+async def update_own_profile(
+    profile_data: dict,
+    current_user: TokenData = Depends(require_rm)
+):
+    """
+    Update own RM profile
+    - Can update: full_name, phone, address, city, state, pincode
+    - Cannot update: email (read-only)
+    """
+    try:
+        rm_id = current_user.user_id
+        
+        # Validate allowed fields
+        allowed_fields = {"full_name", "phone", "address", "city", "state", "pincode"}
+        update_data = {k: v for k, v in profile_data.items() if k in allowed_fields}
+        
+        if not update_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No valid fields to update"
+            )
+        
+        # Update profiles table (main user profile)
+        profile_response = supabase.table("profiles").update(update_data).eq("id", rm_id).execute()
+        
+        if not profile_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Profile not found"
+            )
+        
+        logger.info(f"RM {rm_id} updated profile: {list(update_data.keys())}")
+        
+        # Return updated profile with rm_profiles data
+        response = supabase.table("rm_profiles").select("*, profiles(*)").eq("id", rm_id).single().execute()
+        
+        return {
+            "success": True,
+            "message": "Profile updated successfully",
+            "data": response.data
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update RM profile: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile"
         )
 
 

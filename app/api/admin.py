@@ -174,13 +174,19 @@ async def approve_vendor_request(
             "reviewed_at": "now()"
         }).eq("id", request_id).execute()
         
-        # Create salon entry
+        # Extract data from documents JSON field
+        documents = request_data.get("documents", {})
+        if isinstance(documents, str):
+            import json
+            documents = json.loads(documents)
+        
+        # Create salon entry with ALL data from agent submission
         salon_data = {
             "rm_id": request_data["rm_id"],
             "join_request_id": request_id,
             "business_name": request_data["business_name"],
             "business_type": request_data["business_type"],
-            "description": None,
+            "description": documents.get("description"),
             "phone": request_data["owner_phone"],
             "email": request_data["owner_email"],
             "address": request_data["business_address"],
@@ -191,6 +197,10 @@ async def approve_vendor_request(
             "longitude": request_data.get("longitude") or 0.0,
             "gst_number": request_data.get("gst_number"),
             "business_license": request_data.get("business_license"),
+            "logo_url": documents.get("logo"),
+            "cover_image_url": documents.get("cover_image"),
+            "images": documents.get("images", []),
+            "business_hours": documents.get("business_hours", {}),
             "registration_fee_amount": registration_fee,
             "registration_fee_paid": False,
             "is_active": False,  # Activated after payment
@@ -199,6 +209,33 @@ async def approve_vendor_request(
         
         salon_response = supabase.table("salons").insert(salon_data).execute()
         salon_id = salon_response.data[0]["id"] if salon_response.data else None
+        
+        logger.info(f"✅ Salon created with agent data: logo={bool(documents.get('logo'))}, cover={bool(documents.get('cover_image'))}, images={len(documents.get('images', []))}, services={len(documents.get('services', []))}")
+        
+        # Insert services if provided by agent
+        services_data = documents.get("services", [])
+        if services_data and isinstance(services_data, list):
+            try:
+                services_to_insert = []
+                for service in services_data:
+                    service_entry = {
+                        "salon_id": salon_id,
+                        "name": service.get("name"),
+                        "description": service.get("description", ""),
+                        "price": float(service.get("price", 0)),
+                        "duration_minutes": int(service.get("duration_minutes", 30)),
+                        "category_id": None,  # Category IDs will be set later by vendor
+                        "is_active": True,
+                        "available_for_booking": True
+                    }
+                    services_to_insert.append(service_entry)
+                
+                if services_to_insert:
+                    supabase.table("services").insert(services_to_insert).execute()
+                    logger.info(f"✅ Inserted {len(services_to_insert)} services for salon {salon_id}")
+            except Exception as service_error:
+                logger.error(f"⚠️ Failed to insert services: {str(service_error)}")
+                # Continue even if services insertion fails
         
         logger.info(f"✅ Salon created: {salon_id} for business: {request_data['business_name']}")
         

@@ -93,9 +93,9 @@ async def login(credentials: LoginRequest):
         user_data = {
             "id": user.id,
             "email": user.email,
-            "full_name": html.escape(profile.get("full_name", "")),
+            "full_name": html.escape(profile.get("full_name") or ""),
             "role": profile.get("role", "customer"),
-            "phone": html.escape(profile.get("phone", "")),
+            "phone": html.escape(profile.get("phone") or ""),
             "is_active": profile.get("is_active", True)
         }
 
@@ -111,8 +111,10 @@ async def login(credentials: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         error_message = str(e).lower()
         logger.error(f"Login error: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         
         # Check if it's an authentication error from Supabase
         if "invalid login credentials" in error_message or "invalid credentials" in error_message:

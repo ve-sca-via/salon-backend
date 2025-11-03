@@ -211,7 +211,10 @@ async def process_payment(current_user: TokenData = Depends(require_vendor)):
             "subscription_start_date": datetime.utcnow().isoformat(),
             "subscription_end_date": (datetime.utcnow() + timedelta(days=365)).isoformat(),  # 1 year
             "payment_amount": 5000.00,
-            "payment_date": datetime.utcnow().isoformat()
+            "payment_date": datetime.utcnow().isoformat(),
+            "registration_fee_paid": True,
+            "registration_paid_at": datetime.utcnow().isoformat(),
+            "is_active": True  # Activate salon after successful payment
         }
         
         # Update salon with payment info
@@ -439,7 +442,9 @@ async def update_service(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         logger.error(f"Failed to update service: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update service"
@@ -668,7 +673,9 @@ async def delete_staff(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         logger.error(f"Failed to delete staff: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete staff"
