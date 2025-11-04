@@ -17,6 +17,7 @@ class UserRole(str, Enum):
     CUSTOMER = "customer"
 
 class RequestStatus(str, Enum):
+    DRAFT = "draft"
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"

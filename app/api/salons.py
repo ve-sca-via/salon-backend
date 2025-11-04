@@ -13,16 +13,49 @@ from typing import Optional, List
 from decimal import Decimal
 from supabase import create_client, Client
 from app.core.config import settings
+from app.services.supabase_service import SupabaseService
 
-router = APIRouter(prefix="/api/salons", tags=["salons"])
+router = APIRouter(prefix="/salons", tags=["salons"])
 
-# Initialize Supabase client
+# Initialize Supabase client and service
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+supabase_service = SupabaseService()
 
 
 # ========================================
 # GET ENDPOINTS
 # ========================================
+
+@router.get("/public")
+async def get_public_salons(
+    city: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get all public salons (active, verified, and registration fee paid)
+    
+    This endpoint returns only salons that are:
+    - is_active = true
+    - is_verified = true  
+    - registration_fee_paid = true
+    """
+    try:
+        # Get paid and approved salons
+        salons = supabase_service.get_public_salons(limit, offset)
+        
+        # Apply city filter if provided
+        if city:
+            salons = [s for s in salons if s.get('city', '').lower() == city.lower()]
+        
+        return {
+            "salons": salons,
+            "count": len(salons),
+            "offset": offset,
+            "limit": limit
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/")
 async def get_salons(
@@ -62,20 +95,21 @@ async def get_salons(
 
 
 @router.get("/{salon_id}")
-async def get_salon(salon_id: int):
+async def get_salon(salon_id: str):
     """
-    Get single salon by ID
+    Get single salon by ID (UUID)
     
-    RLS ensures:
-    - Approved salons visible to all
-    - Owners can see their own salons
-    - Admins can see all
+    Returns salon details if active, verified, and payment completed
     """
     try:
         salon = supabase_service.get_salon(salon_id)
         
         if not salon:
             raise HTTPException(status_code=404, detail="Salon not found")
+        
+        # Check if salon is publicly visible
+        if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
+            raise HTTPException(status_code=404, detail="Salon not available")
         
         return salon
     except HTTPException:
@@ -85,15 +119,22 @@ async def get_salon(salon_id: int):
 
 
 @router.get("/{salon_id}/services")
-async def get_salon_services(salon_id: int):
+async def get_salon_services(salon_id: str):
     """
     Get all services for a salon
     
-    RLS ensures only approved salon's services are visible
+    Returns services only for active, verified, paid salons
     """
     try:
+        # First verify salon is public
+        salon = supabase_service.get_salon(salon_id)
+        if not salon or not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
+            raise HTTPException(status_code=404, detail="Salon not found")
+        
         services = supabase_service.get_salon_services(salon_id)
         return {"services": services, "count": len(services)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

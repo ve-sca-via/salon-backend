@@ -18,19 +18,34 @@ class SupabaseService:
     
     # Direct query methods - just delegate to client
     def get_approved_salons(self, limit: int = 50, offset: int = 0):
-        response = self.client.table("salons").select("*").eq("status", "approved").range(offset, offset + limit - 1).execute()
+        """Get approved salons that are active"""
+        response = self.client.table("salons").select("*").eq("is_active", True).eq("is_verified", True).range(offset, offset + limit - 1).execute()
+        return response.data
+    
+    def get_public_salons(self, limit: int = 50, offset: int = 0):
+        """Get salons that are active, verified, and have paid registration fee"""
+        response = (
+            self.client.table("salons")
+            .select("*")
+            .eq("is_active", True)
+            .eq("is_verified", True)
+            .eq("registration_fee_paid", True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return response.data
     
     def get_pending_salons(self, limit: int = 50):
         response = self.client.table("salons").select("*").eq("status", "pending").limit(limit).execute()
         return response.data
     
-    def get_salon(self, salon_id: int):
-        response = self.client.table("salons").select("*").eq("id", salon_id).single().execute()
+    def get_salon(self, salon_id):
+        """Get single salon by ID (accepts both int and UUID string)"""
+        response = self.client.table("salons").select("*").eq("id", str(salon_id)).single().execute()
         return response.data
     
     def get_salon_services(self, salon_id: int):
-        response = self.client.table("salon_services").select("*").eq("salon_id", salon_id).execute()
+        response = self.client.table("services").select("*, service_categories(id, name, icon_url)").eq("salon_id", salon_id).execute()
         return response.data
     
     def create_salon(self, salon_data: dict):
@@ -47,6 +62,7 @@ class SupabaseService:
         return len(response.data) > 0
     
     def get_nearby_salons(self, lat: float, lon: float, radius: float, limit: int):
+        """Get nearby salons that are active, verified, and have paid registration fee"""
         # Use PostGIS RPC function if available, otherwise basic query
         try:
             response = self.client.rpc('get_nearby_salons', {
@@ -55,21 +71,31 @@ class SupabaseService:
                 'radius_km': radius,
                 'max_results': limit
             }).execute()
-            return response.data
+            # Filter by payment status
+            return [s for s in response.data if s.get('is_active') and s.get('is_verified') and s.get('registration_fee_paid')]
         except:
-            # Fallback to basic query
-            response = self.client.table("salons").select("*").eq("status", "approved").limit(limit).execute()
+            # Fallback to basic query with payment filter
+            response = (
+                self.client.table("salons")
+                .select("*")
+                .eq("is_active", True)
+                .eq("is_verified", True)
+                .eq("registration_fee_paid", True)
+                .limit(limit)
+                .execute()
+            )
             return response.data
     
     def search_salons(self, query: str = None, city: str = None, min_rating: float = None, limit: int = 50):
-        q = self.client.table("salons").select("*").eq("status", "approved")
+        """Search salons that are active, verified, and paid"""
+        q = self.client.table("salons").select("*").eq("is_active", True).eq("is_verified", True).eq("registration_fee_paid", True)
         
         if query:
-            q = q.or_(f"name.ilike.%{query}%,description.ilike.%{query}%")
+            q = q.or_(f"business_name.ilike.%{query}%,description.ilike.%{query}%")
         if city:
             q = q.eq("city", city)
         if min_rating:
-            q = q.gte("rating", min_rating)
+            q = q.gte("average_rating", min_rating)
         
         response = q.limit(limit).execute()
         return response.data

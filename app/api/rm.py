@@ -31,11 +31,13 @@ supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVIC
 @router.post("/vendor-requests", response_model=VendorJoinRequestResponse)
 async def create_vendor_request(
     request: VendorJoinRequestCreate,
+    is_draft: bool = False,
     current_user: TokenData = Depends(require_rm)
 ):
     """
     Create new vendor join request
     - RM submits salon details to admin for approval
+    - Can be saved as draft (is_draft=True) or submitted for approval (is_draft=False)
     """
     try:
         rm_id = current_user.user_id
@@ -58,19 +60,21 @@ async def create_vendor_request(
         # Create vendor request
         request_data = request.model_dump()
         request_data["rm_id"] = rm_id
-        request_data["status"] = "pending"
+        request_data["status"] = "draft" if is_draft else "pending"
         
         response = supabase.table("vendor_join_requests").insert(request_data).execute()
         
-        # Update RM total salons added count - get current count and increment
-        rm_profile = supabase.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
-        current_count = rm_profile.data.get("total_salons_added", 0) if rm_profile.data else 0
+        # Only update RM total salons added count if not a draft
+        if not is_draft:
+            rm_profile = supabase.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
+            current_count = rm_profile.data.get("total_salons_added", 0) if rm_profile.data else 0
+            
+            supabase.table("rm_profiles").update({
+                "total_salons_added": current_count + 1
+            }).eq("id", rm_id).execute()
         
-        supabase.table("rm_profiles").update({
-            "total_salons_added": current_count + 1
-        }).eq("id", rm_id).execute()
-        
-        logger.info(f"RM {rm_id} submitted vendor request for {request.business_name}")
+        status_label = "draft" if is_draft else "for approval"
+        logger.info(f"RM {rm_id} submitted vendor request {status_label} for {request.business_name}")
         
         return response.data[0] if response.data else None
     
@@ -81,6 +85,158 @@ async def create_vendor_request(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create vendor request"
+        )
+
+
+@router.put("/vendor-requests/{request_id}")
+async def update_vendor_request(
+    request_id: str,
+    request: VendorJoinRequestCreate,
+    submit_for_approval: bool = False,
+    current_user: TokenData = Depends(require_rm)
+):
+    """
+    Update a draft vendor request or submit it for approval
+    - Can only update requests with 'draft' status
+    - Set submit_for_approval=True to change status from 'draft' to 'pending'
+    """
+    try:
+        rm_id = current_user.user_id
+        
+        # Check if request exists and belongs to this RM
+        existing = supabase.table("vendor_join_requests").select("*").eq(
+            "id", request_id
+        ).eq("rm_id", rm_id).single().execute()
+        
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Vendor request not found or access denied"
+            )
+        
+        # Can only update drafts
+        if existing.data.get("status") != "draft":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Can only update draft requests"
+            )
+        
+        # Update the request
+        request_data = request.model_dump()
+        request_data["status"] = "pending" if submit_for_approval else "draft"
+        
+        response = supabase.table("vendor_join_requests").update(
+            request_data
+        ).eq("id", request_id).execute()
+        
+        # Update RM total salons count if submitting for approval
+        if submit_for_approval:
+            rm_profile = supabase.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
+            current_count = rm_profile.data.get("total_salons_added", 0) if rm_profile.data else 0
+            
+            supabase.table("rm_profiles").update({
+                "total_salons_added": current_count + 1
+            }).eq("id", rm_id).execute()
+        
+        logger.info(f"RM {rm_id} updated vendor request {request_id}")
+        
+        return response.data[0] if response.data else None
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update vendor request: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update vendor request"
+        )
+
+
+@router.delete("/vendor-requests/{request_id}")
+async def delete_vendor_request(
+    request_id: str,
+    current_user: TokenData = Depends(require_rm)
+):
+    """
+    Delete a draft vendor request
+    - Only drafts can be deleted
+    - RM can only delete their own requests
+    """
+    try:
+        rm_id = current_user.user_id
+        logger.info(f"RM {rm_id} attempting to delete request {request_id}")
+        
+        # First, fetch the request to verify ownership and status
+        existing_response = supabase.table("vendor_join_requests").select("*").eq(
+            "id", request_id
+        ).eq("rm_id", rm_id).single().execute()
+        
+        if not existing_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Vendor request not found or access denied"
+            )
+        
+        existing_request = existing_response.data
+        
+        # Only allow deletion of drafts
+        if existing_request.get("status") != "draft":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only draft requests can be deleted"
+            )
+        
+        # Delete associated images from storage if they exist
+        documents = existing_request.get("documents", {})
+        images_to_delete = []
+        
+        # Cover image
+        if documents.get("cover_image"):
+            images_to_delete.append(documents["cover_image"])
+        
+        # Gallery images
+        if documents.get("images"):
+            images_to_delete.extend(documents["images"])
+        
+        # License and registration images
+        if documents.get("business_license"):
+            images_to_delete.append(documents["business_license"])
+        if documents.get("business_registration"):
+            images_to_delete.append(documents["business_registration"])
+        
+        # Delete images from storage
+        if images_to_delete:
+            try:
+                for image_path in images_to_delete:
+                    # Extract the file path from the full URL
+                    # Format: https://xxx.supabase.co/storage/v1/object/public/salon-images/path
+                    if "salon-images/" in image_path:
+                        file_path = image_path.split("salon-images/")[-1]
+                        supabase.storage.from_("salon-images").remove([file_path])
+                logger.info(f"Deleted {len(images_to_delete)} images from storage")
+            except Exception as img_error:
+                logger.warning(f"Failed to delete some images: {str(img_error)}")
+                # Continue with deletion even if image cleanup fails
+        
+        # Delete the request
+        delete_response = supabase.table("vendor_join_requests").delete().eq(
+            "id", request_id
+        ).execute()
+        
+        logger.info(f"Successfully deleted draft request {request_id}")
+        
+        return {
+            "success": True,
+            "message": "Draft deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete vendor request: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete vendor request"
         )
 
 

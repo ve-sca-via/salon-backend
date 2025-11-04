@@ -318,6 +318,25 @@ async def update_own_salon(
 # SERVICE MANAGEMENT
 # =====================================================
 
+@router.get("/service-categories")
+async def get_service_categories(current_user: TokenData = Depends(require_vendor)):
+    """Get all active service categories"""
+    try:
+        response = supabase.table("service_categories").select("*").eq("is_active", True).order("display_order").execute()
+        
+        return {
+            "success": True,
+            "data": response.data
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch service categories: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch service categories"
+        )
+
+
 @router.get("/services", response_model=List[ServiceResponse])
 async def get_own_services(
     current_user: TokenData = Depends(require_vendor)
