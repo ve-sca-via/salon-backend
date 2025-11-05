@@ -28,6 +28,110 @@ supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVIC
 
 
 # =====================================================
+# DASHBOARD STATISTICS
+# =====================================================
+
+@router.get("/dashboard/stats")
+async def get_dashboard_stats(
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Get admin dashboard statistics
+    - Admin only
+    - Returns comprehensive system statistics
+    """
+    try:
+        # Count pending vendor requests
+        pending_requests_response = supabase.table("vendor_join_requests").select(
+            "id", count="exact"
+        ).eq("status", "pending").execute()
+        pending_requests = pending_requests_response.count if pending_requests_response.count is not None else 0
+        
+        # Count total salons
+        total_salons_response = supabase.table("salons").select(
+            "id", count="exact"
+        ).execute()
+        total_salons = total_salons_response.count if total_salons_response.count is not None else 0
+        
+        # Count active salons (is_active = true)
+        active_salons_response = supabase.table("salons").select(
+            "id", count="exact"
+        ).eq("is_active", True).execute()
+        active_salons = active_salons_response.count if active_salons_response.count is not None else 0
+        
+        # Count salons with pending payment (registration_fee_paid = false)
+        pending_payment_response = supabase.table("salons").select(
+            "id", count="exact"
+        ).eq("registration_fee_paid", False).execute()
+        pending_payment_salons = pending_payment_response.count if pending_payment_response.count is not None else 0
+        
+        # Count total RMs
+        total_rms_response = supabase.table("rm_profiles").select(
+            "id", count="exact"
+        ).execute()
+        total_rms = total_rms_response.count if total_rms_response.count is not None else 0
+        
+        # Count total bookings
+        total_bookings_response = supabase.table("bookings").select(
+            "id", count="exact"
+        ).execute()
+        total_bookings = total_bookings_response.count if total_bookings_response.count is not None else 0
+        
+        # Count today's bookings
+        from datetime import date
+        today = date.today().isoformat()
+        today_bookings_response = supabase.table("bookings").select(
+            "id", count="exact"
+        ).gte("booking_date", today).lte("booking_date", today).execute()
+        today_bookings = today_bookings_response.count if today_bookings_response.count is not None else 0
+        
+        # Calculate total revenue (sum of all completed payments)
+        total_revenue = 0
+        this_month_revenue = 0
+        try:
+            from datetime import datetime
+            # Get all payments with amount
+            payments_response = supabase.table("payments").select("amount, created_at").eq("status", "completed").execute()
+            
+            if payments_response.data:
+                current_month = datetime.now().month
+                current_year = datetime.now().year
+                
+                for payment in payments_response.data:
+                    amount = float(payment.get("amount", 0))
+                    total_revenue += amount
+                    
+                    # Check if payment is from current month
+                    created_at = payment.get("created_at")
+                    if created_at:
+                        payment_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        if payment_date.month == current_month and payment_date.year == current_year:
+                            this_month_revenue += amount
+        except Exception as rev_error:
+            logger.error(f"Failed to calculate revenue: {str(rev_error)}")
+            # Continue with 0 values
+        
+        return {
+            "pending_requests": pending_requests,
+            "total_salons": total_salons,
+            "active_salons": active_salons,
+            "pending_payment_salons": pending_payment_salons,
+            "total_rms": total_rms,
+            "total_bookings": total_bookings,
+            "today_bookings": today_bookings,
+            "total_revenue": total_revenue,
+            "this_month_revenue": this_month_revenue
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch dashboard stats: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch dashboard stats: {str(e)}"
+        )
+
+
+# =====================================================
 # VENDOR REQUEST MANAGEMENT
 # =====================================================
 

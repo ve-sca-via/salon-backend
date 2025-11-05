@@ -24,7 +24,11 @@ if not all([settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, settings.SUPABASE
     raise RuntimeError("Missing Supabase environment variables")
 
 supabase_auth: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)
-supabase_service: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+# Service client factory - creates fresh client to avoid auth state pollution
+def get_service_client() -> Client:
+    """Create a fresh Supabase service client with service role key"""
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 # --- Auth Routes ---
@@ -50,8 +54,9 @@ async def login(credentials: LoginRequest):
                 detail="Invalid credentials"
             )
 
-        # Fetch profile via service role
-        profile_response = supabase_service.table("profiles").select(
+        # Fetch profile via service role (use fresh client to avoid auth state pollution)
+        service_client = get_service_client()
+        profile_response = service_client.table("profiles").select(
             "*"
         ).eq("id", user.id).single().execute()
 
@@ -73,7 +78,7 @@ async def login(credentials: LoginRequest):
         # Update last_login_at timestamp
         try:
             from datetime import datetime
-            supabase_service.table("profiles").update({
+            service_client.table("profiles").update({
                 "last_login_at": datetime.utcnow().isoformat()
             }).eq("id", user.id).execute()
         except Exception as e:
@@ -152,7 +157,8 @@ async def signup(request: SignupRequest):
 
         # First, check if user already exists
         try:
-            existing = supabase_service.table("profiles").select("id").eq("email", request.email).execute()
+            service_client = get_service_client()
+            existing = service_client.table("profiles").select("id").eq("email", request.email).execute()
             if existing.data:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -201,7 +207,8 @@ async def signup(request: SignupRequest):
 
         try:
             # Try insert first
-            profile_response = supabase_service.table("profiles").insert(profile_data).execute()
+            service_client = get_service_client()
+            profile_response = service_client.table("profiles").insert(profile_data).execute()
         except Exception as insert_error:
             error_str = str(insert_error)
             
@@ -216,7 +223,7 @@ async def signup(request: SignupRequest):
             logger.warning(f"Profile insert failed, trying upsert: {insert_error}")
             # If insert fails (maybe trigger created it), try upsert
             try:
-                profile_response = supabase_service.table("profiles").upsert(profile_data).execute()
+                profile_response = service_client.table("profiles").upsert(profile_data).execute()
             except Exception as upsert_error:
                 logger.error(f"Profile upsert also failed: {upsert_error}")
                 raise HTTPException(
@@ -285,7 +292,8 @@ async def refresh_access_token(request: RefreshTokenRequest):
         token_data = verify_refresh_token(request.refresh_token)
         
         # Fetch current user profile to ensure user still exists and is active
-        profile_response = supabase_service.table("profiles").select(
+        service_client = get_service_client()
+        profile_response = service_client.table("profiles").select(
             "*"
         ).eq("id", token_data["sub"]).single().execute()
         
@@ -341,7 +349,8 @@ async def get_current_user_profile(current_user: TokenData = Depends(get_current
     - Returns user data
     """
     try:
-        response = supabase_service.table("profiles").select(
+        service_client = get_service_client()
+        response = service_client.table("profiles").select(
             "*"
         ).eq("id", current_user.user_id).single().execute()
 

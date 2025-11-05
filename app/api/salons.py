@@ -358,3 +358,29 @@ async def upload_salon_image(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ========================================
+# SYSTEM CONFIG
+# ========================================
+
+@router.get("/config/booking-fee-percentage")
+async def get_booking_fee_percentage():
+    """
+    Get the platform commission percentage used for calculating booking fees
+    
+    This is a public endpoint that returns the booking fee percentage
+    from system_config table
+    """
+    try:
+        response = supabase.table("system_config").select("config_value").eq(
+            "config_key", "platform_commission_percentage"
+        ).eq("is_active", True).single().execute()
+        
+        if not response.data:
+            # Default to 10% if not found
+            return {"booking_fee_percentage": 10.0}
+        
+        return {"booking_fee_percentage": float(response.data["config_value"])}
+    except Exception as e:
+        # Return default value on error
+        return {"booking_fee_percentage": 10.0}
+

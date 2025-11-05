@@ -381,15 +381,17 @@ class StaffAvailabilityResponse(StaffAvailabilityBase, TimestampMixin):
 
 class BookingCreate(BaseModel):
     """Schema for creating a new booking - matches current API"""
-    user_id: str
-    salon_id: int
-    salon_name: str
+    salon_id: str  # UUID string
     booking_date: str
     booking_time: str
-    services: List[Dict]
-    total_amount: float
-    discount_applied: float = 0
-    final_amount: float
+    services: List[Dict]  # Array of service objects
+    total_amount: float  # Total service amount before fees
+    booking_fee: Optional[float] = 0  # Booking fee (percentage of total)
+    gst_amount: Optional[float] = 0  # GST on booking fee
+    amount_paid: Optional[float] = 0  # Amount paid online
+    remaining_amount: Optional[float] = 0  # Amount to pay at salon
+    payment_status: Optional[str] = 'pending'  # Payment status
+    payment_method: Optional[str] = None  # Payment method
     notes: Optional[str] = None
 
 class BookingUpdate(BaseModel):

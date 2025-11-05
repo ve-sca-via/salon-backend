@@ -285,10 +285,25 @@ async def get_my_bookings(
             .order("created_at", desc=True)\
             .execute()
         
+        # Parse special_requests JSON and merge with booking data
+        bookings = []
+        if response.data:
+            import json
+            for booking in response.data:
+                # Parse special_requests to get services and other metadata
+                if booking.get("special_requests"):
+                    try:
+                        metadata = json.loads(booking["special_requests"])
+                        # Merge metadata into booking
+                        booking.update(metadata)
+                    except:
+                        pass
+                bookings.append(booking)
+        
         return {
             "success": True,
-            "bookings": response.data if response.data else [],
-            "count": len(response.data) if response.data else 0
+            "bookings": bookings,
+            "count": len(bookings)
         }
         
     except Exception as e:

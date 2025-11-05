@@ -204,60 +204,147 @@ async def create_booking(
     - Admins can create bookings for any user
     """
     try:
-        # Verify user is creating booking for themselves (unless admin)
-        if current_user.role != "admin" and booking.user_id != current_user.user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Cannot create bookings for other users"
-            )
+        # Get customer details first
+        customer_response = supabase.table("profiles")\
+            .select("email, full_name, phone")\
+            .eq("id", current_user.user_id)\
+            .single()\
+            .execute()
         
-        # Convert Pydantic model to dict
-        booking_data = booking.model_dump()
+        if not customer_response.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+        
+        customer_data = customer_response.data
+        customer_name = customer_data.get("full_name", "Customer")
+        customer_email = customer_data.get("email", "")
+        customer_phone = customer_data.get("phone", "")
+        
+        # Get salon details to populate salon_name
+        salon_response = supabase.table("salons")\
+            .select("id, business_name")\
+            .eq("id", booking.salon_id)\
+            .single()\
+            .execute()
+        
+        if not salon_response.data:
+            raise HTTPException(status_code=404, detail="Salon not found")
+        
+        salon_name = salon_response.data.get("business_name", "Unknown Salon")
+        
+        # Calculate final amount and total duration
+        final_amount = booking.amount_paid + booking.remaining_amount if booking.amount_paid and booking.remaining_amount else booking.total_amount
+        total_duration = sum(service.get("duration", 0) for service in booking.services)
+        
+        # Parse booking time - handle multiple time slots
+        # Frontend sends: "2:45 PM, 4:00 PM" but database accepts single time
+        # We'll use the first time slot and store all times in metadata
+        all_booking_times = booking.booking_time
+        first_time_slot = booking.booking_time.split(",")[0].strip() if "," in booking.booking_time else booking.booking_time
+        
+        # Convert 12-hour format to 24-hour format for database
+        try:
+            from datetime import datetime as dt
+            parsed_time = dt.strptime(first_time_slot, "%I:%M %p")
+            db_time = parsed_time.strftime("%H:%M:%S")
+        except:
+            # Fallback - assume it's already in correct format
+            db_time = first_time_slot
+        
+        # Generate booking number
+        import random
+        import string
+        booking_number = f"BK{datetime.now().strftime('%Y%m%d')}{random.randint(1000, 9999)}"
+        
+        # Prepare booking data for database
+        import json
+        
+        booking_metadata = {
+            "services": booking.services,
+            "booking_fee": booking.booking_fee,
+            "gst_amount": booking.gst_amount,
+            "amount_paid": booking.amount_paid,
+            "remaining_amount": booking.remaining_amount,
+            "payment_status": booking.payment_status,
+            "payment_method": booking.payment_method,
+            "total_amount": booking.total_amount,
+            "final_amount": final_amount,
+            "salon_name": salon_name,
+            "all_booking_times": all_booking_times,  # Store all time slots
+        }
+        
+        # Add original notes if provided
+        if booking.notes:
+            booking_metadata["original_notes"] = booking.notes
+        
+        # Get first service for the basic schema requirement
+        first_service_id = None
+        service_price = booking.total_amount
+        if booking.services and len(booking.services) > 0:
+            first_service_id = booking.services[0].get("service_id")
+        
+        # Prepare data for database schema (matches schema.sql)
+        db_booking_data = {
+            "booking_number": booking_number,
+            "customer_id": current_user.user_id,
+            "salon_id": booking.salon_id,
+            "service_id": first_service_id,  # Use first service for schema compatibility
+            "booking_date": booking.booking_date,
+            "booking_time": db_time,  # Use first time slot in 24-hour format
+            "duration_minutes": total_duration if total_duration > 0 else 60,  # Default to 60 if not specified
+            "status": "confirmed" if booking.payment_status == "paid" else "pending",
+            "service_price": service_price,
+            "convenience_fee": booking.booking_fee if booking.booking_fee else 0,
+            "total_amount": final_amount,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "customer_email": customer_email,
+            "special_requests": json.dumps(booking_metadata),  # Store all extra data as JSON
+        }
         
         # Create booking
-        response = supabase.table("bookings").insert(booking_data).execute()
+        response = supabase.table("bookings").insert(db_booking_data).execute()
         created_booking = response.data[0] if response.data else None
         
         if not created_booking:
             raise HTTPException(status_code=500, detail="Failed to create booking")
         
-        # Get customer details for email
-        customer_response = supabase.table("profiles")\
-            .select("email, full_name")\
-            .eq("id", booking.user_id)\
-            .single()\
-            .execute()
+        # Enhance response with metadata
+        if created_booking.get("special_requests"):
+            try:
+                metadata = json.loads(created_booking["special_requests"])
+                created_booking.update(metadata)
+            except:
+                pass
         
-        if customer_response.data:
-            customer_email = customer_response.data.get("email")
-            customer_name = customer_response.data.get("full_name", "Customer")
-            
+        # Send booking confirmation email
+        if customer_email:
             # Get primary service name (first service in list)
-            service_name = booking.services[0].get("name", "Service") if booking.services else "Service"
+            service_name = booking.services[0].get("service_name", "Service") if booking.services else "Service"
             
-            # Get staff name if available
-            staff_name = "Our Team"
-            if booking.services and len(booking.services) > 0:
-                staff_name = booking.services[0].get("staff_name", "Our Team")
-            
-            # Send booking confirmation email
-            email_sent = await email_service.send_booking_confirmation_email(
-                to_email=customer_email,
-                customer_name=customer_name,
-                salon_name=booking.salon_name,
-                service_name=service_name,
-                booking_date=booking.booking_date,
-                booking_time=booking.booking_time,
-                staff_name=staff_name,
-                total_amount=booking.final_amount,
-                booking_id=created_booking.get("id", "N/A")
-            )
-            
-            if not email_sent:
-                logger.warning(f"Failed to send booking confirmation email to {customer_email}")
+            try:
+                email_sent = await email_service.send_booking_confirmation_email(
+                    to_email=customer_email,
+                    customer_name=customer_name,
+                    salon_name=salon_name,
+                    service_name=service_name,
+                    booking_date=booking.booking_date,
+                    booking_time=booking.booking_time,
+                    staff_name="Our Team",
+                    total_amount=final_amount,
+                    booking_id=created_booking.get("id", "N/A")
+                )
+                
+                if not email_sent:
+                    logger.warning(f"Failed to send booking confirmation email to {customer_email}")
+            except Exception as e:
+                logger.warning(f"Error sending booking confirmation email: {str(e)}")
         
         return created_booking
     except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating booking: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
