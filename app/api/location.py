@@ -1,15 +1,17 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
-from supabase import create_client, Client
+
 from app.core.config import settings
+from app.core.database import get_db
 from app.services.geocoding import geocoding_service
+
+# Get database client using factory function
+db = get_db()
 
 
 router = APIRouter(prefix="/api/location", tags=["location"])
 
-# Initialize Supabase client
-supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 class GeocodeRequest(BaseModel):
@@ -77,7 +79,7 @@ async def get_salons_nearby(
     """
     try:
         # Query approved salons within radius using PostGIS
-        response = supabase.rpc(
+        response = db.rpc(
             'get_nearby_salons',
             {
                 'user_lat': lat,

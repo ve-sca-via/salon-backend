@@ -13,6 +13,103 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# =====================================================
+# MOCK EMAIL SERVICE (FOR TESTING)
+# =====================================================
+
+class MockEmailService:
+    """
+    Mock email service for testing - doesn't send real emails.
+    Instead, stores them in memory for verification.
+    """
+    
+    def __init__(self):
+        self.sent_emails = []  # Store all "sent" emails here
+        logger.info("🧪 Using MockEmailService (Test Mode) - No real emails will be sent")
+        
+    def _send_email(self, to_email: str, subject: str, html_body: str, text_body: str = None) -> bool:
+        """Mock _send_email - just stores the email data"""
+        email_data = {
+            "to_email": to_email,
+            "subject": subject,
+            "html_body": html_body,
+            "text_body": text_body
+        }
+        self.sent_emails.append(email_data)
+        logger.info(f"🧪 MOCK: Email stored (not sent) to {to_email}: {subject}")
+        return True
+    
+    def send_vendor_approval_email(self, to_email: str, owner_name: str, salon_name: str, 
+                                   registration_token: str, registration_fee: float) -> bool:
+        """Mock vendor approval email"""
+        return self._send_email(
+            to_email=to_email,
+            subject=f"🎉 Congratulations! {salon_name} has been approved",
+            html_body=f"Mock approval email for {owner_name}",
+            text_body=None
+        )
+    
+    def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
+                                    rejection_reason: str, rm_name: str) -> bool:
+        """Mock vendor rejection email"""
+        return self._send_email(
+            to_email=to_email,
+            subject=f"Regarding {salon_name} Registration",
+            html_body=f"Mock rejection email for {owner_name}",
+            text_body=None
+        )
+    
+    async def send_booking_confirmation_email(self, to_email: str, customer_name: str, 
+                                             salon_name: str, service_name: str, booking_date: str,
+                                             booking_time: str, staff_name: str, total_amount: float,
+                                             booking_id: str) -> bool:
+        """Mock booking confirmation email"""
+        return self._send_email(
+            to_email=to_email,
+            subject=f"Booking Confirmed at {salon_name}",
+            html_body=f"Mock confirmation for {customer_name}",
+            text_body=None
+        )
+    
+    async def send_booking_cancellation_email(self, to_email: str, customer_name: str,
+                                             salon_name: str, service_name: str, booking_date: str,
+                                             booking_time: str, refund_amount: float,
+                                             cancellation_reason: str = None) -> bool:
+        """Mock booking cancellation email"""
+        return self._send_email(
+            to_email=to_email,
+            subject=f"Booking Cancelled - {salon_name}",
+            html_body=f"Mock cancellation for {customer_name}",
+            text_body=None
+        )
+
+
+# =====================================================
+# FACTORY FUNCTION (Like get_db())
+# =====================================================
+
+def get_email_service():
+    """
+    Factory function to get email service based on environment.
+    
+    Returns MockEmailService in test mode, real EmailService otherwise.
+    This allows testing without sending real emails!
+    """
+    # Check if we're in test mode
+    if settings.ENVIRONMENT == "test":
+        logger.info("🧪 Email Service: Using MockEmailService (test mode)")
+        return MockEmailService()
+    
+    # Check if email is disabled (dev mode)
+    if not settings.EMAIL_ENABLED:
+        logger.info("📧 Email Service: Real service but emails disabled (dev mode)")
+        return EmailService()
+    
+    # Production mode - real emails
+    logger.info("📧 Email Service: Using real EmailService (production mode)")
+    return EmailService()
+
+
 class EmailService:
     """Email service for sending templated emails"""
     
@@ -73,7 +170,10 @@ class EmailService:
                 if settings.SMTP_TLS:
                     server.starttls()
             
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            # Only login if credentials are provided (Mailpit doesn't need auth)
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            
             server.send_message(msg)
             server.quit()
             
@@ -375,5 +475,11 @@ class EmailService:
             return False
 
 
-# Create singleton instance
-email_service = EmailService()
+# =====================================================
+# GLOBAL INSTANCE (Uses Factory Pattern)
+# =====================================================
+
+# Get email service using factory function
+# In test mode (ENVIRONMENT=test), this will be MockEmailService
+# In production, this will be real EmailService
+email_service = get_email_service()

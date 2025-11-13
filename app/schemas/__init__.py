@@ -200,6 +200,14 @@ class VendorJoinRequestUpdate(BaseModel):
     status: RequestStatus
     admin_notes: Optional[str] = None
 
+class VendorApprovalRequest(BaseModel):
+    """Request body for approving vendor"""
+    admin_notes: Optional[str] = Field(None, max_length=500, description="Optional notes from admin")
+
+class VendorRejectionRequest(BaseModel):
+    """Request body for rejecting vendor"""
+    admin_notes: str = Field(..., min_length=1, max_length=500, description="Rejection reason (required)")
+
 class VendorJoinRequestResponse(VendorJoinRequestBase, TimestampMixin):
     id: str
     rm_id: str
@@ -307,7 +315,8 @@ class ServiceBase(BaseModel):
     image_url: Optional[str] = None
 
 class ServiceCreate(ServiceBase):
-    salon_id: str
+    # salon_id is auto-assigned from authenticated vendor, not required from client
+    salon_id: Optional[str] = None
 
 class ServiceUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)

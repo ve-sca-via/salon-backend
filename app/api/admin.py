@@ -4,12 +4,17 @@ Handles vendor request approvals, system configuration, and RM management
 """
 from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List, Optional
-from supabase import create_client, Client
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.auth import require_admin, TokenData, create_registration_token
+
+# Get database client using factory function
+db = get_db()
 from app.schemas import (
     VendorJoinRequestResponse,
     VendorJoinRequestUpdate,
+    VendorApprovalRequest,
+    VendorRejectionRequest,
     SystemConfigResponse,
     SystemConfigUpdate,
     RMProfileResponse,
@@ -17,14 +22,19 @@ from app.schemas import (
     SuccessResponse
 )
 from app.services.email import email_service
+from app.services.geocoding import geocoding_service
+# Import service layer
+from app.services.user_service import UserService, CreateUserRequest
+from app.services.vendor_approval_service import VendorApprovalService
+from app.services.rm_service import RMService
+from app.services.salon_service import SalonService, SalonSearchParams, NearbySearchParams
+from app.services.admin_service import AdminService
+from app.services.config_service import ConfigService
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
-
-# Initialize Supabase client
-supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 # =====================================================
@@ -41,87 +51,10 @@ async def get_dashboard_stats(
     - Returns comprehensive system statistics
     """
     try:
-        # Count pending vendor requests
-        pending_requests_response = supabase.table("vendor_join_requests").select(
-            "id", count="exact"
-        ).eq("status", "pending").execute()
-        pending_requests = pending_requests_response.count if pending_requests_response.count is not None else 0
+        admin_service = AdminService()
+        stats = await admin_service.get_dashboard_stats()
         
-        # Count total salons
-        total_salons_response = supabase.table("salons").select(
-            "id", count="exact"
-        ).execute()
-        total_salons = total_salons_response.count if total_salons_response.count is not None else 0
-        
-        # Count active salons (is_active = true)
-        active_salons_response = supabase.table("salons").select(
-            "id", count="exact"
-        ).eq("is_active", True).execute()
-        active_salons = active_salons_response.count if active_salons_response.count is not None else 0
-        
-        # Count salons with pending payment (registration_fee_paid = false)
-        pending_payment_response = supabase.table("salons").select(
-            "id", count="exact"
-        ).eq("registration_fee_paid", False).execute()
-        pending_payment_salons = pending_payment_response.count if pending_payment_response.count is not None else 0
-        
-        # Count total RMs
-        total_rms_response = supabase.table("rm_profiles").select(
-            "id", count="exact"
-        ).execute()
-        total_rms = total_rms_response.count if total_rms_response.count is not None else 0
-        
-        # Count total bookings
-        total_bookings_response = supabase.table("bookings").select(
-            "id", count="exact"
-        ).execute()
-        total_bookings = total_bookings_response.count if total_bookings_response.count is not None else 0
-        
-        # Count today's bookings
-        from datetime import date
-        today = date.today().isoformat()
-        today_bookings_response = supabase.table("bookings").select(
-            "id", count="exact"
-        ).gte("booking_date", today).lte("booking_date", today).execute()
-        today_bookings = today_bookings_response.count if today_bookings_response.count is not None else 0
-        
-        # Calculate total revenue (sum of all completed payments)
-        total_revenue = 0
-        this_month_revenue = 0
-        try:
-            from datetime import datetime
-            # Get all payments with amount
-            payments_response = supabase.table("payments").select("amount, created_at").eq("status", "completed").execute()
-            
-            if payments_response.data:
-                current_month = datetime.now().month
-                current_year = datetime.now().year
-                
-                for payment in payments_response.data:
-                    amount = float(payment.get("amount", 0))
-                    total_revenue += amount
-                    
-                    # Check if payment is from current month
-                    created_at = payment.get("created_at")
-                    if created_at:
-                        payment_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        if payment_date.month == current_month and payment_date.year == current_year:
-                            this_month_revenue += amount
-        except Exception as rev_error:
-            logger.error(f"Failed to calculate revenue: {str(rev_error)}")
-            # Continue with 0 values
-        
-        return {
-            "pending_requests": pending_requests,
-            "total_salons": total_salons,
-            "active_salons": active_salons,
-            "pending_payment_salons": pending_payment_salons,
-            "total_rms": total_rms,
-            "total_bookings": total_bookings,
-            "today_bookings": today_bookings,
-            "total_revenue": total_revenue,
-            "this_month_revenue": this_month_revenue
-        }
+        return stats.to_dict()
     
     except Exception as e:
         logger.error(f"Failed to fetch dashboard stats: {str(e)}")
@@ -148,45 +81,14 @@ async def get_vendor_requests(
     - Filter by status: pending, approved, rejected
     """
     try:
-        # Fetch vendor requests with RM profile information
-        query = supabase.table("vendor_join_requests").select(
-            "*"
+        admin_service = AdminService()
+        requests = await admin_service.get_vendor_requests(
+            status_filter=status_filter,
+            limit=limit,
+            offset=offset
         )
         
-        if status_filter:
-            query = query.eq("status", status_filter)
-        
-        response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
-        
-        # Manually fetch RM profile data for each request
-        for request in response.data:
-            rm_id = request.get('rm_id')
-            
-            if rm_id:
-                try:
-                    # Fetch RM profile
-                    rm_response = supabase.table("rm_profiles").select("*").eq("id", rm_id).execute()
-                    
-                    if rm_response.data and len(rm_response.data) > 0:
-                        rm_data = rm_response.data[0]
-                        
-                        # Fetch user profile
-                        profile_response = supabase.table("profiles").select("*").eq("id", rm_id).execute()
-                        
-                        # Combine data - use 'profiles' (plural) to match frontend expectation
-                        profile_data = profile_response.data[0] if profile_response.data and len(profile_response.data) > 0 else None
-                        
-                        request['rm_profile'] = {
-                            **rm_data,
-                            'profiles': profile_data
-                        }
-                    else:
-                        request['rm_profile'] = None
-                except Exception as e:
-                    logger.error(f"Failed to fetch RM profile for {rm_id}: {str(e)}")
-                    request['rm_profile'] = None
-        
-        return response.data
+        return requests
     
     except Exception as e:
         logger.error(f"Failed to fetch vendor requests: {str(e)}")
@@ -203,18 +105,16 @@ async def get_vendor_request(
 ):
     """Get specific vendor request details"""
     try:
-        response = supabase.table("vendor_join_requests").select(
-            "*, rm_profiles(*, profiles(*))"
-        ).eq("id", request_id).single().execute()
+        admin_service = AdminService()
+        request = await admin_service.get_vendor_request(request_id)
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Vendor request not found"
-            )
-        
-        return response.data
+        return request
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -228,7 +128,7 @@ async def get_vendor_request(
 @router.post("/vendor-requests/{request_id}/approve")
 async def approve_vendor_request(
     request_id: str,
-    admin_notes: Optional[str] = None,
+    request_body: VendorApprovalRequest,
     current_user: TokenData = Depends(require_admin)
 ):
     """
@@ -238,170 +138,35 @@ async def approve_vendor_request(
     - Sends email to vendor with registration link
     """
     try:
-        logger.info(f"🔍 Starting approval process for vendor request: {request_id}")
+        logger.info(f"🔍 Admin {current_user.user_id} approving vendor request: {request_id}")
+        logger.info(f"📝 Admin notes: {request_body.admin_notes}")
         
-        # Get request details
-        request_response = supabase.table("vendor_join_requests").select("*").eq("id", request_id).single().execute()
-        
-        if not request_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Request not found"
-            )
-        
-        request_data = request_response.data
-        
-        if request_data.get("status") != "pending":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Request already {request_data.get('status')}"
-            )
-        
-        # Get RM score configuration
-        config_response = supabase.table("system_config").select("config_value").eq(
-            "config_key", "rm_score_per_approval"
-        ).eq("is_active", True).single().execute()
-        
-        rm_score = int(config_response.data.get("config_value", 10)) if config_response.data else 10
-        
-        # Get registration fee
-        fee_response = supabase.table("system_config").select("config_value").eq(
-            "config_key", "registration_fee_amount"
-        ).eq("is_active", True).single().execute()
-        
-        registration_fee = float(fee_response.data.get("config_value", 5000)) if fee_response.data else 5000.0
-        
-        # Update request status
-        supabase.table("vendor_join_requests").update({
-            "status": "approved",
-            "admin_notes": admin_notes,
-            "reviewed_at": "now()"
-        }).eq("id", request_id).execute()
-        
-        # Extract data from documents JSON field
-        documents = request_data.get("documents", {})
-        if isinstance(documents, str):
-            import json
-            documents = json.loads(documents)
-        
-        # Create salon entry with ALL data from agent submission
-        salon_data = {
-            "rm_id": request_data["rm_id"],
-            "join_request_id": request_id,
-            "business_name": request_data["business_name"],
-            "business_type": request_data["business_type"],
-            "description": documents.get("description"),
-            "phone": request_data["owner_phone"],
-            "email": request_data["owner_email"],
-            "address": request_data["business_address"],
-            "city": request_data["city"],
-            "state": request_data["state"],
-            "pincode": request_data["pincode"],
-            "latitude": request_data.get("latitude") or 0.0,
-            "longitude": request_data.get("longitude") or 0.0,
-            "gst_number": request_data.get("gst_number"),
-            "business_license": request_data.get("business_license"),
-            "logo_url": documents.get("logo"),
-            "cover_image_url": documents.get("cover_image"),
-            "images": documents.get("images", []),
-            "business_hours": documents.get("business_hours", {}),
-            "registration_fee_amount": registration_fee,
-            "registration_fee_paid": False,
-            "is_active": False,  # Activated after payment
-            "approved_at": "now()"
-        }
-        
-        salon_response = supabase.table("salons").insert(salon_data).execute()
-        salon_id = salon_response.data[0]["id"] if salon_response.data else None
-        
-        logger.info(f"✅ Salon created with agent data: logo={bool(documents.get('logo'))}, cover={bool(documents.get('cover_image'))}, images={len(documents.get('images', []))}, services={len(documents.get('services', []))}")
-        
-        # Insert services if provided by agent
-        services_data = documents.get("services", [])
-        if services_data and isinstance(services_data, list):
-            try:
-                services_to_insert = []
-                for service in services_data:
-                    service_entry = {
-                        "salon_id": salon_id,
-                        "name": service.get("name"),
-                        "description": service.get("description", ""),
-                        "price": float(service.get("price", 0)),
-                        "duration_minutes": int(service.get("duration_minutes", 30)),
-                        "category_id": None,  # Category IDs will be set later by vendor
-                        "is_active": True,
-                        "available_for_booking": True
-                    }
-                    services_to_insert.append(service_entry)
-                
-                if services_to_insert:
-                    supabase.table("services").insert(services_to_insert).execute()
-                    logger.info(f"✅ Inserted {len(services_to_insert)} services for salon {salon_id}")
-            except Exception as service_error:
-                logger.error(f"⚠️ Failed to insert services: {str(service_error)}")
-                # Continue even if services insertion fails
-        
-        logger.info(f"✅ Salon created: {salon_id} for business: {request_data['business_name']}")
-        
-        # Update RM score - Get current values first
-        rm_profile_response = supabase.table("rm_profiles").select(
-            "total_score, total_approved_salons"
-        ).eq("id", request_data["rm_id"]).single().execute()
-        
-        current_score = rm_profile_response.data.get("total_score", 0) if rm_profile_response.data else 0
-        current_approved = rm_profile_response.data.get("total_approved_salons", 0) if rm_profile_response.data else 0
-        
-        supabase.table("rm_profiles").update({
-            "total_score": current_score + rm_score,
-            "total_approved_salons": current_approved + 1
-        }).eq("id", request_data["rm_id"]).execute()
-        
-        logger.info(f"📊 RM score updated: +{rm_score} points (Total: {current_score + rm_score})")
-        
-        # Add score history
-        supabase.table("rm_score_history").insert({
-            "rm_id": request_data["rm_id"],
-            "salon_id": salon_id,
-            "score_change": rm_score,
-            "reason": f"Salon approved: {request_data['business_name']}"
-        }).execute()
-        
-        # Generate secure JWT registration token
-        registration_token = create_registration_token(
+        # Use service layer for approval
+        approval_service = VendorApprovalService()
+        result = await approval_service.approve_vendor_request(
             request_id=request_id,
-            salon_id=salon_id,
-            owner_email=request_data["owner_email"]
+            admin_notes=request_body.admin_notes,
+            admin_id=current_user.user_id
         )
         
-        logger.info(f"🔐 Registration token generated for {request_data['owner_email']}")
-        
-        # Send approval email to vendor (non-blocking)
-        try:
-            logger.info(f"📧 Attempting to send approval email to {request_data['owner_email']}...")
-            email_sent = email_service.send_vendor_approval_email(
-                to_email=request_data["owner_email"],
-                owner_name=request_data["owner_name"],
-                salon_name=request_data["business_name"],
-                registration_token=registration_token,
-                registration_fee=registration_fee
+        if not result.success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.error
             )
-            
-            if not email_sent:
-                logger.warning(f"⚠️ Failed to send approval email to {request_data['owner_email']}")
-            else:
-                logger.info(f"✉️ Approval email sent successfully to {request_data['owner_email']}")
-        except Exception as email_error:
-            logger.error(f"❌ Email service error: {str(email_error)}")
-            # Continue with approval even if email fails
         
-        logger.info(f"✅ Vendor request {request_id} approved successfully. Salon ID: {salon_id}")
+        # Log warnings if any
+        if result.warnings:
+            for warning in result.warnings:
+                logger.warning(f"⚠️ {warning}")
         
         return {
             "success": True,
             "message": "Vendor request approved successfully",
             "data": {
-                "salon_id": salon_id,
-                "rm_score_awarded": rm_score
+                "salon_id": result.salon_id,
+                "rm_score_awarded": result.rm_score_awarded,
+                "warnings": result.warnings
             }
         }
     
@@ -418,7 +183,7 @@ async def approve_vendor_request(
 @router.post("/vendor-requests/{request_id}/reject")
 async def reject_vendor_request(
     request_id: str,
-    admin_notes: str,
+    request_body: VendorRejectionRequest,
     current_user: TokenData = Depends(require_admin)
 ):
     """
@@ -427,58 +192,24 @@ async def reject_vendor_request(
     - Sends rejection email
     """
     try:
-        # Get request details
-        request_response = supabase.table("vendor_join_requests").select("*").eq("id", request_id).single().execute()
+        logger.info(f"🚫 Admin {current_user.user_id} rejecting vendor request: {request_id}")
+        logger.info(f"📝 Rejection reason: {request_body.admin_notes}")
         
-        if not request_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Request not found"
-            )
+        # Use service layer for rejection
+        approval_service = VendorApprovalService()
+        result = await approval_service.reject_vendor_request(
+            request_id=request_id,
+            admin_notes=request_body.admin_notes,
+            admin_id=current_user.user_id
+        )
         
-        request_data = request_response.data
-        
-        if request_data.get("status") != "pending":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Request already {request_data.get('status')}"
-            )
-        
-        # Update request status
-        supabase.table("vendor_join_requests").update({
-            "status": "rejected",
-            "admin_notes": admin_notes,
-            "reviewed_at": "now()"
-        }).eq("id", request_id).execute()
-        
-        # Get RM details for email notification
-        rm_response = supabase.table("rm_profiles").select(
-            "*, profiles(email, full_name)"
-        ).eq("id", request_data["rm_id"]).single().execute()
-        
-        if rm_response.data and rm_response.data.get("profiles"):
-            rm_email = rm_response.data["profiles"]["email"]
-            rm_name = rm_response.data["profiles"]["full_name"]
-            
-            # Send rejection email to RM
-            email_sent = await email_service.send_vendor_rejection_email(
-                to_email=rm_email,
-                rm_name=rm_name,
-                salon_name=request_data["business_name"],
-                owner_name=request_data["owner_name"],
-                rejection_reason=admin_notes
-            )
-            
-            if not email_sent:
-                logger.warning(f"Failed to send rejection email to RM {rm_email}")
-        
-        logger.info(f"Vendor request {request_id} rejected")
-        
-        return {
-            "success": True,
-            "message": "Vendor request rejected"
-        }
+        return result
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -497,8 +228,10 @@ async def reject_vendor_request(
 async def get_all_configs(current_user: TokenData = Depends(require_admin)):
     """Get all system configurations"""
     try:
-        response = supabase.table("system_config").select("*").order("config_key").execute()
-        return response.data
+        config_service = ConfigService()
+        configs = await config_service.get_all_configs()
+        
+        return configs
     
     except Exception as e:
         logger.error(f"Failed to fetch configs: {str(e)}")
@@ -515,16 +248,16 @@ async def get_config(
 ):
     """Get specific configuration"""
     try:
-        response = supabase.table("system_config").select("*").eq("config_key", config_key).single().execute()
+        config_service = ConfigService()
+        config = await config_service.get_config(config_key)
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Configuration not found"
-            )
-        
-        return response.data
+        return config
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -543,28 +276,27 @@ async def update_config(
 ):
     """Update system configuration"""
     try:
-        # Verify config exists
-        check_response = supabase.table("system_config").select("id").eq("config_key", config_key).single().execute()
+        config_service = ConfigService()
         
-        if not check_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Configuration not found"
-            )
-        
-        # Update config
+        # Prepare update data
         update_data = update.model_dump(exclude_unset=True)
         
-        response = supabase.table("system_config").update(update_data).eq("config_key", config_key).execute()
+        # Update config
+        updated_config = await config_service.update_config(config_key, update_data)
         
         logger.info(f"System config updated: {config_key} = {update.config_value}")
         
         return {
             "success": True,
             "message": "Configuration updated successfully",
-            "data": response.data[0] if response.data else None
+            "data": updated_config
         }
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -584,18 +316,27 @@ async def get_all_rms(
     is_active: Optional[bool] = None,
     limit: int = 50,
     offset: int = 0,
+    order_by: str = "total_score",
+    order_desc: bool = True,
     current_user: TokenData = Depends(require_admin)
 ):
     """Get all Relationship Managers"""
     try:
-        query = supabase.table("rm_profiles").select("*, profiles(*)")
+        # Use service layer for RM listing
+        rm_service = RMService()
         
+        rms = await rm_service.list_rm_profiles(
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            order_desc=order_desc
+        )
+        
+        # Apply active filter if specified
         if is_active is not None:
-            query = query.eq("is_active", is_active)
+            rms = [rm for rm in rms if rm.get("profiles", {}).get("is_active") == is_active]
         
-        response = query.order("total_score", desc=True).range(offset, offset + limit - 1).execute()
-        
-        return response.data
+        return rms
     
     except Exception as e:
         logger.error(f"Failed to fetch RMs: {str(e)}")
@@ -612,16 +353,17 @@ async def get_rm_profile(
 ):
     """Get specific RM profile"""
     try:
-        response = supabase.table("rm_profiles").select("*, profiles(*)").eq("id", rm_id).single().execute()
+        # Use service layer
+        rm_service = RMService()
+        rm_profile = await rm_service.get_rm_profile(rm_id)
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="RM profile not found"
-            )
-        
-        return response.data
+        return rm_profile
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -636,92 +378,21 @@ async def get_rm_profile(
 async def get_rm_score_history(
     rm_id: str,
     limit: int = 50,
-    offset: int = 0,
     current_user: TokenData = Depends(require_admin)
 ):
     """Get RM score history"""
     try:
-        response = supabase.table("rm_score_history").select("*").eq(
-            "rm_id", rm_id
-        ).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        # Use service layer
+        rm_service = RMService()
+        history = await rm_service.get_rm_score_history(rm_id, limit=limit)
         
-        return response.data
+        return history
     
     except Exception as e:
         logger.error(f"Failed to fetch score history: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch score history"
-        )
-
-
-# =====================================================
-# DASHBOARD & ANALYTICS
-# =====================================================
-
-@router.get("/dashboard/stats")
-async def get_dashboard_stats(current_user: TokenData = Depends(require_admin)):
-    """Get admin dashboard statistics"""
-    try:
-        # Get pending requests count
-        pending_requests = supabase.table("vendor_join_requests").select(
-            "id", count="exact"
-        ).eq("status", "pending").execute()
-        
-        # Get total salons
-        total_salons = supabase.table("salons").select("id", count="exact").execute()
-        
-        # Get active salons (subscription_status = 'active')
-        active_salons = supabase.table("salons").select(
-            "id", count="exact"
-        ).eq("subscription_status", "active").execute()
-        
-        # Get pending payment salons
-        pending_payment_salons = supabase.table("salons").select(
-            "id", count="exact"
-        ).eq("subscription_status", "pending").execute()
-        
-        # Get total bookings today
-        today_bookings = supabase.table("bookings").select(
-            "id", count="exact"
-        ).gte("created_at", "today").execute()
-        
-        # Get total RMs
-        total_rms = supabase.table("rm_profiles").select("id", count="exact").execute()
-        
-        # Get payment stats from salons table
-        paid_salons = supabase.table("salons").select("payment_amount").eq(
-            "subscription_status", "active"
-        ).execute()
-        
-        # Calculate revenue from salon registration payments
-        revenue_sum = sum(float(s["payment_amount"]) for s in paid_salons.data if s.get("payment_amount")) if paid_salons.data else 0
-        
-        # Get this month's revenue
-        from datetime import datetime
-        current_month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
-        this_month_payments = supabase.table("salons").select("payment_amount").eq(
-            "subscription_status", "active"
-        ).gte("payment_date", current_month_start).execute()
-        
-        this_month_revenue = sum(float(s["payment_amount"]) for s in this_month_payments.data if s.get("payment_amount")) if this_month_payments.data else 0
-        
-        return {
-            "pending_requests": pending_requests.count if pending_requests else 0,
-            "total_salons": total_salons.count if total_salons else 0,
-            "active_salons": active_salons.count if active_salons else 0,
-            "pending_payment_salons": pending_payment_salons.count if pending_payment_salons else 0,
-            "today_bookings": today_bookings.count if today_bookings else 0,
-            "total_rms": total_rms.count if total_rms else 0,
-            "total_revenue": revenue_sum,
-            "this_month_revenue": this_month_revenue
-        }
-    
-    except Exception as e:
-        logger.error(f"Failed to fetch dashboard stats: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch dashboard statistics"
         )
 
 
@@ -735,28 +406,21 @@ async def get_all_users(
     limit: int = 20,
     search: Optional[str] = None,
     role: Optional[str] = None,
+    is_active: Optional[bool] = None,
     current_user: TokenData = Depends(require_admin)
 ):
     """Get all users with pagination and filters"""
     try:
-        offset = (page - 1) * limit
-        query = supabase.table("profiles").select("*", count="exact")
+        user_service = UserService()
+        result = await user_service.list_users(
+            page=page,
+            limit=limit,
+            search=search,
+            role=role,
+            is_active=is_active
+        )
         
-        if search:
-            query = query.or_(f"email.ilike.%{search}%,full_name.ilike.%{search}%")
-        
-        if role:
-            query = query.eq("role", role)
-        
-        response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
-        
-        return {
-            "success": True,
-            "data": response.data,
-            "total": response.count,
-            "page": page,
-            "limit": limit
-        }
+        return result
     
     except Exception as e:
         logger.error(f"Failed to fetch users: {str(e)}")
@@ -773,17 +437,17 @@ async def create_user(
 ):
     """Create a new user (Relationship Manager or Customer only)"""
     try:
+        # Validate required fields
         email = user_data.get("email")
-        password = user_data.get("password", "defaultPass123")  # Default password if not provided
+        password = user_data.get("password")
         full_name = user_data.get("full_name")
         phone = user_data.get("phone", "")
         role = user_data.get("role", "customer")
         
-        # Validation
-        if not email or not full_name:
+        if not email or not full_name or not password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email and full name are required"
+                detail="Email, full name, and password are required"
             )
         
         # Prevent creating admin users
@@ -793,113 +457,36 @@ async def create_user(
                 detail="Can only create Relationship Manager or Customer accounts"
             )
         
-        # Check if email already exists
-        existing_profile = supabase.table("profiles").select("id").eq("email", email).execute()
-        if existing_profile.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User with this email already exists"
-            )
+        # Use service layer for user creation
+        user_service = UserService()
         
-        # Create auth user using Supabase Management API
-        import requests
-        import os
-        
-        supabase_url = settings.SUPABASE_URL
-        service_role_key = settings.SUPABASE_SERVICE_ROLE_KEY
-        
-        # Call Supabase Admin API directly
-        headers = {
-            "apikey": service_role_key,
-            "Authorization": f"Bearer {service_role_key}",
-            "Content-Type": "application/json"
-        }
-        
-        auth_payload = {
-            "email": email,
-            "password": password,
-            "email_confirm": True,
-            "user_metadata": {
-                "full_name": full_name,
-                "role": role
-            }
-        }
-        
-        auth_response = requests.post(
-            f"{supabase_url}/auth/v1/admin/users",
-            json=auth_payload,
-            headers=headers
+        request = CreateUserRequest(
+            email=email,
+            full_name=full_name,
+            role=role,
+            password=password,
+            phone=phone
         )
         
-        if auth_response.status_code not in [200, 201]:
-            logger.error(f"Auth creation failed: {auth_response.text}")
+        result = await user_service.create_user(request)
+        
+        if not result.success:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create auth user: {auth_response.text}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.error
             )
         
-        auth_data = auth_response.json()
-        user_id = auth_data.get("id")
-        
-        # Create profile entry
-        profile_data = {
-            "id": user_id,
-            "email": email,
-            "full_name": full_name,
-            "phone": phone,
-            "role": role,
-            "is_active": True,
-            "email_verified": True
-        }
-        
-        profile_response = supabase.table("profiles").insert(profile_data).execute()
-        
-        if not profile_response.data:
-            # Rollback: try to delete the auth user
-            try:
-                requests.delete(
-                    f"{supabase_url}/auth/v1/admin/users/{user_id}",
-                    headers=headers
-                )
-            except:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create user profile"
-            )
-        
-        # If creating a Relationship Manager, also create rm_profile entry
-        if role == "relationship_manager":
-            try:
-                # Generate employee ID (RM-<random 5 digits>)
-                import random
-                employee_id = f"RM-{random.randint(10000, 99999)}"
-                
-                rm_profile_data = {
-                    "id": user_id,
-                    "employee_id": employee_id,
-                    "total_score": 0,
-                    "total_salons_added": 0,
-                    "total_approved_salons": 0,
-                    "is_active": True
-                }
-                
-                rm_profile_response = supabase.table("rm_profiles").insert(rm_profile_data).execute()
-                
-                if not rm_profile_response.data:
-                    logger.warning(f"Failed to create RM profile for {email}, but user created")
-                else:
-                    logger.info(f"RM profile created for {email} with employee_id {employee_id}")
-            except Exception as rm_error:
-                logger.error(f"Failed to create RM profile: {str(rm_error)}")
-                # Don't fail the whole operation, just log it
-        
-        logger.info(f"User created successfully: {email} ({role})")
+        logger.info(f"User created by admin {current_user.user_id}: {email} ({role})")
         
         return {
             "success": True,
             "message": f"{role.replace('_', ' ').title()} created successfully!",
-            "data": profile_response.data[0]
+            "data": {
+                "user_id": result.user_id,
+                "employee_id": result.employee_id,
+                "email": email,
+                "role": role
+            }
         }
     
     except HTTPException:
@@ -912,91 +499,6 @@ async def create_user(
         )
 
 
-@router.post("/fix-rm-profiles")
-async def fix_rm_profiles(current_user: TokenData = Depends(require_admin)):
-    """Create missing rm_profiles for existing relationship_manager users"""
-    try:
-        import requests
-        import random
-        
-        # Find all users with role 'relationship_manager'
-        profiles_response = supabase.table("profiles").select("id, email, full_name").eq("role", "relationship_manager").execute()
-        
-        if not profiles_response.data:
-            return {
-                "success": True,
-                "message": "No relationship managers found",
-                "created": 0
-            }
-        
-        created_count = 0
-        errors = []
-        
-        # Use Supabase REST API directly to bypass RLS
-        headers = {
-            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation"
-        }
-        
-        for profile in profiles_response.data:
-            user_id = profile["id"]
-            
-            # Check if rm_profile already exists
-            existing_rm = supabase.table("rm_profiles").select("id").eq("id", user_id).execute()
-            
-            if existing_rm.data:
-                logger.info(f"RM profile already exists for {profile['email']}")
-                continue
-            
-            # Create rm_profile using direct REST API call
-            try:
-                employee_id = f"RM-{random.randint(10000, 99999)}"
-                
-                rm_profile_data = {
-                    "id": user_id,
-                    "employee_id": employee_id,
-                    "total_score": 0,
-                    "total_salons_added": 0,
-                    "total_approved_salons": 0,
-                    "is_active": True
-                }
-                
-                # Direct REST API call
-                response = requests.post(
-                    f"{settings.SUPABASE_URL}/rest/v1/rm_profiles",
-                    headers=headers,
-                    json=rm_profile_data
-                )
-                
-                if response.status_code in [200, 201]:
-                    created_count += 1
-                    logger.info(f"Created RM profile for {profile['email']} with employee_id {employee_id}")
-                else:
-                    error_msg = f"Failed for {profile['email']}: {response.text}"
-                    errors.append(error_msg)
-                    logger.error(error_msg)
-                    
-            except Exception as e:
-                errors.append(f"Error creating profile for {profile['email']}: {str(e)}")
-                logger.error(f"Error creating RM profile: {str(e)}")
-        
-        return {
-            "success": True,
-            "message": f"Created {created_count} RM profiles",
-            "created": created_count,
-            "errors": errors if errors else None
-        }
-    
-    except Exception as e:
-        logger.error(f"Failed to fix RM profiles: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fix RM profiles: {str(e)}"
-        )
-
-
 @router.put("/users/{user_id}")
 async def update_user(
     user_id: str,
@@ -1005,20 +507,16 @@ async def update_user(
 ):
     """Update user profile"""
     try:
-        response = supabase.table("profiles").update(updates).eq("id", user_id).execute()
+        user_service = UserService()
+        result = await user_service.update_user(user_id, updates)
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        return {
-            "success": True,
-            "message": "User updated successfully",
-            "data": response.data[0]
-        }
+        return result
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1036,22 +534,22 @@ async def delete_user(
 ):
     """Delete user (soft delete by setting is_active=false)"""
     try:
-        # Soft delete by deactivating
-        response = supabase.table("profiles").update({
-            "is_active": False
-        }).eq("id", user_id).execute()
+        # Use service layer for user deletion
+        user_service = UserService()
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+        result = await user_service.delete_user(user_id)
         
         return {
             "success": True,
-            "message": "User deleted successfully"
+            "message": "User deleted successfully",
+            "data": result
         }
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1068,15 +566,34 @@ async def delete_user(
 
 @router.get("/salons")
 async def get_all_salons_admin(
-    current_user: TokenData = Depends(require_admin)
+    current_user: TokenData = Depends(require_admin),
+    city: Optional[str] = None,
+    state: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    is_verified: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0
 ):
-    """Get all salons (including inactive)"""
+    """Get all salons with optional filtering"""
     try:
-        response = supabase.table("salons").select("*").order("created_at", desc=True).execute()
+        # Use service layer for salon listing
+        salon_service = SalonService()
+        
+        params = SalonSearchParams(
+            city=city,
+            state=state,
+            is_active=is_active,
+            is_verified=is_verified,
+            limit=limit,
+            offset=offset
+        )
+        
+        salons = await salon_service.list_salons(params)
         
         return {
             "success": True,
-            "data": response.data
+            "data": salons,
+            "count": len(salons)
         }
     
     except Exception as e:
@@ -1093,22 +610,28 @@ async def update_salon(
     updates: dict,
     current_user: TokenData = Depends(require_admin)
 ):
-    """Update salon"""
+    """Update salon (protected fields excluded)"""
     try:
-        response = supabase.table("salons").update(updates).eq("id", salon_id).execute()
+        # Use service layer for safe updates
+        salon_service = SalonService()
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found"
-            )
+        updated_salon = await salon_service.update_salon(
+            salon_id=salon_id,
+            updates=updates,
+            admin_id=current_user.user_id
+        )
         
         return {
             "success": True,
             "message": "Salon updated successfully",
-            "data": response.data[0]
+            "data": updated_salon
         }
     
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1122,15 +645,23 @@ async def update_salon(
 @router.delete("/salons/{salon_id}")
 async def delete_salon(
     salon_id: str,
+    hard_delete: bool = False,
     current_user: TokenData = Depends(require_admin)
 ):
-    """Delete salon"""
+    """Delete salon (soft delete by default, hard delete if specified)"""
     try:
-        response = supabase.table("salons").delete().eq("id", salon_id).execute()
+        # Use service layer for deletion
+        salon_service = SalonService()
+        
+        result = await salon_service.delete_salon(
+            salon_id=salon_id,
+            hard_delete=hard_delete
+        )
         
         return {
             "success": True,
-            "message": "Salon deleted successfully"
+            "message": result.get("message", "Salon deleted successfully"),
+            "data": result
         }
     
     except Exception as e:
@@ -1138,6 +669,45 @@ async def delete_salon(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete salon"
+        )
+
+
+@router.put("/salons/{salon_id}/status")
+async def toggle_salon_status(
+    salon_id: str,
+    request_body: dict,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Toggle salon active/inactive status"""
+    try:
+        is_active = request_body.get("is_active")
+        if is_active is None:
+            raise ValueError("is_active field is required")
+        
+        salon_service = SalonService()
+        
+        updated_salon = await salon_service.update_salon(
+            salon_id=salon_id,
+            updates={"is_active": is_active},
+            admin_id=current_user.user_id
+        )
+        
+        return {
+            "success": True,
+            "message": f"Salon {'activated' if is_active else 'deactivated'} successfully",
+            "data": updated_salon
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to toggle salon status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to toggle salon status"
         )
 
 
@@ -1156,27 +726,18 @@ async def get_all_bookings_admin(
 ):
     """Get all bookings with filters"""
     try:
-        offset = (page - 1) * limit
-        query = supabase.table("bookings").select("*", count="exact")
+        from app.services.booking_service import BookingService
         
-        if status:
-            query = query.eq("status", status)
+        booking_service = BookingService()
+        result = await booking_service.get_admin_bookings(
+            page=page,
+            limit=limit,
+            status_filter=status,
+            date_from=date_from,
+            date_to=date_to
+        )
         
-        if date_from:
-            query = query.gte("booking_date", date_from)
-        
-        if date_to:
-            query = query.lte("booking_date", date_to)
-        
-        response = query.order("booking_date", desc=True).range(offset, offset + limit - 1).execute()
-        
-        return {
-            "success": True,
-            "data": response.data,
-            "total": response.count,
-            "page": page,
-            "limit": limit
-        }
+        return result
     
     except Exception as e:
         logger.error(f"Failed to fetch bookings: {str(e)}")
@@ -1194,21 +755,15 @@ async def update_booking_status(
 ):
     """Update booking status"""
     try:
-        response = supabase.table("bookings").update({
-            "status": status
-        }).eq("id", booking_id).execute()
+        from app.services.booking_service import BookingService
         
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Booking not found"
-            )
+        booking_service = BookingService()
+        result = await booking_service.update_booking_status_admin(
+            booking_id=booking_id,
+            new_status=status
+        )
         
-        return {
-            "success": True,
-            "message": "Booking status updated",
-            "data": response.data[0]
-        }
+        return result
     
     except HTTPException:
         raise
@@ -1230,11 +785,12 @@ async def get_all_services_admin(
 ):
     """Get all services"""
     try:
-        response = supabase.table("services").select("*").order("name").execute()
+        admin_service = AdminService()
+        services = await admin_service.get_all_services()
         
         return {
             "success": True,
-            "data": response.data
+            "data": services
         }
     
     except Exception as e:
@@ -1252,12 +808,13 @@ async def create_service(
 ):
     """Create new service"""
     try:
-        response = supabase.table("services").insert(service_data).execute()
+        admin_service = AdminService()
+        service = await admin_service.create_service(service_data)
         
         return {
             "success": True,
             "message": "Service created successfully",
-            "data": response.data[0]
+            "data": service
         }
     
     except Exception as e:
@@ -1276,24 +833,23 @@ async def update_service(
 ):
     """Update service"""
     try:
-        response = supabase.table("services").update(updates).eq("id", service_id).execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Service not found"
-            )
+        admin_service = AdminService()
+        service = await admin_service.update_service(service_id, updates)
         
         return {
             "success": True,
             "message": "Service updated successfully",
-            "data": response.data[0]
+            "data": service
         }
     
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Failed to update service: {str(e)}")
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Service not found"
+            )
+        logger.error(f"Failed to update service: {error_msg}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update service"
@@ -1307,7 +863,8 @@ async def delete_service(
 ):
     """Delete service"""
     try:
-        response = supabase.table("services").delete().eq("id", service_id).execute()
+        admin_service = AdminService()
+        await admin_service.delete_service(service_id)
         
         return {
             "success": True,
@@ -1332,11 +889,12 @@ async def get_all_staff(
 ):
     """Get all staff members"""
     try:
-        response = supabase.table("profiles").select("*").eq("role", "staff").order("full_name").execute()
+        admin_service = AdminService()
+        staff = await admin_service.get_all_staff()
         
         return {
             "success": True,
-            "data": response.data
+            "data": staff
         }
     
     except Exception as e:
@@ -1355,24 +913,23 @@ async def update_staff(
 ):
     """Update staff member"""
     try:
-        response = supabase.table("profiles").update(updates).eq("id", staff_id).eq("role", "staff").execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Staff member not found"
-            )
+        admin_service = AdminService()
+        staff = await admin_service.update_staff(staff_id, updates)
         
         return {
             "success": True,
             "message": "Staff updated successfully",
-            "data": response.data[0]
+            "data": staff
         }
     
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Failed to update staff: {str(e)}")
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Staff member not found"
+            )
+        logger.error(f"Failed to update staff: {error_msg}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update staff"
@@ -1386,15 +943,27 @@ async def delete_staff(
 ):
     """Delete staff member (soft delete)"""
     try:
-        response = supabase.table("profiles").update({
-            "is_active": False
-        }).eq("id", staff_id).eq("role", "staff").execute()
+        admin_service = AdminService()
+        staff = await admin_service.delete_staff(staff_id)
         
-        if not response.data:
+        return {
+            "success": True,
+            "message": "Staff deleted successfully",
+            "data": staff
+        }
+    
+    except Exception as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Staff member not found"
             )
+        logger.error(f"Failed to delete staff: {error_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete staff"
+        )
         
         return {
             "success": True,
@@ -1410,3 +979,269 @@ async def delete_staff(
             detail="Failed to delete staff"
         )
 
+
+# =====================================================
+# ADDITIONAL SERVICE-POWERED ENDPOINTS
+# =====================================================
+
+@router.get("/rms/{rm_id}/stats")
+async def get_rm_stats(
+    rm_id: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Get comprehensive statistics for an RM"""
+    try:
+        rm_service = RMService()
+        stats = await rm_service.get_rm_stats(rm_id)
+        
+        return {
+            "success": True,
+            "data": {
+                "total_requests": stats.total_requests,
+                "pending_requests": stats.pending_requests,
+                "approved_requests": stats.approved_requests,
+                "rejected_requests": stats.rejected_requests,
+                "total_score": stats.total_score
+            }
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch RM stats: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch RM stats"
+        )
+
+
+@router.get("/rms/leaderboard")
+async def get_rm_leaderboard(
+    limit: int = 10,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Get RM leaderboard by total score"""
+    try:
+        rm_service = RMService()
+        leaderboard = await rm_service.get_leaderboard(limit=limit)
+        
+        return {
+            "success": True,
+            "data": leaderboard
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch RM leaderboard: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch RM leaderboard"
+        )
+
+
+@router.patch("/rms/{rm_id}/score")
+async def update_rm_score(
+    rm_id: str,
+    score_change: int,
+    reason: str,
+    salon_id: Optional[str] = None,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Update RM score (add or subtract points)"""
+    try:
+        rm_service = RMService()
+        result = await rm_service.update_rm_score(
+            rm_id=rm_id,
+            score_change=score_change,
+            reason=reason,
+            salon_id=salon_id,
+            admin_id=current_user.user_id
+        )
+        
+        if not result.success:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.error
+            )
+        
+        return {
+            "success": True,
+            "message": "RM score updated successfully",
+            "data": {
+                "new_total_score": result.new_total_score,
+                "score_change": result.score_change
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update RM score: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update RM score"
+        )
+
+
+@router.get("/salons/{salon_id}/stats")
+async def get_salon_stats(
+    salon_id: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Get comprehensive statistics for a salon"""
+    try:
+        salon_service = SalonService()
+        stats = await salon_service.get_salon_stats(salon_id)
+        
+        return {
+            "success": True,
+            "data": stats
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch salon stats: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch salon stats"
+        )
+
+
+@router.post("/salons/{salon_id}/activate")
+async def activate_salon(
+    salon_id: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Activate a salon"""
+    try:
+        salon_service = SalonService()
+        salon = await salon_service.activate_salon(salon_id)
+        
+        return {
+            "success": True,
+            "message": "Salon activated successfully",
+            "data": salon
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to activate salon: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to activate salon"
+        )
+
+
+@router.post("/salons/{salon_id}/deactivate")
+async def deactivate_salon(
+    salon_id: str,
+    reason: Optional[str] = None,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Deactivate a salon"""
+    try:
+        salon_service = SalonService()
+        salon = await salon_service.deactivate_salon(salon_id, reason=reason)
+        
+        return {
+            "success": True,
+            "message": "Salon deactivated successfully",
+            "data": salon
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to deactivate salon: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deactivate salon"
+        )
+
+
+@router.post("/salons/{salon_id}/verify")
+async def verify_salon(
+    salon_id: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Verify a salon"""
+    try:
+        salon_service = SalonService()
+        salon = await salon_service.verify_salon(
+            salon_id=salon_id,
+            admin_id=current_user.user_id
+        )
+        
+        return {
+            "success": True,
+            "message": "Salon verified successfully",
+            "data": salon
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to verify salon: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify salon"
+        )
+
+
+@router.get("/salons/pending-verification")
+async def get_pending_verification_salons(
+    limit: int = 50,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Get salons pending verification (payment done but not verified)"""
+    try:
+        salon_service = SalonService()
+        salons = await salon_service.get_pending_verification_salons(limit=limit)
+        
+        return {
+            "success": True,
+            "data": salons,
+            "count": len(salons)
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch pending verification salons: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch pending verification salons"
+        )
+
+
+@router.get("/salons/pending-payment")
+async def get_pending_payment_salons(
+    limit: int = 50,
+    current_user: TokenData = Depends(require_admin)
+):
+    """Get salons pending registration payment"""
+    try:
+        salon_service = SalonService()
+        salons = await salon_service.get_pending_payment_salons(limit=limit)
+        
+        return {
+            "success": True,
+            "data": salons,
+            "count": len(salons)
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch pending payment salons: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch pending payment salons"
+        )

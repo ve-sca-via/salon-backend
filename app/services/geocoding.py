@@ -1,31 +1,183 @@
+"""
+Geocoding Service Module
+
+Provides address-to-coordinates (geocoding) and coordinates-to-address (reverse geocoding)
+functionality using either Google Maps API or Nominatim (OpenStreetMap).
+
+Best Practices (Nominatim):
+- Include User-Agent header (required)
+- Include email for high-volume usage
+- Rate limiting: 1 request/second for free tier
+- Use format=jsonv2 for consistent JSON responses
+- Enable addressdetails for structured address data
+"""
+
 from geopy.geocoders import GoogleV3, Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from app.core.config import settings
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 import asyncio
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# =====================================================
+# MOCK GEOCODING SERVICE (FOR TESTING)
+# =====================================================
+
+class MockGeocodingService:
+    """
+    Mock geocoding service for testing - doesn't make real API calls.
+    Returns fake coordinates for any address.
+    """
+    
+    def __init__(self):
+        self.provider = "mock"
+        logger.info("🧪 Using MockGeocodingService (Test Mode) - No real API calls")
+    
+    async def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
+        """
+        Mock geocode - returns fake coordinates without API call.
+        Always returns coordinates for Mumbai, India (19.0760, 72.8777)
+        """
+        logger.info(f"🧪 MOCK: Geocoding '{address}' -> Returning fake Mumbai coordinates")
+        # Return fake coordinates (Mumbai)
+        return (19.0760, 72.8777)
+    
+    async def reverse_geocode(self, latitude: float, longitude: float) -> Optional[Dict]:
+        """
+        Mock reverse geocode - returns fake address without API call.
+        """
+        logger.info(f"🧪 MOCK: Reverse geocoding ({latitude}, {longitude}) -> Returning fake address")
+        return {
+            "city": "Mumbai",
+            "state": "Maharashtra",
+            "country": "India",
+            "formatted_address": f"Mock Address for ({latitude}, {longitude})"
+        }
+
+
+# =====================================================
+# FACTORY FUNCTION (Like get_db() and get_email_service())
+# =====================================================
+
+def get_geocoding_service():
+    """
+    Factory function to get geocoding service based on environment.
+    
+    Returns MockGeocodingService in test mode, real GeocodingService otherwise.
+    This allows testing without making real API calls!
+    """
+    # Check if we're in test mode
+    if settings.ENVIRONMENT == "test":
+        logger.info("🧪 Geocoding Service: Using MockGeocodingService (test mode)")
+        return MockGeocodingService()
+    
+    # Production/Dev mode - real geocoding
+    logger.info("🗺️ Geocoding Service: Using real GeocodingService")
+    return GeocodingService()
 
 
 class GeocodingService:
     def __init__(self):
-        if settings.GOOGLE_MAPS_API_KEY:
-            self.geocoder = GoogleV3(api_key=settings.GOOGLE_MAPS_API_KEY)
-            self.provider = "google"
+        # Log the API key status
+        api_key = settings.GOOGLE_MAPS_API_KEY
+        logger.info(f"🗺️ Geocoding initialization:")
+        logger.info(f"   Google Maps API key present: {bool(api_key)}")
+        logger.info(f"   Google Maps API key length: {len(api_key) if api_key else 0}")
+        
+        # Try Google Maps first if API key is provided AND not empty
+        if api_key and api_key.strip() and len(api_key) > 10:
+            try:
+                self.geocoder = GoogleV3(api_key=api_key)
+                self.provider = "google"
+                logger.info("✅ Geocoding: Using Google Maps API")
+            except Exception as e:
+                logger.warning(f"⚠️ Google Maps API initialization failed: {e}")
+                logger.info("🔄 Falling back to Nominatim (OpenStreetMap)")
+                self._init_nominatim()
         else:
-            # Fallback to free OpenStreetMap
-            self.geocoder = Nominatim(user_agent="salon-management-app")
-            self.provider = "osm"
+            if api_key:
+                logger.warning(f"⚠️ Google Maps API key is invalid (too short or empty): '{api_key[:20]}...'")
+            logger.info("✅ Using Nominatim (OpenStreetMap) - FREE geocoding")
+            self._init_nominatim()
+    
+    def _init_nominatim(self):
+        """Initialize Nominatim (free OpenStreetMap geocoder)"""
+        logger.info("🌍 Initializing Nominatim geocoder...")
+        # User agent is required by Nominatim usage policy
+        # Format: <application name> <contact email>
+        user_agent = "salon-management-app/1.0 (contact: support@salonplatform.com)"
+        self.geocoder = Nominatim(
+            user_agent=user_agent,
+            timeout=10,
+            # Nominatim recommends specifying the domain for tracking
+            domain='nominatim.openstreetmap.org'
+        )
+        self.provider = "nominatim"
+        self._last_request_time = 0
+        # Nominatim rate limit: 1 request per second
+        self._rate_limit_delay = 1.0
+        logger.info("✅ Nominatim initialized successfully (FREE, no API key needed)")
+
+    async def _rate_limit(self):
+        """
+        Enforce rate limiting for Nominatim (1 req/sec)
+        Not needed for Google Maps API (has much higher limits)
+        """
+        if self.provider == "nominatim":
+            current_time = time.time()
+            time_since_last = current_time - self._last_request_time
+            if time_since_last < self._rate_limit_delay:
+                await asyncio.sleep(self._rate_limit_delay - time_since_last)
+            self._last_request_time = time.time()
 
     async def _geocode_sync(self, address: str):
-        # run the blocking geopy call in a thread
-        return await asyncio.to_thread(self.geocoder.geocode, address, timeout=10)
+        """Run the blocking geopy geocode call in a thread"""
+        await self._rate_limit()
+        
+        # Build kwargs conditionally based on provider
+        kwargs = {"timeout": 10}
+        if self.provider == "nominatim":
+            kwargs["addressdetails"] = True
+        
+        return await asyncio.to_thread(
+            self.geocoder.geocode, 
+            address,
+            **kwargs
+        )
 
     async def _reverse_sync(self, lat: float, lon: float):
-        return await asyncio.to_thread(self.geocoder.reverse, (lat, lon), timeout=10)
+        """Run the blocking geopy reverse geocode call in a thread"""
+        await self._rate_limit()
+        
+        # Build kwargs conditionally based on provider
+        kwargs = {"timeout": 10}
+        if self.provider == "nominatim":
+            kwargs["zoom"] = 18  # Building level detail
+            kwargs["addressdetails"] = True
+        
+        return await asyncio.to_thread(
+            self.geocoder.reverse, 
+            (lat, lon),
+            **kwargs
+        )
 
     async def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
         """
         Convert address to (latitude, longitude)
-        Returns None if geocoding fails
+        
+        Args:
+            address: Full address string (e.g., "123 Main St, Mumbai, India")
+            
+        Returns:
+            Tuple of (latitude, longitude) or None if geocoding fails
+            
+        Example:
+            coords = await geocoding_service.geocode_address("Connaught Place, New Delhi")
+            # Returns: (28.6315, 77.2167)
         """
         try:
             location = await self._geocode_sync(address)
@@ -33,22 +185,67 @@ class GeocodingService:
                 return (location.latitude, location.longitude)
             return None
         except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"Geocoding error: {e}")
+            print(f"[Geocoding Error - {self.provider}] {e}")
+            return None
+        except Exception as e:
+            print(f"[Unexpected Geocoding Error] {e}")
             return None
 
-    async def reverse_geocode(self, lat: float, lon: float) -> Optional[str]:
+    async def reverse_geocode(self, lat: float, lon: float) -> Optional[Dict[str, any]]:
         """
-        Convert (latitude, longitude) to address
+        Convert (latitude, longitude) to address with detailed components
+        
+        Args:
+            lat: Latitude coordinate
+            lon: Longitude coordinate
+            
+        Returns:
+            Dictionary with 'address' (full string) and 'components' (structured data)
+            or None if reverse geocoding fails
+            
+        Example:
+            result = await geocoding_service.reverse_geocode(28.6315, 77.2167)
+            # Returns: {
+            #     'address': 'Connaught Place, New Delhi, 110001, India',
+            #     'components': {
+            #         'road': 'Connaught Place',
+            #         'city': 'New Delhi',
+            #         'postcode': '110001',
+            #         'country': 'India',
+            #         'country_code': 'in'
+            #     }
+            # }
         """
         try:
             location = await self._reverse_sync(lat, lon)
             if location:
-                return location.address
+                # Build response with address string and components
+                response = {
+                    'address': location.address,
+                    'latitude': lat,
+                    'longitude': lon
+                }
+                
+                # Add structured address components if available
+                if hasattr(location, 'raw') and 'address' in location.raw:
+                    response['components'] = location.raw['address']
+                
+                return response
             return None
         except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"Reverse geocoding error: {e}")
+            print(f"[Reverse Geocoding Error - {self.provider}] {e}")
+            return None
+        except Exception as e:
+            print(f"[Unexpected Reverse Geocoding Error] {e}")
             return None
 
 
-# Singleton instance
-geocoding_service = GeocodingService()
+# =====================================================
+# GLOBAL INSTANCE (Uses Factory Pattern)
+# =====================================================
+
+# Get geocoding service using factory function
+# In test mode (ENVIRONMENT=test), this will be MockGeocodingService
+# In production, this will be real GeocodingService
+geocoding_service = get_geocoding_service()
+

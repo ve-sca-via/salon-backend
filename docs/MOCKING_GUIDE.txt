@@ -1,0 +1,269 @@
+"""
+====================================================================================================
+MOCK EMAIL & GEOCODING - COMPLETE GUIDE FOR DUMMIES 🎯
+====================================================================================================
+
+## THE SIMPLE ANSWER TO YOUR QUESTION
+
+Question: "how do we mock email/geocoding like i dont understand what we have to do, 
+           install some library or what?"
+
+Answer:   NO NEW LIBRARIES! Just use the SAME factory pattern we used for database!
+
+
+====================================================================================================
+SIDE-BY-SIDE COMPARISON
+====================================================================================================
+
+┌─────────────────────────────────────┬─────────────────────────────────────┐
+│         DATABASE MOCKING            │      EMAIL/GEOCODING MOCKING        │
+│         (You already have!)         │      (Just added this!)             │
+├─────────────────────────────────────┼─────────────────────────────────────┤
+│                                     │                                     │
+│ # database.py                       │ # email.py / geocoding.py           │
+│                                     │                                     │
+│ class MockSupabaseClient:           │ class MockEmailService:             │
+│     def table(self):                │     def send_email(self):           │
+│         return FakeTable()          │         self.sent_emails.append()   │
+│         ↑ Returns fake data         │         ↑ Stores, doesn't send      │
+│                                     │                                     │
+│ def get_db():                       │ def get_email_service():            │
+│     if ENVIRONMENT == "test":       │     if ENVIRONMENT == "test":       │
+│         return MockSupabaseClient() │         return MockEmailService()   │
+│     return RealClient()             │     return RealEmailService()       │
+│     ↑ Factory function              │     ↑ Same factory pattern!         │
+│                                     │                                     │
+│ db = get_db()                       │ email_service = get_email_service() │
+│ ↑ Global instance using factory     │ ↑ Same approach!                    │
+│                                     │                                     │
+└─────────────────────────────────────┴─────────────────────────────────────┘
+
+
+====================================================================================================
+WHAT WE DID (Step-by-Step)
+====================================================================================================
+
+STEP 1: Created Mock Classes
+─────────────────────────────
+
+email.py:
+   class MockEmailService:
+       def __init__(self):
+           self.sent_emails = []  # ← Store emails here instead of sending
+       
+       def send_vendor_approval_email(...):
+           # Don't send real email, just store it
+           self.sent_emails.append({...})
+           return True
+
+geocoding.py:
+   class MockGeocodingService:
+       async def geocode_address(self, address):
+           # Don't call API, just return fake coordinates
+           return (19.0760, 72.8777)  # Fake Mumbai coords
+
+
+STEP 2: Created Factory Functions
+──────────────────────────────────
+
+email.py:
+   def get_email_service():
+       if settings.ENVIRONMENT == "test":
+           return MockEmailService()  # ← Fake
+       return EmailService()          # ← Real
+
+geocoding.py:
+   def get_geocoding_service():
+       if settings.ENVIRONMENT == "test":
+           return MockGeocodingService()  # ← Fake
+       return GeocodingService()          # ← Real
+
+
+STEP 3: Changed Global Instances
+─────────────────────────────────
+
+email.py:
+   # Before:
+   email_service = EmailService()  # ❌ Always real
+   
+   # After:
+   email_service = get_email_service()  # ✅ Mock in tests!
+
+geocoding.py:
+   # Before:
+   geocoding_service = GeocodingService()  # ❌ Always real
+   
+   # After:
+   geocoding_service = get_geocoding_service()  # ✅ Mock in tests!
+
+
+====================================================================================================
+HOW TO USE IN TESTS
+====================================================================================================
+
+# test_something.py
+
+import os
+
+# STEP 1: Set environment BEFORE importing anything!
+os.environ["ENVIRONMENT"] = "test"
+
+# STEP 2: Now import - these will be MOCK services!
+from app.services.email import email_service
+from app.services.geocoding import geocoding_service
+from app.services.booking_service import BookingService
+
+# STEP 3: Test your code
+async def test_create_booking():
+    # Clear previous test data
+    email_service.sent_emails = []
+    
+    # Create booking (internally sends email)
+    service = BookingService()
+    booking = await service.create_booking(
+        booking_data=...,
+        user_id="test_user"
+    )
+    
+    # ✅ Verify email was "sent" (actually just stored!)
+    assert len(email_service.sent_emails) == 1
+    assert email_service.sent_emails[0]["to_email"] == "customer@test.com"
+    assert "confirmation" in email_service.sent_emails[0]["subject"].lower()
+    
+    # ✅ No real email was sent!
+    # ✅ Test runs instantly!
+    # ✅ No SMTP server needed!
+
+async def test_vendor_approval():
+    # Approve vendor (internally geocodes address)
+    coords = await geocoding_service.geocode_address("123 Test St, Mumbai")
+    
+    # ✅ Returns fake coordinates!
+    assert coords == (19.0760, 72.8777)
+    
+    # ✅ No API call was made!
+    # ✅ No API key needed!
+    # ✅ Test runs instantly!
+
+
+====================================================================================================
+WHAT YOU CAN CHECK IN TESTS
+====================================================================================================
+
+EMAIL MOCKING:
+──────────────
+   email_service.sent_emails  # ← List of all "sent" emails
+   
+   Each email has:
+   - to_email: "customer@example.com"
+   - subject: "Booking Confirmed"
+   - html_body: "<html>...</html>"
+   - text_body: "..."
+   
+   Example test:
+   assert len(email_service.sent_emails) == 1
+   assert email_service.sent_emails[0]["to_email"] == "test@example.com"
+
+GEOCODING MOCKING:
+──────────────────
+   coords = await geocoding_service.geocode_address("any address")
+   # Always returns: (19.0760, 72.8777)
+   
+   address = await geocoding_service.reverse_geocode(19.0, 72.0)
+   # Always returns: {"city": "Mumbai", "state": "Maharashtra", ...}
+
+
+====================================================================================================
+LIBRARIES INSTALLED: ZERO!
+====================================================================================================
+
+You DON'T need:
+   ❌ pytest-mock
+   ❌ unittest.mock
+   ❌ responses (for HTTP mocking)
+   ❌ faker (for fake data)
+   ❌ factoryboy
+   ❌ Any other mocking library!
+
+You ONLY need:
+   ✅ Factory pattern (same as database!)
+   ✅ Environment variable (ENVIRONMENT=test)
+   ✅ Mock classes (we just created them!)
+
+
+====================================================================================================
+COMPARISON: BEFORE vs AFTER
+====================================================================================================
+
+┌──────────────────────────────┬──────────────────────────────┐
+│ BEFORE (Can't Test)          │ AFTER (Can Test!)            │
+├──────────────────────────────┼──────────────────────────────┤
+│ email_service = EmailService()│ email_service =             │
+│ ↓                            │   get_email_service()        │
+│ ALWAYS sends real email      │ ↓                            │
+│ ❌ Need SMTP server          │ In test: MockEmailService    │
+│ ❌ Need credentials          │ In prod: EmailService        │
+│ ❌ Slow tests                │ ✅ No SMTP needed            │
+│                              │ ✅ Instant tests             │
+│                              │                              │
+│ geocoding_service =          │ geocoding_service =          │
+│   GeocodingService()         │   get_geocoding_service()    │
+│ ↓                            │ ↓                            │
+│ ALWAYS calls API             │ In test: MockGeocodingService│
+│ ❌ Need API key              │ In prod: GeocodingService    │
+│ ❌ Rate limits               │ ✅ No API key needed         │
+│ ❌ Slow tests                │ ✅ Instant tests             │
+└──────────────────────────────┴──────────────────────────────┘
+
+
+====================================================================================================
+YOUR COMPLETE MOCKING STACK
+====================================================================================================
+
+1. DATABASE MOCKING ✅ (Already done)
+   - MockSupabaseClient
+   - get_db() factory
+   - Works in test mode
+
+2. EMAIL MOCKING ✅ (Just added!)
+   - MockEmailService
+   - get_email_service() factory
+   - Works in test mode
+
+3. GEOCODING MOCKING ✅ (Just added!)
+   - MockGeocodingService
+   - get_geocoding_service() factory
+   - Works in test mode
+
+
+YOU CAN NOW TEST EVERYTHING WITHOUT:
+   ❌ Real database
+   ❌ Real SMTP server
+   ❌ Real geocoding API
+   ❌ Any credentials
+   ❌ Network connection
+
+
+====================================================================================================
+FINAL SUMMARY
+====================================================================================================
+
+Question: "how do we mock email/geocoding like i dont understand what we have to do, 
+           install some library or what?"
+
+Answer:   ✅ NO libraries to install!
+          ✅ Just use factory pattern (same as database!)
+          ✅ We created MockEmailService and MockGeocodingService
+          ✅ We created get_email_service() and get_geocoding_service()
+          ✅ Changed singletons to use factories
+          ✅ In test mode (ENVIRONMENT=test), you get mocks automatically!
+
+It's the EXACT SAME approach as database mocking!
+You already understand this! 🎯
+
+
+====================================================================================================
+"""
+
+if __name__ == "__main__":
+    print(__doc__)

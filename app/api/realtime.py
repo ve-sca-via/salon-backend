@@ -8,16 +8,13 @@ Set up real-time subscriptions for:
 """
 
 from fastapi import APIRouter, HTTPException
-from supabase import create_client
+from app.core.database import get_db
 from app.core.config import settings
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
 
-# Initialize Supabase client for realtime
-supabase_client = create_client(
-    settings.SUPABASE_URL,
-    settings.SUPABASE_SERVICE_ROLE_KEY
-)
+# Initialize Supabase client for realtime using factory function
+supabase_client = get_db()
 
 
 class RealtimeChannel:

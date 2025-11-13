@@ -24,12 +24,14 @@ wheels/
 .installed.cfg
 *.egg
 
-# Environment variables - NEVER COMMIT THESE!
-.env
-.env.local
-.env.*.local
-.env.production
-.env.development
+# Environment variables
+.env                      # ❌ NEVER COMMIT (auto-generated, changes per environment)
+.env.production           # ❌ NEVER COMMIT (contains real production secrets!)
+.env.development          # ❌ NEVER COMMIT (if it contains real credentials)
+.env.*.local              # ❌ NEVER COMMIT (personal local overrides)
+
+# ✅ .env.local IS COMMITTED (safe localhost config for team)
+# ✅ .env.production.example IS COMMITTED (template without secrets)
 
 # IDEs
 .vscode/

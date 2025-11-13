@@ -4,9 +4,13 @@ Handles Razorpay payments for registration fees, convenience fees, and vendor pa
 """
 from fastapi import APIRouter, HTTPException, Depends, Header, status, Request
 from typing import Optional
-from supabase import create_client, Client
+
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.auth import get_current_user_id, TokenData, get_current_user
+
+# Get database client using factory function
+db = get_db()
 from app.services.payment import RazorpayService
 from app.services.email import email_service
 from app.schemas import (
@@ -24,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
-# Initialize Supabase client
-supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+# Initialize db client
+
 
 # Initialize Razorpay service
 razorpay = RazorpayService()
@@ -45,7 +49,7 @@ async def create_registration_order(
     """
     try:
         # Verify vendor request exists and belongs to user
-        request_check = supabase.table("vendor_join_requests").select(
+        request_check = db.table("vendor_join_requests").select(
             "id, status, salon_id"
         ).eq("id", vendor_request_id).single().execute()
         
@@ -65,7 +69,7 @@ async def create_registration_order(
             )
         
         # Get registration fee from system_config
-        config = supabase.table("system_config").select("value").eq("key", "vendor_registration_fee").single().execute()
+        config = db.table("system_config").select("value").eq("key", "vendor_registration_fee").single().execute()
         
         registration_fee = float(config.data["value"]) if config.data else 1000.0
         
@@ -90,7 +94,7 @@ async def create_registration_order(
             "status": "pending"
         }
         
-        supabase.table("vendor_payments").insert(payment_data).execute()
+        db.table("vendor_payments").insert(payment_data).execute()
         
         logger.info(f"Created registration payment order: {order['id']}")
         
@@ -137,7 +141,7 @@ async def verify_registration_payment(
         payment_details = razorpay.get_payment_details(payment.razorpay_payment_id)
         
         # Update vendor_payments table
-        payment_update = supabase.table("vendor_payments").update({
+        payment_update = db.table("vendor_payments").update({
             "razorpay_payment_id": payment.razorpay_payment_id,
             "razorpay_signature": payment.razorpay_signature,
             "status": "completed",
@@ -153,7 +157,7 @@ async def verify_registration_payment(
         payment_record = payment_update.data[0]
         
         # Get salon and vendor details for emails
-        salon_response = supabase.table("salons").select(
+        salon_response = db.table("salons").select(
             "*, vendor_join_requests(owner_name, owner_email)"
         ).eq("id", payment_record["salon_id"]).single().execute()
         
@@ -165,10 +169,11 @@ async def verify_registration_payment(
         
         salon_data = salon_response.data
         
-        # Activate salon
-        supabase.table("salons").update({
+        # Activate salon with all required fields
+        db.table("salons").update({
             "is_active": True,
-            "registration_fee_paid": True
+            "registration_fee_paid": True,
+            "registration_paid_at": "now()"
         }).eq("id", payment_record["salon_id"]).execute()
         
         logger.info(f"Registration payment verified: {payment.razorpay_payment_id}")
@@ -235,7 +240,7 @@ async def create_booking_order(
     """
     try:
         # Get booking details
-        booking = supabase.table("bookings").select(
+        booking = db.table("bookings").select(
             "*, services(price, is_free)"
         ).eq("id", booking_id).eq("customer_id", user_id).single().execute()
         
@@ -252,7 +257,7 @@ async def create_booking_order(
         service_price = 0 if service["is_free"] else float(service["price"])
         
         # Get convenience fee from system_config
-        config = supabase.table("system_config").select("value").eq("key", "booking_convenience_fee").single().execute()
+        config = db.table("system_config").select("value").eq("key", "booking_convenience_fee").single().execute()
         
         convenience_fee = float(config.data["value"]) if config.data else 10.0
         
@@ -281,7 +286,7 @@ async def create_booking_order(
             "status": "pending"
         }
         
-        supabase.table("booking_payments").insert(payment_data).execute()
+        db.table("booking_payments").insert(payment_data).execute()
         
         logger.info(f"Created booking payment order: {order['id']}")
         
@@ -330,7 +335,7 @@ async def verify_booking_payment(
             )
         
         # Update booking_payments table
-        payment_update = supabase.table("booking_payments").update({
+        payment_update = db.table("booking_payments").update({
             "razorpay_payment_id": payment.razorpay_payment_id,
             "razorpay_signature": payment.razorpay_signature,
             "status": "completed",
@@ -346,7 +351,7 @@ async def verify_booking_payment(
         payment_record = payment_update.data[0]
         
         # Confirm booking
-        supabase.table("bookings").update({
+        db.table("bookings").update({
             "status": "confirmed",
             "confirmed_at": "now()"
         }).eq("id", payment_record["booking_id"]).execute()
@@ -386,7 +391,7 @@ async def refund_payment(
     """
     try:
         # Get payment details
-        payment = supabase.table("booking_payments").select(
+        payment = db.table("booking_payments").select(
             "*, bookings(customer_id)"
         ).eq("razorpay_payment_id", payment_id).single().execute()
         
@@ -414,13 +419,13 @@ async def refund_payment(
         )
         
         # Update payment status
-        supabase.table("booking_payments").update({
+        db.table("booking_payments").update({
             "status": "refunded",
             "refund_id": refund["id"]
         }).eq("razorpay_payment_id", payment_id).execute()
         
         # Update booking status
-        supabase.table("bookings").update({
+        db.table("bookings").update({
             "status": "cancelled"
         }).eq("id", payment_data["booking_id"]).execute()
         
@@ -492,11 +497,11 @@ async def handle_webhook(
         
         elif event == "payment.failed":
             # Payment failed
-            supabase.table("booking_payments").update({
+            db.table("booking_payments").update({
                 "status": "failed"
             }).eq("razorpay_order_id", order_id).execute()
             
-            supabase.table("vendor_payments").update({
+            db.table("vendor_payments").update({
                 "status": "failed"
             }).eq("razorpay_order_id", order_id).execute()
         
@@ -529,7 +534,7 @@ async def get_payment_history(
     """
     try:
         # Get booking payments
-        booking_payments = supabase.table("booking_payments").select(
+        booking_payments = db.table("booking_payments").select(
             "*, bookings(booking_date, booking_time, services(name))"
         ).eq("bookings.customer_id", user_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
         
@@ -559,7 +564,7 @@ async def get_vendor_earnings(
     """
     try:
         # Get salon
-        salon = supabase.table("salons").select("id").eq("vendor_id", user_id).single().execute()
+        salon = db.table("salons").select("id").eq("vendor_id", user_id).single().execute()
         
         if not salon.data:
             raise HTTPException(
@@ -570,7 +575,7 @@ async def get_vendor_earnings(
         salon_id = salon.data["id"]
         
         # Get completed bookings with payments
-        bookings = supabase.table("bookings").select(
+        bookings = db.table("bookings").select(
             "*, booking_payments(service_amount, convenience_fee, paid_at)"
         ).eq("salon_id", salon_id).eq("status", "completed").eq("booking_payments.status", "completed").execute()
         

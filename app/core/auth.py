@@ -8,19 +8,18 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
-from supabase import create_client, Client
 from app.core.config import settings
+from app.core.database import get_db
 import logging
 import uuid
 
 logger = logging.getLogger(__name__)
 
+# Get database client using factory function
+db = get_db()
+
 # Security scheme
 security = HTTPBearer()
-
-# Initialize Supabase client with service role key
-# Service role bypasses RLS automatically
-supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
 # =====================================================
@@ -146,7 +145,7 @@ def verify_token(token: str) -> TokenPayload:
         # Check if token is blacklisted (revoked)
         if jti:
             logger.info(f"Checking if token is blacklisted: {jti}")
-            blacklist_check = supabase.table("token_blacklist").select("id").eq("token_jti", jti).execute()
+            blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
             logger.info(f"Blacklist check result: {blacklist_check.data}")
             if blacklist_check.data:
                 logger.warning(f"⚠️ BLOCKED: Attempt to use blacklisted token: {jti}")
@@ -202,7 +201,7 @@ def verify_refresh_token(token: str) -> dict:
         
         # Check if refresh token is blacklisted (revoked)
         if jti:
-            blacklist_check = supabase.table("token_blacklist").select("id").eq("token_jti", jti).execute()
+            blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
             if blacklist_check.data:
                 logger.warning(f"Attempt to use blacklisted refresh token: {jti}")
                 raise HTTPException(
@@ -250,10 +249,10 @@ def revoke_token(token_jti: str, user_id: str, token_type: str, expires_at: date
     """
     try:
         logger.info(f"Attempting to revoke token: {token_jti} for user {user_id}")
-        logger.debug(f"Using Supabase URL: {settings.SUPABASE_URL}")
+        logger.debug(f"Using db URL: {settings.SUPABASE_URL}")
         logger.debug(f"Service role key present: {bool(settings.SUPABASE_SERVICE_ROLE_KEY)}")
         
-        result = supabase.table("token_blacklist").insert({
+        result = db.table("token_blacklist").insert({
             "token_jti": token_jti,
             "user_id": user_id,
             "token_type": token_type,
@@ -309,7 +308,7 @@ def cleanup_expired_tokens() -> int:
     """
     try:
         now = datetime.utcnow().isoformat()
-        result = supabase.table("token_blacklist").delete().lt("expires_at", now).execute()
+        result = db.table("token_blacklist").delete().lt("expires_at", now).execute()
         count = len(result.data) if result.data else 0
         logger.info(f"Cleaned up {count} expired tokens from blacklist")
         return count
@@ -342,7 +341,7 @@ async def get_current_user(
     
     # Verify user exists and is active
     try:
-        user_response = supabase.table("profiles").select(
+        user_response = db.table("profiles").select(
             "id, email, role, is_active"
         ).eq("id", token_data.sub).single().execute()
         
@@ -604,7 +603,7 @@ async def get_user_salon_id(user_id: str) -> Optional[str]:
         Salon ID if user is vendor owner, None otherwise
     """
     try:
-        response = supabase.table("salons").select("id").eq(
+        response = db.table("salons").select("id").eq(
             "owner_id", user_id
         ).eq("is_active", True).single().execute()
         
