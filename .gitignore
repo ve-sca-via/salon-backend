@@ -27,13 +27,14 @@ wheels/
 *.env
 
 # Environment variables
-.env                      # ❌ NEVER COMMIT (auto-generated, changes per environment)
-.env.production           # ❌ NEVER COMMIT (contains real production secrets!)
-.env.development          # ❌ NEVER COMMIT (if it contains real credentials)
-.env.*.local              # ❌ NEVER COMMIT (personal local overrides)
-.env.*.production       
-# ✅ .env.local IS COMMITTED (safe localhost config for team)
-# ✅ .env.production.example IS COMMITTED (template without secrets)
+.env
+.env.*
+.env.local
+.env.*.local
+
+# BUT allow these templates (use ! to negate)
+!.env.example
+!.env.*.example
 
 # IDEs
 .vscode/
