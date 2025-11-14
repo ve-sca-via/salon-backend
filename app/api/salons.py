@@ -606,8 +606,72 @@ async def upload_salon_image(
 
 
 # ========================================
-# SYSTEM CONFIG
+# PUBLIC SYSTEM CONFIG
 # ========================================
+
+@router.get("/config/public")
+async def get_public_configs():
+    """
+    Get public system configurations (non-sensitive values)
+    
+    Returns configuration values that are safe to expose to frontend:
+    - Fee percentages
+    - Booking limits
+    - Cancellation policies
+    
+    Does NOT return sensitive values like API keys
+    """
+    from app.services.config_service import ConfigService
+    
+    try:
+        config_service = ConfigService()
+        
+        # Define which configs are safe to expose publicly
+        public_config_keys = [
+            "convenience_fee_percentage",
+            "platform_commission_percentage",
+            "cancellation_window_hours",
+            "max_booking_advance_days"
+        ]
+        
+        # Fetch all configs and filter to public ones
+        all_configs = await config_service.get_all_configs()
+        
+        public_configs = {}
+        for config in all_configs:
+            if config.get("config_key") in public_config_keys and config.get("is_active"):
+                key = config["config_key"]
+                value = config["config_value"]
+                
+                # Convert to appropriate type
+                if config.get("config_type") == "number":
+                    try:
+                        value = float(value) if '.' in str(value) else int(value)
+                    except (ValueError, TypeError):
+                        pass
+                elif config.get("config_type") == "boolean":
+                    value = value in [True, "true", "True", "1", 1]
+                
+                public_configs[key] = value
+        
+        return {
+            "success": True,
+            "configs": public_configs
+        }
+    
+    except Exception as e:
+        # Fail gracefully with defaults
+        return {
+            "success": False,
+            "configs": {
+                "convenience_fee_percentage": 10,
+                "platform_commission_percentage": 10,
+                "cancellation_window_hours": 24,
+                "max_booking_advance_days": 30
+            },
+            "error": "Using default values"
+        }
+
 
 @router.get("/config/booking-fee-percentage")
 async def get_booking_fee_percentage(
@@ -618,7 +682,10 @@ async def get_booking_fee_percentage(
     
     This is a public endpoint that returns the booking fee percentage
     from system_config table
+    
+    DEPRECATED: Use /salons/config/public instead
     """
     commission = await salon_service.get_platform_commission_config()
     return {"booking_fee_percentage": commission}
+
 

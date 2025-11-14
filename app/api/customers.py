@@ -110,16 +110,18 @@ async def add_to_cart(
         customer_service = CustomerService()
         return await customer_service.add_to_cart(
             customer_id=current_user.user_id,
-            salon_id=cart_item.salon_id,
-            salon_name=cart_item.salon_name,
-            service_id=cart_item.service_id,
-            service_name=cart_item.service_name,
-            price=cart_item.price,
-            quantity=cart_item.quantity,
-            plan_name=cart_item.plan_name,
-            category=cart_item.category,
-            description=cart_item.description,
-            duration=cart_item.duration
+            cart_item={
+                "salon_id": cart_item.salon_id,
+                "salon_name": cart_item.salon_name,
+                "service_id": cart_item.service_id,
+                "service_name": cart_item.service_name,
+                "price": cart_item.price,
+                "quantity": cart_item.quantity,
+                "plan_name": cart_item.plan_name,
+                "category": cart_item.category,
+                "description": cart_item.description,
+                "duration": cart_item.duration
+            }
         )
         
     except HTTPException:

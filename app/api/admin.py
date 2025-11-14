@@ -1245,3 +1245,170 @@ async def get_pending_payment_salons(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch pending payment salons"
         )
+
+
+# =====================================================
+# SYSTEM CONFIGURATION MANAGEMENT
+# =====================================================
+
+@router.get("/config", response_model=List[SystemConfigResponse])
+async def get_all_configs(
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Get all system configurations
+    - Admin only
+    - Returns all config entries including sensitive ones (for admin visibility)
+    """
+    try:
+        config_service = ConfigService()
+        configs = await config_service.get_all_configs()
+        
+        return configs
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch configs: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch configurations: {str(e)}"
+        )
+
+
+@router.get("/config/{config_key}", response_model=SystemConfigResponse)
+async def get_config(
+    config_key: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Get a specific configuration by key
+    - Admin only
+    """
+    try:
+        config_service = ConfigService()
+        config = await config_service.get_config(config_key)
+        
+        return config
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch config {config_key}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch configuration: {str(e)}"
+        )
+
+
+@router.post("/config", response_model=SystemConfigResponse, status_code=status.HTTP_201_CREATED)
+async def create_config(
+    config: SystemConfigCreate,
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Create a new system configuration
+    - Admin only
+    """
+    try:
+        config_service = ConfigService()
+        new_config = await config_service.create_config(
+            config_key=config.config_key,
+            config_value=config.config_value,
+            description=config.description,
+            config_type=config.config_type.value
+        )
+        
+        logger.info(f"Admin {current_user.user_id} created config: {config.config_key}")
+        
+        return new_config
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to create config: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create configuration: {str(e)}"
+        )
+
+
+@router.put("/config/{config_key}", response_model=SystemConfigResponse)
+async def update_config(
+    config_key: str,
+    config_update: SystemConfigUpdate,
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Update a system configuration
+    - Admin only
+    - Tracks who made the change
+    """
+    try:
+        config_service = ConfigService()
+        
+        # Build update dictionary
+        updates = {"updated_by": current_user.user_id}
+        
+        if config_update.config_value is not None:
+            updates["config_value"] = config_update.config_value
+        if config_update.description is not None:
+            updates["description"] = config_update.description
+        if config_update.is_active is not None:
+            updates["is_active"] = config_update.is_active
+        
+        updated_config = await config_service.update_config(config_key, updates)
+        
+        logger.info(f"Admin {current_user.user_id} updated config: {config_key}")
+        
+        return updated_config
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to update config {config_key}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update configuration: {str(e)}"
+        )
+
+
+@router.delete("/config/{config_key}")
+async def delete_config(
+    config_key: str,
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Delete a system configuration
+    - Admin only
+    - Use with caution
+    """
+    try:
+        config_service = ConfigService()
+        await config_service.delete_config(config_key)
+        
+        logger.warning(f"Admin {current_user.user_id} deleted config: {config_key}")
+        
+        return {
+            "success": True,
+            "message": f"Configuration '{config_key}' deleted successfully"
+        }
+    
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete config {config_key}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete configuration: {str(e)}"
+        )

@@ -614,27 +614,40 @@ class ErrorResponse(BaseModel):
     success: bool = False
     message: str
     errors: Optional[List[str]] = None
-    error_code: Optional[str] = None
-
-# =====================================================
-# PAYMENT SCHEMAS
-# =====================================================
-
-class PaymentOrderCreate(BaseModel):
-    amount: int = Field(..., description="Amount in paise (1 INR = 100 paise)")
-    currency: str = Field(default="INR", description="Currency code")
-    receipt: str = Field(..., description="Receipt/order ID")
-    notes: Optional[Dict[str, Any]] = Field(default=None, description="Additional notes")
-
-class PaymentOrderResponse(BaseModel):
-    id: str
-    amount: int
-    currency: str
-    receipt: str
-    status: str
-    created_at: int
-
 class PaymentVerification(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+
+# =====================================================
+# SYSTEM CONFIGURATION SCHEMAS
+# =====================================================
+
+class ConfigType(str, Enum):
+    STRING = "string"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    JSON = "json"
+
+class SystemConfigBase(BaseModel):
+    config_key: str = Field(..., min_length=1, max_length=100)
+    config_value: Any = Field(...)
+    config_type: ConfigType = ConfigType.STRING
+    description: Optional[str] = Field(None, max_length=500)
+    is_active: bool = True
+
+class SystemConfigCreate(SystemConfigBase):
+    pass
+
+class SystemConfigUpdate(BaseModel):
+    config_value: Optional[Any] = None
+    description: Optional[str] = Field(None, max_length=500)
+    is_active: Optional[bool] = None
+
+class SystemConfigResponse(SystemConfigBase, TimestampMixin):
+    id: str
+    updated_by: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
