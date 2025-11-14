@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Career Application Received</title>
+    <style>
+        body {
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            color: #555555;
+            margin: 0;
+            padding: 0;
+            background-color: #F5F8FE;
+        }
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background: #FFFFFF;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #F89C02 0%, #FFB84D 100%);
+            padding: 40px 30px;
+            text-align: center;
+            color: #FFFFFF;
+        }
+        .header h1 {
+            font-family: 'Marcellus', serif;
+            margin: 0;
+            font-size: 28px;
+            font-weight: normal;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .content h2 {
+            font-family: 'Marcellus', serif;
+            color: #000000;
+            font-size: 22px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 16px 0;
+        }
+        .highlight-box {
+            background: #F5F8FE;
+            border-left: 4px solid #F89C02;
+            padding: 20px;
+            margin: 24px 0;
+            border-radius: 4px;
+        }
+        .highlight-box p {
+            margin: 8px 0;
+        }
+        .highlight-box strong {
+            color: #000000;
+        }
+        .info-list {
+            background: #FFFFFF;
+            border: 1px solid #E6E6E6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 24px 0;
+        }
+        .info-list li {
+            margin: 10px 0;
+            padding-left: 10px;
+        }
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #F89C02 0%, #FFB84D 100%);
+            color: #FFFFFF !important;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 6px;
+            margin: 24px 0;
+            font-weight: 600;
+            text-align: center;
+        }
+        .footer {
+            background: #000000;
+            color: #B0B0B0;
+            padding: 30px;
+            text-align: center;
+            font-size: 14px;
+        }
+        .footer a {
+            color: #F89C02;
+            text-decoration: none;
+        }
+        .success-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="success-icon">✓</div>
+            <h1>Application Received!</h1>
+        </div>
+        
+        <div class="content">
+            <h2>Dear {{ applicant_name }},</h2>
+            
+            <p>Thank you for applying for the position of <strong>{{ position }}</strong> at our organization!</p>
+            
+            <div class="highlight-box">
+                <p><strong>Application Number:</strong> {{ application_number }}</p>
+                <p><strong>Position:</strong> {{ position }}</p>
+                <p><strong>Submitted On:</strong> {{ current_date }}</p>
+            </div>
+            
+            <p>We have successfully received your application and all the documents you submitted. Our HR team will review your profile and get back to you within <strong>5-7 business days</strong>.</p>
+            
+            <div class="info-list">
+                <h3 style="margin-top: 0; color: #000000; font-family: 'Marcellus', serif;">What Happens Next?</h3>
+                <ol style="padding-left: 20px;">
+                    <li>Our HR team will review your application and documents</li>
+                    <li>Shortlisted candidates will be contacted for an initial screening call</li>
+                    <li>Selected candidates will be invited for a face-to-face interview</li>
+                    <li>Final candidates will receive an offer letter</li>
+                </ol>
+            </div>
+            
+            <p><strong>Important:</strong> Please keep your application number <code style="background: #F5F8FE; padding: 4px 8px; border-radius: 4px; font-family: monospace;">{{ application_number }}</code> handy for future reference.</p>
+            
+            <p>If you have any questions or need to update your application, feel free to reach out to us at <a href="mailto:{{ support_email }}" style="color: #F89C02;">{{ support_email }}</a></p>
+            
+            <p style="margin-top: 32px;">Best regards,<br>
+            <strong>HR Team</strong><br>
+            Salon Management Platform</p>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; {{ current_year }} Salon Management Platform. All rights reserved.</p>
+            <p>
+                <a href="#">Privacy Policy</a> | 
+                <a href="#">Terms of Service</a> | 
+                <a href="mailto:{{ support_email }}">Contact Us</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>

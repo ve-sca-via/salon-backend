@@ -3,7 +3,7 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import location, auth, salons, bookings, realtime, admin, rm, vendors, payments, customers
+from app.api import location, auth, salons, bookings, realtime, admin, rm, vendors, payments, customers, careers
 
 # Configure logging
 logging.basicConfig(
@@ -61,6 +61,7 @@ app.include_router(rm.router, prefix="/api")
 app.include_router(vendors.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(customers.router)  # Customer portal endpoints
+app.include_router(careers.router, prefix="/api/v1/careers", tags=["Careers"])  # Career applications
 
 
 

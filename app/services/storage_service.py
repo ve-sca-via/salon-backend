@@ -1,0 +1,217 @@
+"""
+Storage Service - File Upload & Management
+Handles Supabase Storage operations for file uploads
+"""
+import logging
+from typing import Optional
+from fastapi import UploadFile, HTTPException, status
+import uuid
+import mimetypes
+from app.core.database import get_db
+
+logger = logging.getLogger(__name__)
+
+# Initialize Supabase client
+supabase = get_db()
+
+
+class StorageService:
+    """
+    Service for managing file uploads to Supabase Storage.
+    Provides validation, upload, and signed URL generation.
+    """
+    
+    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx'}
+    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+    ALLOWED_MIME_TYPES = {
+        'application/pdf',
+        'image/jpeg',
+        'image/jpg', 
+        'image/png',
+        'image/webp',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    }
+    
+    def __init__(self):
+        """Initialize storage service"""
+        self.client = supabase
+    
+    def validate_file(self, file: UploadFile, allowed_types: Optional[set] = None) -> bool:
+        """
+        Validate file type and size
+        
+        Args:
+            file: UploadFile object from FastAPI
+            allowed_types: Optional set of allowed MIME types (defaults to class ALLOWED_MIME_TYPES)
+        
+        Returns:
+            True if valid
+            
+        Raises:
+            HTTPException if validation fails
+        """
+        allowed_types = allowed_types or self.ALLOWED_MIME_TYPES
+        
+        # Check file size
+        file.file.seek(0, 2)  # Seek to end
+        file_size = file.file.tell()
+        file.file.seek(0)  # Reset to beginning
+        
+        if file_size > self.MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File {file.filename} exceeds 5MB limit"
+            )
+        
+        # Check file extension
+        ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+        if ext not in self.ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File type {ext} not allowed"
+            )
+        
+        # Check MIME type
+        mime_type, _ = mimetypes.guess_type(file.filename)
+        if mime_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid file type: {mime_type}"
+            )
+        
+        return True
+    
+    async def upload_file(
+        self, 
+        file: UploadFile, 
+        bucket: str,
+        folder: str,
+        custom_filename: Optional[str] = None
+    ) -> str:
+        """
+        Upload file to Supabase Storage
+        
+        Args:
+            file: UploadFile object
+            bucket: Storage bucket name
+            folder: Folder path within bucket
+            custom_filename: Optional custom filename (generates UUID if not provided)
+        
+        Returns:
+            File path in storage (bucket/folder/filename)
+            
+        Raises:
+            HTTPException on upload failure
+        """
+        try:
+            # Generate unique filename if not provided
+            ext = file.filename.split('.')[-1] if '.' in file.filename else 'bin'
+            filename = custom_filename or f"{uuid.uuid4()}.{ext}"
+            storage_path = f"{folder}/{filename}"
+            
+            # Read file content
+            content = await file.read()
+            
+            # Upload to Supabase Storage
+            result = self.client.storage.from_(bucket).upload(
+                path=storage_path,
+                file=content,
+                file_options={"content-type": file.content_type or "application/octet-stream"}
+            )
+            
+            if hasattr(result, 'error') and result.error:
+                logger.error(f"Storage upload error: {result.error}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to upload file"
+                )
+            
+            # Reset file pointer for potential reuse
+            await file.seek(0)
+            
+            logger.info(f"✅ File uploaded: {storage_path}")
+            return storage_path
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error uploading file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"File upload failed: {str(e)}"
+            )
+    
+    def create_signed_url(self, bucket: str, path: str, expires_in: int = 3600) -> str:
+        """
+        Create a signed URL for private file access
+        
+        Args:
+            bucket: Storage bucket name
+            path: File path within bucket
+            expires_in: URL expiration time in seconds (default 1 hour)
+        
+        Returns:
+            Signed URL string
+            
+        Raises:
+            HTTPException on failure
+        """
+        try:
+            signed_url = self.client.storage.from_(bucket).create_signed_url(
+                path=path,
+                expires_in=expires_in
+            )
+            
+            if hasattr(signed_url, 'error') and signed_url.error:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to generate signed URL"
+                )
+            
+            return signed_url.get('signedURL') or signed_url['signedURL']
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating signed URL: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate download URL"
+            )
+    
+    def delete_file(self, bucket: str, path: str) -> bool:
+        """
+        Delete a file from storage
+        
+        Args:
+            bucket: Storage bucket name
+            path: File path within bucket
+        
+        Returns:
+            True if deleted successfully
+            
+        Raises:
+            HTTPException on failure
+        """
+        try:
+            result = self.client.storage.from_(bucket).remove([path])
+            
+            if hasattr(result, 'error') and result.error:
+                logger.error(f"Storage delete error: {result.error}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to delete file"
+                )
+            
+            logger.info(f"🗑️ File deleted: {path}")
+            return True
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete file"
+            )

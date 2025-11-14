@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New Career Application</title>
+    <style>
+        body {
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            color: #555555;
+            margin: 0;
+            padding: 0;
+            background-color: #F5F8FE;
+        }
+        .container {
+            max-width: 700px;
+            margin: 40px auto;
+            background: #FFFFFF;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: #000000;
+            padding: 30px;
+            text-align: center;
+            color: #FFFFFF;
+        }
+        .header h1 {
+            font-family: 'Marcellus', serif;
+            margin: 0;
+            font-size: 24px;
+            font-weight: normal;
+        }
+        .alert-badge {
+            display: inline-block;
+            background: #F89C02;
+            color: #FFFFFF;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .content h2 {
+            font-family: 'Marcellus', serif;
+            color: #000000;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .applicant-info {
+            background: linear-gradient(180deg, #F5F8FE 0%, #CEE0F6 100%);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #E6E6E6;
+        }
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        .info-label {
+            font-weight: 600;
+            color: #000000;
+            min-width: 180px;
+        }
+        .info-value {
+            color: #555555;
+            text-align: right;
+        }
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #F89C02 0%, #FFB84D 100%);
+            color: #FFFFFF !important;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 6px;
+            margin: 24px 0;
+            font-weight: 600;
+            text-align: center;
+        }
+        .documents-section {
+            background: #FFFFFF;
+            border: 2px solid #E6E6E6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 24px 0;
+        }
+        .documents-section h3 {
+            margin-top: 0;
+            color: #000000;
+            font-family: 'Marcellus', serif;
+        }
+        .document-item {
+            padding: 8px 0;
+            color: #555555;
+        }
+        .document-item::before {
+            content: "📄";
+            margin-right: 8px;
+        }
+        .footer {
+            background: #F5F8FE;
+            padding: 24px 30px;
+            text-align: center;
+            font-size: 13px;
+            color: #B0B0B0;
+        }
+        .urgent {
+            background: #FFF3CD;
+            border-left: 4px solid #F89C02;
+            padding: 16px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="alert-badge">New Application</div>
+            <h1>Career Application Received</h1>
+        </div>
+        
+        <div class="content">
+            <h2>New Application for {{ position }}</h2>
+            
+            <p>A new career application has been submitted for the position of <strong>{{ position }}</strong>.</p>
+            
+            <div class="applicant-info">
+                <div class="info-row">
+                    <div class="info-label">Applicant Name</div>
+                    <div class="info-value"><strong>{{ applicant_name }}</strong></div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Email</div>
+                    <div class="info-value"><a href="mailto:{{ email }}" style="color: #F89C02;">{{ email }}</a></div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Phone</div>
+                    <div class="info-value"><a href="tel:{{ phone }}" style="color: #F89C02;">{{ phone }}</a></div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Experience</div>
+                    <div class="info-value">{{ experience_years }} years</div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Position Applied</div>
+                    <div class="info-value"><strong>{{ position }}</strong></div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Application ID</div>
+                    <div class="info-value"><code style="background: #F5F8FE; padding: 4px 8px; border-radius: 4px; font-family: monospace;">{{ application_id }}</code></div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Submitted On</div>
+                    <div class="info-value">{{ current_date }}</div>
+                </div>
+            </div>
+            
+            <div class="documents-section">
+                <h3>Submitted Documents</h3>
+                <div class="document-item">Resume / CV</div>
+                <div class="document-item">Aadhaar Card</div>
+                <div class="document-item">PAN Card</div>
+                <div class="document-item">Passport Photo</div>
+                <div class="document-item">Address Proof</div>
+                {% if has_educational_certificates %}
+                <div class="document-item">Educational Certificates</div>
+                {% endif %}
+                {% if has_experience_letter %}
+                <div class="document-item">Experience Letter</div>
+                {% endif %}
+                {% if has_salary_slip %}
+                <div class="document-item">Salary Slip</div>
+                {% endif %}
+            </div>
+            
+            <div class="urgent">
+                <strong>⚠️ Action Required:</strong> Please review this application in the admin panel and update the status accordingly.
+            </div>
+            
+            <center>
+                <a href="{{ admin_panel_url }}/careers/{{ application_id }}" class="cta-button">
+                    Review Application →
+                </a>
+            </center>
+            
+            <p style="margin-top: 32px; font-size: 14px; color: #B0B0B0;">
+                This is an automated notification. You can view and manage all applications in the admin panel.
+            </p>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; {{ current_year }} Salon Management Platform - Admin Notification</p>
+        </div>
+    </div>
+</body>
+</html>

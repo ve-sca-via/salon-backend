@@ -473,6 +473,103 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send welcome vendor email: {str(e)}")
             return False
+    
+    def send_career_application_confirmation(
+        self,
+        to_email: str,
+        applicant_name: str,
+        position: str,
+        application_number: str
+    ) -> bool:
+        """
+        Send confirmation email to career applicant
+        
+        Args:
+            to_email: Applicant email
+            applicant_name: Applicant's full name
+            position: Position applied for
+            application_number: Unique application number
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            template = self.env.get_template('career_application_confirmation.html')
+            
+            from datetime import datetime
+            current_date = datetime.now().strftime("%B %d, %Y")
+            
+            html_body = template.render(
+                applicant_name=applicant_name,
+                position=position,
+                application_number=application_number,
+                current_date=current_date,
+                support_email=settings.EMAIL_FROM,
+                current_year=2025
+            )
+            
+            subject = f"Application Received - {position}"
+            
+            return self._send_email(to_email, subject, html_body)
+            
+        except Exception as e:
+            logger.error(f"Failed to send career application confirmation: {str(e)}")
+            return False
+    
+    def send_new_career_application_notification(
+        self,
+        applicant_name: str,
+        position: str,
+        email: str,
+        phone: str,
+        experience_years: int,
+        application_id: str
+    ) -> bool:
+        """
+        Send notification to admin about new career application
+        
+        Args:
+            applicant_name: Applicant's full name
+            position: Position applied for
+            email: Applicant email
+            phone: Applicant phone
+            experience_years: Years of experience
+            application_id: Application UUID
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            template = self.env.get_template('new_career_application_admin.html')
+            
+            from datetime import datetime
+            current_date = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+            
+            # Admin email - you should configure this in settings
+            admin_email = "admin@salonplatform.com"  # TODO: Add to settings
+            
+            html_body = template.render(
+                applicant_name=applicant_name,
+                position=position,
+                email=email,
+                phone=phone,
+                experience_years=experience_years,
+                application_id=application_id,
+                current_date=current_date,
+                admin_panel_url=settings.ADMIN_PANEL_URL,
+                current_year=2025,
+                has_educational_certificates=True,
+                has_experience_letter=experience_years > 0,
+                has_salary_slip=experience_years > 0
+            )
+            
+            subject = f"🔔 New Career Application - {position}"
+            
+            return self._send_email(admin_email, subject, html_body)
+            
+        except Exception as e:
+            logger.error(f"Failed to send career application admin notification: {str(e)}")
+            return False
 
 
 # =====================================================
