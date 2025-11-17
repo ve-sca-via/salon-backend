@@ -3,14 +3,12 @@ Admin Service
 Handles admin-specific operations including dashboard statistics and vendor request management
 """
 from typing import List, Optional, Dict, Any
+from app.schemas.admin import ServiceCreate, ServiceUpdate, StaffUpdate
 from datetime import date, datetime
 from app.core.database import get_db
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 class DashboardStats:
@@ -55,8 +53,8 @@ class DashboardStats:
 class AdminService:
     """Service for admin operations"""
     
-    def __init__(self):
-        self.db = db
+    def __init__(self, db_client):
+        self.db = db_client
     
     # =====================================================
     # DASHBOARD STATISTICS
@@ -392,7 +390,7 @@ class AdminService:
             logger.error(f"❌ Failed to fetch services: {str(e)}")
             raise Exception(f"Failed to fetch services: {str(e)}")
     
-    async def create_service(self, service_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_service(self, service_data: ServiceCreate) -> Dict[str, Any]:
         """
         Create new service
         
@@ -406,19 +404,21 @@ class AdminService:
             Exception: If creation fails
         """
         try:
-            response = self.db.table("services").insert(service_data).execute()
+            payload = service_data.model_dump()
+            response = self.db.table("services").insert(payload).execute()
             
             if not response.data:
                 raise Exception("No data returned from insert")
             
-            logger.info(f"✅ Created service: {service_data.get('name', 'Unknown')}")
+            created_name = getattr(service_data, "name", "Unknown")
+            logger.info(f"✅ Created service: {created_name}")
             return response.data[0]
             
         except Exception as e:
             logger.error(f"❌ Failed to create service: {str(e)}")
             raise Exception(f"Failed to create service: {str(e)}")
     
-    async def update_service(self, service_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_service(self, service_id: str, updates: ServiceUpdate) -> Dict[str, Any]:
         """
         Update service by ID
         
@@ -433,7 +433,8 @@ class AdminService:
             Exception: If service not found or update fails
         """
         try:
-            response = self.db.table("services").update(updates).eq("id", service_id).execute()
+            update_payload = updates.model_dump(exclude_none=True)
+            response = self.db.table("services").update(update_payload).eq("id", service_id).execute()
             
             if not response.data:
                 raise Exception(f"Service not found: {service_id}")
@@ -474,25 +475,23 @@ class AdminService:
     
     async def get_all_staff(self) -> List[Dict[str, Any]]:
         """
-        Get all staff members ordered by full name
+        Get all staff members (relationship managers) ordered by full name
         
         Returns:
-            List of all staff profiles
+            List of all relationship manager profiles
             
         Raises:
             Exception: If query fails
         """
         try:
-            response = self.db.table("profiles").select("*").eq("role", "staff").order("full_name").execute()
-            
-            logger.info(f"✅ Fetched {len(response.data)} staff members")
-            return response.data
+            result = await self.db.table('profiles').select('*').eq('user_role', 'relationship_manager').order('full_name').execute()
+            return result.data
             
         except Exception as e:
             logger.error(f"❌ Failed to fetch staff: {str(e)}")
             raise Exception(f"Failed to fetch staff: {str(e)}")
     
-    async def update_staff(self, staff_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_staff(self, staff_id: str, updates: StaffUpdate) -> Dict[str, Any]:
         """
         Update staff member by ID
         
@@ -507,14 +506,20 @@ class AdminService:
             Exception: If staff not found or update fails
         """
         try:
-            response = self.db.table("profiles").update(updates).eq("id", staff_id).eq("role", "staff").execute()
-            
+            # Apply only provided fields
+            update_payload = updates.model_dump(exclude_none=True)
+
+            if not update_payload:
+                raise Exception("No update fields provided")
+
+            response = self.db.table("profiles").update(update_payload).eq("id", staff_id).execute()
+
             if not response.data:
-                raise Exception(f"Staff member not found: {staff_id}")
-            
+                raise Exception(f"Staff not found: {staff_id}")
+
             logger.info(f"✅ Updated staff: {staff_id}")
             return response.data[0]
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to update staff {staff_id}: {str(e)}")
             raise Exception(f"Failed to update staff: {str(e)}")
@@ -535,16 +540,15 @@ class AdminService:
             Exception: If staff not found or deletion fails
         """
         try:
-            response = self.db.table("profiles").update({
-                "is_active": False
-            }).eq("id", staff_id).eq("role", "staff").execute()
-            
+            # Soft-delete: set is_active to False
+            response = self.db.table("profiles").update({"is_active": False}).eq("id", staff_id).execute()
+
             if not response.data:
-                raise Exception(f"Staff member not found: {staff_id}")
-            
-            logger.info(f"✅ Soft deleted staff: {staff_id}")
+                raise Exception(f"Staff not found: {staff_id}")
+
+            logger.info(f"✅ Soft-deleted staff: {staff_id}")
             return response.data[0]
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to delete staff {staff_id}: {str(e)}")
             raise Exception(f"Failed to delete staff: {str(e)}")

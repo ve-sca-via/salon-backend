@@ -4,20 +4,15 @@ Handles vendor registration completion, salon management, services, staff, and b
 """
 from fastapi import APIRouter, HTTPException, Depends, status, Body
 from typing import List, Optional
+from supabase import Client
 
 from app.core.config import settings
-from app.core.database import get_db  # Still needed for Supabase auth operations
 from app.core.auth import (
     require_vendor,
     TokenData,
-    get_current_user_id,
-    verify_registration_token,
-    create_access_token,
-    create_refresh_token
+    get_current_user_id
 )
 
-# Get database client using factory function
-db = get_db()
 from app.schemas import (
     SalonUpdate,
     ServiceCreate,
@@ -28,29 +23,27 @@ from app.schemas import (
     SalonStaffResponse,
     BookingResponse,
     SuccessResponse,
-    CompleteRegistrationRequest
+    CompleteRegistrationRequest,
+    CompleteRegistrationResponse,
+    SalonResponse,
+    VendorDashboardResponse,
+    VendorAnalyticsResponse
 )
+from app.core.database import get_db_client
 from app.services.vendor_service import VendorService
-import logging
 
-logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/vendors", tags=["Vendor Management"])
 
-router = APIRouter(prefix="/vendors", tags=["Vendors"])
-
-# Initialize db client
-
-
-# =====================================================
 # DEPENDENCY INJECTION
 # =====================================================
 
-def get_vendor_service() -> VendorService:
+def get_vendor_service(db: Client = Depends(get_db_client)) -> VendorService:
     """
     Dependency injection for VendorService.
     
     Allows for easy mocking in tests and follows SOLID principles.
     """
-    return VendorService()
+    return VendorService(db_client=db)
 
 
 
@@ -58,7 +51,7 @@ def get_vendor_service() -> VendorService:
 # REGISTRATION COMPLETION
 # =====================================================
 
-@router.post("/complete-registration")
+@router.post("/complete-registration", response_model=CompleteRegistrationResponse)
 async def complete_registration(
     request: CompleteRegistrationRequest,
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -70,126 +63,17 @@ async def complete_registration(
     - Create profile
     - Link to salon
     """
-    try:
-        logger.info(f"🔍 Starting vendor registration completion...")
-        
-        # Verify JWT registration token
-        token_data = verify_registration_token(request.token)
-        salon_id = token_data["salon_id"]
-        request_id = token_data["request_id"]
-        vendor_email = token_data["email"]
-        
-        logger.info(f"✅ Token verified for {vendor_email}, salon_id: {salon_id}")
-        
-        # Use full_name from registration request (provided by vendor)
-        vendor_full_name = request.full_name.strip()
-        
-        logger.info(f"📝 Vendor name: {vendor_full_name}")
-        
-        if request.password != request.confirm_password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Passwords do not match"
-            )
-        
-        logger.info(f"🔐 Creating db auth user for {vendor_email}...")
-        
-        # Create db auth user using admin API
-        try:
-            auth_response = db.auth.admin.create_user({
-                "email": vendor_email,
-                "password": request.password,
-                "email_confirm": True,  # Auto-confirm email
-                "user_metadata": {
-                    "role": "vendor",
-                    "full_name": vendor_full_name
-                }
-            })
-            logger.info(f"✅ Auth user created successfully")
-        except Exception as auth_error:
-            logger.error(f"❌ Auth user creation failed: {str(auth_error)}")
-            # Try alternative approach: sign up the user
-            logger.info(f"🔄 Attempting alternative signup method...")
-            auth_response = db.auth.sign_up({
-                "email": vendor_email,
-                "password": request.password,
-                "options": {
-                    "data": {
-                        "role": "vendor",
-                        "full_name": vendor_full_name
-                    }
-                }
-            })
-            logger.info(f"✅ User signed up successfully")
-        
-        # Extract user ID from response
-        if hasattr(auth_response, 'user') and auth_response.user:
-            user_id = auth_response.user.id
-        elif isinstance(auth_response, dict) and 'user' in auth_response:
-            user_id = auth_response['user']['id']
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create user account"
-            )
-        
-        logger.info(f"👤 User ID: {user_id}")
-        
-        # Create vendor profile using service
-        await vendor_service.create_vendor_profile(
-            user_id=user_id,
-            email=vendor_email,
-            full_name=vendor_full_name
-        )
-        
-        # Link vendor to salon and auto-verify using service
-        await vendor_service.link_vendor_to_salon(
-            user_id=user_id,
-            salon_id=salon_id
-        )
-        
-        # Generate access and refresh tokens
-        token_data = {
-            "sub": user_id,
-            "email": vendor_email,
-            "role": "vendor"
-        }
-        
-        access_token = create_access_token(token_data)
-        refresh_token = create_refresh_token(token_data)
-        
-        logger.info(f"🎉 Vendor registration completed successfully for {vendor_email}")
-        
-        return {
-            "success": True,
-            "message": "Registration completed successfully!",
-            "data": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "user": {
-                    "id": user_id,
-                    "email": vendor_email,
-                    "full_name": vendor_full_name,
-                    "role": "vendor"
-                }
-            }
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Registration completion failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration completion failed"
-        )
-
-
+    return await vendor_service.complete_registration(
+        token=request.token,
+        full_name=request.full_name,
+        password=request.password,
+        confirm_password=request.confirm_password
+    )
 # =====================================================
 # PAYMENT PROCESSING (DEMO)
 # =====================================================
 
-@router.post("/process-payment")
+@router.post("/process-payment", response_model=SuccessResponse)
 async def process_payment(
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -198,33 +82,23 @@ async def process_payment(
     Process vendor payment and activate salon (DEMO MODE)
     In production, this would integrate with actual payment gateway
     """
-    try:
-        vendor_id = current_user.user_id
-        
-        # Process payment through service
-        payment_result = await vendor_service.process_vendor_payment(vendor_id)
-        
-        return {
-            "success": True,
-            "message": "Payment processed successfully! Your salon is now active.",
-            "data": payment_result
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Payment processing failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Payment processing failed: {str(e)}"
-        )
+    vendor_id = current_user.user_id
+    
+    # Process payment through service
+    payment_result = await vendor_service.process_vendor_payment(vendor_id)
+    
+    return {
+        "success": True,
+        "message": "Payment processed successfully! Your salon is now active.",
+        "data": payment_result
+    }
 
 
 # =====================================================
 # SALON MANAGEMENT
 # =====================================================
 
-@router.get("/salon")
+@router.get("/salon", response_model=SalonResponse)
 async def get_own_salon(
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -237,7 +111,7 @@ async def get_own_salon(
     return await vendor_service.get_vendor_salon(vendor_id=current_user.user_id)
 
 
-@router.put("/salon")
+@router.put("/salon", response_model=SalonResponse)
 async def update_own_salon(
     update: SalonUpdate,
     current_user: TokenData = Depends(require_vendor),
@@ -258,26 +132,18 @@ async def update_own_salon(
 # SERVICE MANAGEMENT
 # =====================================================
 
-@router.get("/service-categories")
+@router.get("/service-categories", operation_id="vendor_get_service_categories")
 async def get_service_categories(
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
 ):
     """Get all active service categories"""
-    try:
-        categories = await vendor_service.get_service_categories()
-        
-        return {
-            "success": True,
-            "data": categories
-        }
+    categories = await vendor_service.get_service_categories()
     
-    except Exception as e:
-        logger.error(f"Failed to fetch service categories: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch service categories"
-        )
+    return {
+        "success": True,
+        "data": categories
+    }
 
 
 @router.get("/services", response_model=List[ServiceResponse])
@@ -350,7 +216,7 @@ async def update_service(
     )
 
 
-@router.delete("/services/{service_id}")
+@router.delete("/services/{service_id}", response_model=SuccessResponse)
 async def delete_service(
     service_id: str,
     current_user: TokenData = Depends(require_vendor),
@@ -420,7 +286,7 @@ async def update_staff(
     )
 
 
-@router.delete("/staff/{staff_id}")
+@router.delete("/staff/{staff_id}", response_model=SuccessResponse)
 async def delete_staff(
     staff_id: str,
     current_user: TokenData = Depends(require_vendor),
@@ -441,7 +307,7 @@ async def delete_staff(
 # BOOKINGS VIEW
 # =====================================================
 
-@router.get("/bookings", response_model=List[BookingResponse])
+@router.get("/bookings", response_model=List[BookingResponse], operation_id="vendor_get_salon_bookings")
 async def get_salon_bookings(
     status_filter: Optional[str] = None,
     date_from: Optional[str] = None,
@@ -466,7 +332,7 @@ async def get_salon_bookings(
     )
 
 
-@router.put("/bookings/{booking_id}/status")
+@router.put("/bookings/{booking_id}/status", response_model=SuccessResponse, operation_id="vendor_update_booking_status")
 async def update_booking_status(
     booking_id: str,
     new_status: str,
@@ -489,7 +355,7 @@ async def update_booking_status(
 # DASHBOARD
 # =====================================================
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=VendorDashboardResponse)
 async def get_vendor_dashboard(
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -502,7 +368,7 @@ async def get_vendor_dashboard(
     return await vendor_service.get_dashboard_stats(vendor_id=current_user.user_id)
 
 
-@router.get("/analytics")
+@router.get("/analytics", response_model=VendorAnalyticsResponse)
 async def get_vendor_analytics(
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)

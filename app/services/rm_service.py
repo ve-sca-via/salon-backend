@@ -12,11 +12,9 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas import VendorJoinRequestCreate
+from app.schemas.request.rm import RMProfileUpdate
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 @dataclass
@@ -44,9 +42,9 @@ class RMService:
     Handles RM profiles, scoring, and vendor request tracking.
     """
     
-    def __init__(self):
-        """Initialize service - uses centralized db client"""
-        pass
+    def __init__(self, db_client):
+        """Initialize service with database client"""
+        self.db = db_client
     
     async def get_rm_profile(self, rm_id: str) -> Dict[str, Any]:
         """
@@ -58,9 +56,9 @@ class RMService:
         Returns:
             RM profile data with user details
         """
-        response = db.table("rm_profiles").select(
-            "*, profiles(id, full_name, email, phone)"
-        ).eq("id", rm_id).single().execute()
+        # Note: rm_profiles.id and profiles.id both reference auth.users.id
+        # Since there's no direct FK between them, we fetch separately
+        response = self.db.table("rm_profiles").select("*").eq("id", rm_id).single().execute()
         
         if not response.data:
             raise ValueError(f"RM profile {rm_id} not found")
@@ -77,13 +75,13 @@ class RMService:
         Returns:
             VendorRequestStats with all metrics
         """
-        # Get RM profile for total score
+        # Get RM profile for performance score
         rm_profile = await self.get_rm_profile(rm_id)
         
-        # Get all requests
-        requests_response = db.table("vendor_join_requests").select(
+        # Get all requests created by this RM user (via user_id)
+        requests_response = self.db.table("vendor_join_requests").select(
             "status"
-        ).eq("rm_id", rm_id).execute()
+        ).eq("user_id", rm_id).execute()
         
         requests = requests_response.data or []
         
@@ -97,14 +95,14 @@ class RMService:
             pending_requests=pending,
             approved_requests=approved,
             rejected_requests=rejected,
-            total_score=rm_profile.get("total_score", 0)
+            total_score=rm_profile.get("performance_score", 0)
         )
     
     async def list_rm_profiles(
         self,
         limit: int = 50,
         offset: int = 0,
-        order_by: str = "total_score",
+        order_by: str = "performance_score",
         order_desc: bool = True
     ) -> List[Dict[str, Any]]:
         """
@@ -113,13 +111,13 @@ class RMService:
         Args:
             limit: Max results to return
             offset: Number of results to skip
-            order_by: Field to sort by (total_score, total_approved_salons, employee_id)
+            order_by: Field to sort by (performance_score, full_name, email)
             order_desc: Sort descending if True
             
         Returns:
             List of RM profiles with user details
         """
-        query = db.table("rm_profiles").select(
+        query = self.db.table("rm_profiles").select(
             "*, profiles(id, full_name, email, phone, is_active)"
         )
         
@@ -159,8 +157,8 @@ class RMService:
         """
         try:
             # Get current score
-            rm_response = db.table("rm_profiles").select(
-                "total_score"
+            rm_response = self.db.table("rm_profiles").select(
+                "performance_score"
             ).eq("id", rm_id).single().execute()
             
             if not rm_response.data:
@@ -171,7 +169,7 @@ class RMService:
                     error="RM profile not found"
                 )
             
-            current_score = rm_response.data.get("total_score", 0)
+            current_score = rm_response.data.get("performance_score", 0)
             new_score = current_score + score_change
             
             # Ensure score doesn't go negative
@@ -180,24 +178,19 @@ class RMService:
                 score_change = -current_score
             
             # Update score
-            db.table("rm_profiles").update({
-                "total_score": new_score
+            self.db.table("rm_profiles").update({
+                "performance_score": new_score
             }).eq("id", rm_id).execute()
             
-            # Add history entry
+            # Add history entry (match actual schema: action, points, description)
             history_data = {
                 "rm_id": rm_id,
-                "score_change": score_change,
-                "reason": reason
+                "action": reason[:100] if reason else "score_update",
+                "points": score_change,
+                "description": reason
             }
             
-            if salon_id:
-                history_data["salon_id"] = salon_id
-            
-            if admin_id:
-                history_data["admin_id"] = admin_id
-            
-            db.table("rm_score_history").insert(history_data).execute()
+            self.db.table("rm_score_history").insert(history_data).execute()
             
             logger.info(f"📊 RM {rm_id} score updated: {current_score} → {new_score} ({score_change:+d})")
             
@@ -231,7 +224,7 @@ class RMService:
         Returns:
             List of score history entries with salon details
         """
-        response = db.table("rm_score_history").select(
+        response = self.db.table("rm_score_history").select(
             "*, salons(business_name, id)"
         ).eq("rm_id", rm_id).order("created_at", desc=True).limit(limit).execute()
         
@@ -248,7 +241,7 @@ class RMService:
         Get vendor join requests submitted by RM.
         
         Args:
-            rm_id: RM profile ID
+            rm_id: RM profile ID (user_id)
             status: Filter by status (pending, approved, rejected)
             limit: Max results
             offset: Pagination offset
@@ -256,7 +249,7 @@ class RMService:
         Returns:
             List of vendor requests
         """
-        query = db.table("vendor_join_requests").select("*").eq("rm_id", rm_id)
+        query = self.db.table("vendor_join_requests").select("*").eq("user_id", rm_id)
         
         if status:
             query = query.eq("status", status)
@@ -284,7 +277,7 @@ class RMService:
         Returns:
             List of salons
         """
-        query = db.table("salons").select("*").eq("rm_id", rm_id)
+        query = self.db.table("salons").select("*").eq("assigned_rm", rm_id)
         
         if not include_inactive:
             query = query.eq("is_active", True)
@@ -298,7 +291,7 @@ class RMService:
     async def update_rm_profile(
         self,
         rm_id: str,
-        updates: Dict[str, Any]
+        updates: "RMProfileUpdate"
     ) -> Dict[str, Any]:
         """
         Update RM profile fields (excluding protected fields).
@@ -312,20 +305,22 @@ class RMService:
         """
         # Protected fields that cannot be updated directly
         protected_fields = {
-            "id", "user_id", "employee_id", "total_score",
-            "total_approved_salons", "created_at"
+            "id", "performance_score", "created_at"
         }
         
-        # Filter out protected fields
-        safe_updates = {
-            k: v for k, v in updates.items()
-            if k not in protected_fields
-        }
+        # Convert Pydantic model to dict and filter out protected fields
+        try:
+            update_payload = updates.model_dump(exclude_none=True)
+        except Exception:
+            # Fall back to expecting a plain dict
+            update_payload = dict(updates) if updates else {}
+
+        safe_updates = {k: v for k, v in update_payload.items() if k not in protected_fields}
         
         if not safe_updates:
             raise ValueError("No valid fields to update")
         
-        response = db.table("rm_profiles").update(
+        response = self.db.table("rm_profiles").update(
             safe_updates
         ).eq("id", rm_id).execute()
         
@@ -351,9 +346,9 @@ class RMService:
         Returns:
             List of top RMs with rankings
         """
-        response = db.table("rm_profiles").select(
+        response = self.db.table("rm_profiles").select(
             "*, profiles(full_name, email)"
-        ).order("total_score", desc=True).limit(limit).execute()
+        ).order("performance_score", desc=True).limit(limit).execute()
         
         rms = response.data or []
         
@@ -363,22 +358,22 @@ class RMService:
         
         return rms
     
-    async def get_rm_by_employee_id(self, employee_id: str) -> Dict[str, Any]:
+    async def get_rm_by_email(self, email: str) -> Dict[str, Any]:
         """
-        Get RM profile by employee ID.
+        Get RM profile by email.
         
         Args:
-            employee_id: Employee ID (e.g., "RM-ABC12345")
+            email: RM email address
             
         Returns:
             RM profile data
         """
-        response = db.table("rm_profiles").select(
+        response = self.db.table("rm_profiles").select(
             "*, profiles(id, full_name, email, phone)"
-        ).eq("employee_id", employee_id).single().execute()
+        ).eq("email", email).single().execute()
         
         if not response.data:
-            raise ValueError(f"RM with employee ID {employee_id} not found")
+            raise ValueError(f"RM with email {email} not found")
         
         return response.data
     
@@ -408,15 +403,15 @@ class RMService:
         """
         try:
             # Verify RM exists and is active
-            rm_response = db.table("rm_profiles").select("is_active").eq("id", rm_id).single().execute()
+            rm_response = self.db.table("rm_profiles").select("is_active").eq("id", rm_id).execute()
             
-            if not rm_response.data:
+            if not rm_response.data or len(rm_response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="RM profile not found"
+                    detail=f"RM profile not found for user {rm_id}. Please contact admin to create your RM profile."
                 )
             
-            if not rm_response.data.get("is_active"):
+            if not rm_response.data[0].get("is_active"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="RM account is inactive"
@@ -428,7 +423,7 @@ class RMService:
             db_data["status"] = "draft" if is_draft else "pending"
             
             # Create request
-            response = db.table("vendor_join_requests").insert(db_data).execute()
+            response = self.db.table("vendor_join_requests").insert(db_data).execute()
             
             if not response.data:
                 raise HTTPException(
@@ -478,7 +473,7 @@ class RMService:
         """
         try:
             # Verify ownership and draft status
-            existing = db.table("vendor_join_requests").select("*").eq(
+            existing = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
             ).eq("rm_id", rm_id).single().execute()
             
@@ -502,7 +497,7 @@ class RMService:
                 update_data["status"] = "pending"
             
             # Update request
-            response = db.table("vendor_join_requests").update(
+            response = self.db.table("vendor_join_requests").update(
                 update_data
             ).eq("id", request_id).execute()
             
@@ -549,7 +544,7 @@ class RMService:
         """
         try:
             # Verify ownership and draft status
-            existing_response = db.table("vendor_join_requests").select("*").eq(
+            existing_response = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
             ).eq("rm_id", rm_id).single().execute()
             
@@ -572,7 +567,7 @@ class RMService:
             await self._cleanup_vendor_request_images(existing_request)
             
             # Delete the request
-            delete_response = db.table("vendor_join_requests").delete().eq(
+            delete_response = self.db.table("vendor_join_requests").delete().eq(
                 "id", request_id
             ).execute()
             
@@ -611,7 +606,7 @@ class RMService:
             HTTPException: If not found or access denied
         """
         try:
-            response = db.table("vendor_join_requests").select("*").eq(
+            response = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
             ).eq("rm_id", rm_id).single().execute()
             
@@ -640,7 +635,7 @@ class RMService:
             List of active service categories
         """
         try:
-            response = db.table("service_categories").select(
+            response = self.db.table("service_categories").select(
                 "id, name, description, icon_url, display_order"
             ).eq("is_active", True).order("display_order").execute()
             
@@ -712,10 +707,10 @@ class RMService:
     async def _increment_rm_salons_count(self, rm_id: str) -> None:
         """Increment RM's total salons added count."""
         try:
-            rm_profile = db.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
+            rm_profile = self.db.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
             current_count = rm_profile.data.get("total_salons_added", 0) if rm_profile.data else 0
             
-            db.table("rm_profiles").update({
+            self.db.table("rm_profiles").update({
                 "total_salons_added": current_count + 1
             }).eq("id", rm_id).execute()
         except Exception as e:

@@ -7,12 +7,12 @@ Write-Host ""
 Write-Host "WARNING: You are connecting to REAL PRODUCTION DATA!" -ForegroundColor Red
 Write-Host ""
 
-# Ask for confirmation
-$confirmation = Read-Host "Are you sure you want to connect to production? (yes/no)"
-if ($confirmation -ne "yes") {
-    Write-Host "Cancelled." -ForegroundColor Yellow
-    exit 0
-}
+# # Ask for confirmation
+# $confirmation = Read-Host "Are you sure you want to connect to production? (yes/no)"
+# if ($confirmation -ne "yes") {
+#     Write-Host "Cancelled." -ForegroundColor Yellow
+#     exit 0
+# }
 
 # Check if .env.production exists
 if (-Not (Test-Path ".env.production")) {

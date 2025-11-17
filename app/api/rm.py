@@ -5,6 +5,7 @@ All business logic in RMService for testability
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from typing import List, Optional
 import logging
+from supabase import Client
 
 from app.core.auth import require_rm, TokenData, get_current_user_id
 from app.schemas import (
@@ -12,18 +13,26 @@ from app.schemas import (
     VendorJoinRequestResponse,
     RMProfileResponse,
     RMScoreHistoryResponse,
-    SuccessResponse
+    SuccessResponse,
+    # RM Response Models
+    VendorRequestOperationResponse,
+    VendorRequestsListResponse,
+    RMSalonsListResponse,
+    RMProfileUpdateResponse,
+    RMDashboardResponse,
+    RMLeaderboardResponse,
+    ServiceCategoriesResponse,
 )
+from app.core.database import get_db_client
 from app.services.rm_service import RMService
-
-logger = logging.getLogger(__name__)
+from fastapi import APIRouter
 
 router = APIRouter(prefix="/rm", tags=["Relationship Manager"])
 
 
-def get_rm_service() -> RMService:
+def get_rm_service(db: Client = Depends(get_db_client)) -> RMService:
     """Dependency injection for RM service"""
-    return RMService()
+    return RMService(db_client=db)
 
 
 # =====================================================
@@ -45,7 +54,7 @@ async def create_vendor_request(
     )
 
 
-@router.put("/vendor-requests/{request_id}")
+@router.put("/vendor-requests/{request_id}", response_model=VendorRequestOperationResponse)
 async def update_vendor_request(
     request_id: str,
     request: VendorJoinRequestCreate,
@@ -62,7 +71,7 @@ async def update_vendor_request(
     )
 
 
-@router.delete("/vendor-requests/{request_id}")
+@router.delete("/vendor-requests/{request_id}", response_model=VendorRequestOperationResponse)
 async def delete_vendor_request(
     request_id: str,
     current_user: TokenData = Depends(require_rm),
@@ -79,7 +88,7 @@ async def delete_vendor_request(
 # OWN REQUESTS VIEWING
 # =====================================================
 
-@router.get("/vendor-requests")
+@router.get("/vendor-requests", response_model=VendorRequestsListResponse)
 async def get_own_vendor_requests(
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     limit: int = 50,
@@ -102,7 +111,7 @@ async def get_own_vendor_requests(
     }
 
 
-@router.get("/vendor-requests/{request_id}", response_model=VendorJoinRequestResponse)
+@router.get("/vendor-requests/{request_id}", response_model=VendorJoinRequestResponse, operation_id="rm_get_vendor_request")
 async def get_vendor_request(
     request_id: str,
     current_user: TokenData = Depends(require_rm),
@@ -115,7 +124,7 @@ async def get_vendor_request(
     )
 
 
-@router.get("/salons")
+@router.get("/salons", response_model=RMSalonsListResponse)
 async def get_rm_salons(
     include_inactive: bool = False,
     current_user: TokenData = Depends(require_rm),
@@ -147,16 +156,17 @@ async def get_own_profile(
     return await rm_service.get_rm_profile(current_user.user_id)
 
 
-@router.put("/profile")
+@router.put("/profile", response_model=RMProfileUpdateResponse)
 async def update_own_profile(
-    profile_data: dict,
+    profile_data: 'UserProfileUpdate',
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)
 ):
     """Update own RM profile - limited fields allowed"""
     # Validate allowed fields
     allowed_fields = {"full_name", "phone", "address", "city", "state", "pincode"}
-    update_data = {k: v for k, v in profile_data.items() if k in allowed_fields}
+    update_data = profile_data.model_dump(exclude_none=True)
+    update_data = {k: v for k, v in update_data.items() if k in allowed_fields}
     
     if not update_data:
         raise HTTPException(
@@ -196,7 +206,7 @@ async def get_own_score_history(
 # DASHBOARD
 # =====================================================
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=RMDashboardResponse)
 async def get_rm_dashboard(
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)
@@ -209,9 +219,9 @@ async def get_rm_dashboard(
 # LEADERBOARD
 # =====================================================
 
-@router.get("/leaderboard")
+@router.get("/leaderboard", response_model=RMLeaderboardResponse)
 async def get_rm_leaderboard(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100, description="Results per page (max 100)"),
     rm_service: RMService = Depends(get_rm_service)
 ):
     """Get RM leaderboard - top RMs by score"""
@@ -228,7 +238,7 @@ async def get_rm_leaderboard(
 # SERVICE CATEGORIES
 # =====================================================
 
-@router.get("/service-categories")
+@router.get("/service-categories", response_model=ServiceCategoriesResponse, operation_id="rm_get_service_categories")
 async def get_service_categories(
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)

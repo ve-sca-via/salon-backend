@@ -3,20 +3,31 @@ Config Service
 Handles system configuration CRUD operations
 """
 from typing import List, Dict, Any, Optional
+from app.schemas.request.admin import SystemConfigUpdate
 from app.core.database import get_db
+from app.core.encryption import get_encryption_service
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Get database client using factory function
-db = get_db()
+# Sensitive configuration keys that should be encrypted
+SENSITIVE_CONFIG_KEYS = {
+    'razorpay_key_secret',
+    'razorpay_key_id',
+    'razorpay_webhook_secret',
+    'stripe_secret_key',
+    'stripe_webhook_secret',
+    'smtp_password',
+    'resend_api_key',
+    'google_maps_api_key'
+}
 
 
 class ConfigService:
     """Service for system configuration management"""
     
-    def __init__(self):
-        self.db = db
+    def __init__(self, db_client):
+        self.db = db_client
     
     # =====================================================
     # CONFIGURATION CRUD OPERATIONS
@@ -37,10 +48,26 @@ class ConfigService:
         """
         try:
             response = self.db.table("system_config").select("*").order(order_by).execute()
-            
-            logger.info(f"Retrieved {len(response.data) if response.data else 0} system configurations")
-            
-            return response.data if response.data else []
+            data = response.data if response.data else []
+
+            # Auto-decrypt any sensitive config values
+            if data:
+                try:
+                    encryption_service = get_encryption_service()
+                    for cfg in data:
+                        key = cfg.get("config_key")
+                        if key in SENSITIVE_CONFIG_KEYS and cfg.get("config_value"):
+                            try:
+                                cfg["config_value"] = encryption_service.decrypt_value(cfg["config_value"])
+                            except Exception:
+                                # If decryption fails, leave value as-is and log
+                                logger.debug(f"Failed to decrypt config: {key}")
+                except Exception:
+                    logger.debug("Encryption service unavailable when decrypting all configs")
+
+            logger.info(f"Retrieved {len(data)} system configurations")
+
+            return data
             
         except Exception as e:
             logger.error(f"Failed to fetch system configurations: {str(e)}")
@@ -68,9 +95,21 @@ class ConfigService:
             if not response.data:
                 raise ValueError(f"Configuration not found: {config_key}")
             
+            config = response.data
+            
+            # Auto-decrypt sensitive values
+            if config_key in SENSITIVE_CONFIG_KEYS and config.get('config_value'):
+                try:
+                    encryption_service = get_encryption_service()
+                    config['config_value'] = encryption_service.decrypt_value(config['config_value'])
+                    logger.info(f"Decrypted sensitive config: {config_key}")
+                except Exception as e:
+                    logger.error(f"Failed to decrypt config {config_key}: {e}")
+                    # Don't fail the request, but log the error
+            
             logger.info(f"Retrieved configuration: {config_key}")
             
-            return response.data
+            return config
             
         except ValueError:
             raise
@@ -81,7 +120,7 @@ class ConfigService:
     async def update_config(
         self,
         config_key: str,
-        updates: Dict[str, Any]
+        updates: SystemConfigUpdate
     ) -> Dict[str, Any]:
         """
         Update a system configuration
@@ -106,9 +145,20 @@ class ConfigService:
             if not check_response.data:
                 raise ValueError(f"Configuration not found: {config_key}")
             
+            # Convert Pydantic model to dict and encrypt sensitive values before saving
+            processed_updates = updates.model_dump(exclude_none=True)
+            if config_key in SENSITIVE_CONFIG_KEYS and 'config_value' in processed_updates:
+                try:
+                    encryption_service = get_encryption_service()
+                    processed_updates['config_value'] = encryption_service.encrypt_value(processed_updates['config_value'])
+                    logger.info(f"Encrypted sensitive config before saving: {config_key}")
+                except Exception as e:
+                    logger.error(f"Failed to encrypt config {config_key}: {e}")
+                    raise Exception(f"Failed to encrypt sensitive configuration: {e}")
+            
             # Perform update
             response = self.db.table("system_config").update(
-                updates
+                processed_updates
             ).eq("config_key", config_key).execute()
             
             if not response.data:
@@ -116,7 +166,15 @@ class ConfigService:
             
             updated_config = response.data[0]
             
-            logger.info(f"Updated configuration: {config_key} = {updates.get('config_value', 'N/A')}")
+            # Decrypt the value in the response for consistency
+            if config_key in SENSITIVE_CONFIG_KEYS and updated_config.get('config_value'):
+                try:
+                    encryption_service = get_encryption_service()
+                    updated_config['config_value'] = encryption_service.decrypt_value(updated_config['config_value'])
+                except Exception as e:
+                    logger.error(f"Failed to decrypt response for {config_key}: {e}")
+            
+            logger.info(f"Updated configuration: {config_key}")
             
             return updated_config
             
@@ -158,10 +216,19 @@ class ConfigService:
             if existing.data and len(existing.data) > 0:
                 raise ValueError(f"Configuration already exists: {config_key}")
             
-            # Create new config
+            # Create new config (encrypt sensitive values)
+            to_store_value = config_value
+            if config_key in SENSITIVE_CONFIG_KEYS and config_value is not None:
+                try:
+                    encryption_service = get_encryption_service()
+                    to_store_value = encryption_service.encrypt_value(config_value)
+                except Exception as e:
+                    logger.error(f"Failed to encrypt config during create {config_key}: {e}")
+                    raise Exception(f"Failed to encrypt sensitive configuration: {e}")
+
             new_config = {
                 "config_key": config_key,
-                "config_value": config_value,
+                "config_value": to_store_value,
                 "config_type": config_type
             }
             
@@ -174,9 +241,16 @@ class ConfigService:
                 raise Exception("Insert operation returned no data")
             
             created_config = response.data[0]
-            
+            # Decrypt returned sensitive value for API consistency
+            if config_key in SENSITIVE_CONFIG_KEYS and created_config.get('config_value'):
+                try:
+                    encryption_service = get_encryption_service()
+                    created_config['config_value'] = encryption_service.decrypt_value(created_config['config_value'])
+                except Exception:
+                    logger.debug(f"Failed to decrypt created config {config_key}")
+
             logger.info(f"Created new configuration: {config_key}")
-            
+
             return created_config
             
         except ValueError:

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, status
+from supabase import Client
 from app.core.config import settings
 from app.core.auth import get_current_user, TokenData
 from app.schemas import (
@@ -7,15 +8,19 @@ from app.schemas import (
     SignupRequest,
     SignupResponse,
     LogoutAllRequest,
-    RefreshTokenRequest
+    RefreshTokenRequest,
+    PasswordResetRequest,
+    PasswordResetResponse,
+    PasswordResetConfirm,
+    PasswordResetConfirmResponse
 )
 from app.services.auth_service import AuthService
+from app.core.database import get_db_client, get_auth_client
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-auth_service = AuthService()
 
 # --- Supabase Initialization ---
 if not all([settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, settings.SUPABASE_SERVICE_ROLE_KEY]):
@@ -24,13 +29,18 @@ if not all([settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, settings.SUPABASE
 
 # --- Auth Routes ---
 @router.post("/login", response_model=LoginResponse)
-async def login(credentials: LoginRequest):
+async def login(
+    credentials: LoginRequest,
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
     """
     Authenticate user and return JWT tokens
     - Validates credentials with Supabase Auth
     - Returns access token and refresh token
     - Includes user profile data
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     result = await auth_service.authenticate_user(
         email=credentials.email,
         password=credentials.password
@@ -39,46 +49,65 @@ async def login(credentials: LoginRequest):
 
 
 @router.post("/signup", response_model=SignupResponse)
-async def signup(request: SignupRequest):
+async def signup(
+    request: SignupRequest,
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
     """
     Register new user (customer only)
     - Creates Supabase auth user
     - Creates profile entry
     - Role defaults to 'customer'
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     result = await auth_service.register_user(
         email=request.email,
         password=request.password,
         full_name=request.full_name,
         phone=request.phone,
-        role=request.role
+        user_role=request.user_role
     )
     return SignupResponse(**result)
 
 
 @router.post("/refresh")
-async def refresh_access_token(request: RefreshTokenRequest):
+async def refresh_access_token(
+    request: RefreshTokenRequest,
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
     """
     Refresh access token using refresh token
     - Validates refresh token
     - Returns new access token
     - Extends session
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.refresh_user_session(request.refresh_token)
 
 
 @router.get("/me")
-async def get_current_user_profile(current_user: TokenData = Depends(get_current_user)):
+async def get_current_user_profile(
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
     """
     Get current authenticated user profile
     - Requires valid JWT token
     - Returns user data
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.get_user_profile(current_user.user_id)
 
 
 @router.post("/logout")
-async def logout(current_user: TokenData = Depends(get_current_user)):
+async def logout(
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
     """
     Logout user by revoking their access token
     
@@ -86,6 +115,7 @@ async def logout(current_user: TokenData = Depends(get_current_user)):
     - Client should also delete refresh token
     - Returns success message
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.logout_user(
         user_id=current_user.user_id,
         token_jti=current_user.jti if hasattr(current_user, 'jti') else None,
@@ -96,7 +126,9 @@ async def logout(current_user: TokenData = Depends(get_current_user)):
 @router.post("/logout-all")
 async def logout_all_devices(
     request: LogoutAllRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
 ):
     """
     Logout user from all devices by revoking all their tokens
@@ -105,11 +137,47 @@ async def logout_all_devices(
     - Revokes current token and invalidates all sessions
     - User must login again on all devices
     """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.logout_all_devices(
         user_id=current_user.user_id,
         email=current_user.email,
         password=request.password,
         current_token_jti=current_user.jti if hasattr(current_user, 'jti') else None,
         current_token_exp=current_user.exp
+    )
+
+
+@router.post("/password-reset", response_model=PasswordResetResponse)
+async def initiate_password_reset(
+    request: PasswordResetRequest,
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Initiate password reset process
+    
+    Sends password reset email to user if account exists
+    Returns success message regardless for security
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.initiate_password_reset(request.email)
+
+
+@router.post("/password-reset/confirm", response_model=PasswordResetConfirmResponse)
+async def confirm_password_reset(
+    request: PasswordResetConfirm,
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Confirm password reset with token
+    
+    Validates reset token and updates password
+    Returns new access tokens for immediate login
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.confirm_password_reset(
+        token=request.token,
+        new_password=request.new_password
     )
 

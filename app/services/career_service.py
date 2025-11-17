@@ -7,14 +7,12 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
 from fastapi import HTTPException, status, UploadFile
+from app.schemas.request.career import PersonalInfo, JobDetails, Education, AdditionalInfo
 from app.core.database import get_db
 from app.services.storage_service import StorageService
 from app.services.email import EmailService
 
 logger = logging.getLogger(__name__)
-
-# Initialize Supabase client
-supabase = get_db()
 
 
 class CareerService:
@@ -30,18 +28,18 @@ class CareerService:
     
     STORAGE_BUCKET = 'career-documents'
     
-    def __init__(self):
+    def __init__(self, db_client):
         """Initialize career service with storage and email services"""
-        self.db = supabase
-        self.storage = StorageService()
+        self.db = db_client
+        self.storage = StorageService(db_client=db_client)
         self.email = EmailService()
     
     async def submit_application(
         self,
-        personal_info: Dict[str, Any],
-        job_details: Dict[str, Any],
-        education: Dict[str, Any],
-        additional_info: Dict[str, Any],
+        personal_info: PersonalInfo,
+        job_details: JobDetails,
+        education: Education,
+        additional_info: AdditionalInfo,
         required_documents: Dict[str, UploadFile],
         optional_documents: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -63,7 +61,7 @@ class CareerService:
             HTTPException on validation or processing errors
         """
         try:
-            logger.info(f"📝 Processing application from {personal_info.get('email')}")
+            logger.info(f"📝 Processing application from {personal_info.email}")
             
             # Generate application ID
             application_id = str(uuid.uuid4())
@@ -141,13 +139,13 @@ class CareerService:
                 )
                 document_urls['salary_slip_url'] = url
             
-            # Prepare application data
+            # Prepare application data by merging model dicts
             application_data = {
                 "id": application_id,
-                **personal_info,
-                **job_details,
-                **education,
-                **additional_info,
+                **personal_info.model_dump(exclude_none=True),
+                **job_details.model_dump(exclude_none=True),
+                **education.model_dump(exclude_none=True),
+                **additional_info.model_dump(exclude_none=True),
                 **document_urls,
                 "status": "pending"
             }
@@ -168,9 +166,9 @@ class CareerService:
             # Send confirmation email to applicant
             try:
                 self.email.send_career_application_confirmation(
-                    to_email=personal_info['email'],
-                    applicant_name=personal_info['full_name'],
-                    position=job_details.get('position', 'Relationship Manager'),
+                    to_email=personal_info.email,
+                    applicant_name=personal_info.full_name,
+                    position=job_details.position,
                     application_number=application_number
                 )
             except Exception as e:
@@ -179,11 +177,11 @@ class CareerService:
             # Send notification to admin
             try:
                 self.email.send_new_career_application_notification(
-                    applicant_name=personal_info['full_name'],
-                    position=job_details.get('position', 'Relationship Manager'),
-                    email=personal_info['email'],
-                    phone=personal_info['phone'],
-                    experience_years=job_details.get('experience_years', 0),
+                    applicant_name=personal_info.full_name,
+                    position=job_details.position,
+                    email=personal_info.email,
+                    phone=personal_info.phone,
+                    experience_years=job_details.experience_years or 0,
                     application_id=application_id
                 )
             except Exception as e:

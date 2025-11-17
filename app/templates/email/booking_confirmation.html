@@ -135,8 +135,17 @@
                     <div class="booking-detail-value">{{ salon_name }}</div>
                 </div>
                 <div class="booking-detail">
-                    <div class="booking-detail-label">Service</div>
-                    <div class="booking-detail-value">{{ service_name }}</div>
+                    <div class="booking-detail-label">Services</div>
+                    <div class="booking-detail-value">
+                        {% for service in services %}
+                            <div style="margin-bottom: 5px;">
+                                {{ service.name }}
+                                {% if service.price > 0 %}
+                                    <span style="font-size: 12px; opacity: 0.8;">(₹{{ "%.2f"|format(service.price) }})</span>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
                 </div>
                 <div class="booking-detail">
                     <div class="booking-detail-label">Date</div>

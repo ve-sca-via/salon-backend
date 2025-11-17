@@ -244,6 +244,21 @@ class GeocodingService:
 # GLOBAL INSTANCE (Uses Factory Pattern)
 # =====================================================
 
+def get_geocoding_service():
+    """
+    Factory function to get appropriate geocoding service based on environment
+    
+    Returns:
+        MockGeocodingService in test mode, GeocodingService otherwise
+    """
+    from app.core.config import settings
+    
+    if settings.ENVIRONMENT == "test":
+        return MockGeocodingService()
+    else:
+        return GeocodingService()
+
+
 # Get geocoding service using factory function
 # In test mode (ENVIRONMENT=test), this will be MockGeocodingService
 # In production, this will be real GeocodingService

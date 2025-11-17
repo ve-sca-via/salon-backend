@@ -9,6 +9,10 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 import logging
+import asyncio
+import time
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ class MockEmailService:
         logger.info(f"🧪 MOCK: Email stored (not sent) to {to_email}: {subject}")
         return True
     
-    def send_vendor_approval_email(self, to_email: str, owner_name: str, salon_name: str, 
+    async def send_vendor_approval_email(self, to_email: str, owner_name: str, salon_name: str, 
                                    registration_token: str, registration_fee: float) -> bool:
         """Mock vendor approval email"""
         return self._send_email(
@@ -49,7 +53,7 @@ class MockEmailService:
             text_body=None
         )
     
-    def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
+    async def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
                                     rejection_reason: str, rm_name: str) -> bool:
         """Mock vendor rejection email"""
         return self._send_email(
@@ -121,21 +125,25 @@ class EmailService:
             autoescape=select_autoescape(['html', 'xml'])
         )
         
-    def _send_email(
+    async def _send_email(
         self,
         to_email: str,
         subject: str,
         html_body: str,
-        text_body: str = None
+        text_body: str = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0
     ) -> bool:
         """
-        Send email via SMTP
+        Send email via SMTP with retry logic (async)
         
         Args:
             to_email: Recipient email address
             subject: Email subject
             html_body: HTML email body
             text_body: Plain text email body (optional)
+            max_retries: Maximum number of retry attempts
+            retry_delay: Initial delay between retries (exponential backoff)
             
         Returns:
             bool: True if email sent successfully, False otherwise
@@ -162,6 +170,41 @@ class EmailService:
             html_part = MIMEText(html_body, 'html')
             msg.attach(html_part)
             
+            # Send email with retry logic
+            for attempt in range(max_retries + 1):
+                try:
+                    success = await asyncio.to_thread(self._send_email_sync, msg, to_email, subject)
+                    if success:
+                        return True
+                    
+                    # If this wasn't the last attempt, wait before retrying
+                    if attempt < max_retries:
+                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Email send failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.1f}s...")
+                        await asyncio.sleep(delay)
+                        
+                except Exception as e:
+                    logger.error(f"Email send error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
+                    
+                    # If this wasn't the last attempt, wait before retrying
+                    if attempt < max_retries:
+                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Retrying email send in {delay:.1f}s...")
+                        await asyncio.sleep(delay)
+            
+            # All retries exhausted
+            logger.error(f"Failed to send email to {to_email} after {max_retries + 1} attempts")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            return False
+    
+    def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
+        """
+        Synchronous email sending (called from thread pool)
+        """
+        try:
             # Send email
             if settings.SMTP_SSL:
                 server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT)
@@ -184,7 +227,7 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
     
-    def send_vendor_approval_email(
+    async def send_vendor_approval_email(
         self,
         to_email: str,
         owner_name: str,
@@ -233,13 +276,13 @@ class EmailService:
             
             subject = f"🎉 Congratulations! {salon_name} has been approved"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send vendor approval email: {str(e)}")
             return False
     
-    def send_vendor_rejection_email(
+    async def send_vendor_rejection_email(
         self,
         to_email: str,
         owner_name: str,
@@ -274,18 +317,18 @@ class EmailService:
             
             subject = f"Salon Submission Update: {salon_name}"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send vendor rejection email: {str(e)}")
             return False
     
-    def send_booking_confirmation_email(
+    async def send_booking_confirmation_email(
         self,
         to_email: str,
         customer_name: str,
         salon_name: str,
-        service_name: str,
+        services: list,
         booking_date: str,
         booking_time: str,
         staff_name: str,
@@ -299,7 +342,7 @@ class EmailService:
             to_email: Customer email
             customer_name: Customer name
             salon_name: Salon name
-            service_name: Service name
+            services: List of service dictionaries with 'name' and 'price' keys
             booking_date: Booking date
             booking_time: Booking time
             staff_name: Staff member name
@@ -312,10 +355,25 @@ class EmailService:
         try:
             template = self.env.get_template('booking_confirmation.html')
             
+            # Format services for template
+            services_list = []
+            for service in services:
+                if isinstance(service, dict):
+                    services_list.append({
+                        'name': service.get('name', 'Unknown Service'),
+                        'price': service.get('unit_price', 0)  # Use unit_price from booking service
+                    })
+                else:
+                    # Handle legacy string format
+                    services_list.append({
+                        'name': str(service),
+                        'price': 0
+                    })
+            
             html_body = template.render(
                 customer_name=customer_name,
                 salon_name=salon_name,
-                service_name=service_name,
+                services=services_list,
                 booking_date=booking_date,
                 booking_time=booking_time,
                 staff_name=staff_name,
@@ -327,13 +385,13 @@ class EmailService:
             
             subject = f"✅ Booking Confirmed at {salon_name}"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send booking confirmation email: {str(e)}")
             return False
     
-    def send_booking_cancellation_email(
+    async def send_booking_cancellation_email(
         self,
         to_email: str,
         customer_name: str,
@@ -377,13 +435,13 @@ class EmailService:
             
             subject = f"Booking Cancelled: {salon_name}"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send booking cancellation email: {str(e)}")
             return False
     
-    def send_payment_receipt_email(
+    async def send_payment_receipt_email(
         self,
         to_email: str,
         customer_name: str,
@@ -430,13 +488,13 @@ class EmailService:
             
             subject = f"Payment Receipt - {payment_id}"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send payment receipt email: {str(e)}")
             return False
     
-    def send_welcome_vendor_email(
+    async def send_welcome_vendor_email(
         self,
         to_email: str,
         owner_name: str,
@@ -468,13 +526,13 @@ class EmailService:
             
             subject = f"🎊 Welcome to Salon Platform - {salon_name} is now active!"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send welcome vendor email: {str(e)}")
             return False
     
-    def send_career_application_confirmation(
+    async def send_career_application_confirmation(
         self,
         to_email: str,
         applicant_name: str,
@@ -510,7 +568,7 @@ class EmailService:
             
             subject = f"Application Received - {position}"
             
-            return self._send_email(to_email, subject, html_body)
+            return await self._send_email(to_email, subject, html_body)
             
         except Exception as e:
             logger.error(f"Failed to send career application confirmation: {str(e)}")
@@ -575,6 +633,21 @@ class EmailService:
 # =====================================================
 # GLOBAL INSTANCE (Uses Factory Pattern)
 # =====================================================
+
+def get_email_service():
+    """
+    Factory function to get appropriate email service based on environment
+    
+    Returns:
+        MockEmailService in test mode, EmailService otherwise
+    """
+    from app.core.config import settings
+    
+    if settings.ENVIRONMENT == "test":
+        return MockEmailService()
+    else:
+        return EmailService()
+
 
 # Get email service using factory function
 # In test mode (ENVIRONMENT=test), this will be MockEmailService

@@ -3,15 +3,15 @@ Salon Service - Business Logic Layer
 Handles salon CRUD operations, activation, verification, and queries
 """
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
+from app.schemas.request.payment import PaymentDetails
+from app.schemas.request.vendor import SalonUpdate
+from app.schemas.admin import ServiceCreate, ServiceUpdate, StaffCreate, StaffUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 @dataclass
@@ -44,9 +44,9 @@ class SalonService:
     Handles CRUD, activation, verification, and queries.
     """
     
-    def __init__(self):
-        """Initialize service - uses centralized db client"""
-        pass
+    def __init__(self, db_client):
+        """Initialize service with database client"""
+        self.db = db_client
     
     async def get_salon(
         self,
@@ -72,11 +72,11 @@ class SalonService:
             select_parts.append("services(*)")
         
         if include_staff:
-            select_parts.append("staff(*)")
+            select_parts.append("salon_staff(*)")
         
         select_query = ", ".join(select_parts)
         
-        response = db.table("salons").select(select_query).eq("id", salon_id).single().execute()
+        response = self.db.table("salons").select(select_query).eq("id", salon_id).single().execute()
         
         if not response.data:
             raise ValueError(f"Salon {salon_id} not found")
@@ -95,7 +95,7 @@ class SalonService:
         """
         # Select salon data with related RM and vendor profiles
         # Using simpler approach - fetch profiles separately if needed
-        query = db.table("salons").select("*")
+        query = self.db.table("salons").select("*")
         
         # Apply filters
         if params.city:
@@ -151,7 +151,7 @@ class SalonService:
         # Fetch vendor profiles
         vendor_profiles = {}
         if vendor_ids:
-            vendor_response = db.table("profiles").select("id, full_name").in_("id", vendor_ids).execute()
+            vendor_response = self.db.table("profiles").select("id, full_name").in_("id", vendor_ids).execute()
             vendor_profiles = {p["id"]: p for p in (vendor_response.data or [])}
         
         # Fetch RM profiles
@@ -159,13 +159,13 @@ class SalonService:
         rm_profiles = {}
         if rm_ids:
             # First get RM profile data
-            rm_response = db.table("rm_profiles").select("id, employee_id").in_("id", rm_ids).execute()
+            rm_response = self.db.table("rm_profiles").select("id, employee_id").in_("id", rm_ids).execute()
             rm_data = rm_response.data or []
             
             # The rm_profiles.id itself is a foreign key to profiles.id
             # So we can directly fetch the profile using the rm_id
             if rm_ids:
-                profile_response = db.table("profiles").select("id, full_name").in_("id", rm_ids).execute()
+                profile_response = self.db.table("profiles").select("id, full_name").in_("id", rm_ids).execute()
                 profile_map = {p["id"]: p for p in (profile_response.data or [])}
                 
                 # Map RM ID to profile data
@@ -196,7 +196,7 @@ class SalonService:
             List of nearby salons with distance
         """
         # Call PostGIS function
-        response = db.rpc("get_nearby_salons", {
+        response = self.db.rpc("get_nearby_salons", {
             "user_lat": params.latitude,
             "user_lon": params.longitude,
             "radius_km": params.radius_km,
@@ -221,7 +221,7 @@ class SalonService:
     async def update_salon(
         self,
         salon_id: str,
-        updates: Dict[str, Any],
+        updates: Union[Dict[str, Any], SalonUpdate],
         admin_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -241,16 +241,22 @@ class SalonService:
             "approved_at", "payment_verified_at"
         }
         
+        # Normalize updates: accept Pydantic model or raw dict
+        if isinstance(updates, SalonUpdate):
+            updates_dict = updates.model_dump(exclude_none=True)
+        else:
+            updates_dict = dict(updates)
+
         # Filter out protected fields
         safe_updates = {
-            k: v for k, v in updates.items()
+            k: v for k, v in updates_dict.items()
             if k not in protected_fields
         }
         
         if not safe_updates:
             raise ValueError("No valid fields to update")
         
-        response = db.table("salons").update(
+        response = self.db.table("salons").update(
             safe_updates
         ).eq("id", salon_id).execute()
         
@@ -271,7 +277,7 @@ class SalonService:
         Returns:
             Updated salon
         """
-        response = db.table("salons").update({
+        response = self.db.table("salons").update({
             "is_active": True
         }).eq("id", salon_id).execute()
         
@@ -298,7 +304,7 @@ class SalonService:
         if reason:
             updates["deactivation_reason"] = reason
         
-        response = db.table("salons").update(updates).eq("id", salon_id).execute()
+        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
         
         if not response.data:
             raise ValueError("Salon not found")
@@ -326,7 +332,7 @@ class SalonService:
         if admin_id:
             updates["verified_by"] = admin_id
         
-        response = db.table("salons").update(updates).eq("id", salon_id).execute()
+        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
         
         if not response.data:
             raise ValueError("Salon not found")
@@ -338,7 +344,7 @@ class SalonService:
     async def mark_payment_verified(
         self,
         salon_id: str,
-        payment_details: Dict[str, Any]
+        payment_details: PaymentDetails
     ) -> Dict[str, Any]:
         """
         Mark registration payment as verified.
@@ -353,10 +359,10 @@ class SalonService:
         updates = {
             "registration_fee_paid": True,
             "payment_verified_at": "now()",
-            "payment_details": payment_details
+            "payment_details": payment_details.model_dump(exclude_none=True)
         }
         
-        response = db.table("salons").update(updates).eq("id", salon_id).execute()
+        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
         
         if not response.data:
             raise ValueError("Salon not found")
@@ -376,28 +382,28 @@ class SalonService:
             Statistics dict
         """
         # Get service count
-        services_response = db.table("services").select(
+        services_response = self.db.table("services").select(
             "id", count="exact"
         ).eq("salon_id", salon_id).execute()
         
         service_count = services_response.count or 0
         
         # Get staff count
-        staff_response = db.table("staff").select(
+        staff_response = self.db.table("staff").select(
             "id", count="exact"
         ).eq("salon_id", salon_id).execute()
         
         staff_count = staff_response.count or 0
         
         # Get booking count
-        bookings_response = db.table("bookings").select(
+        bookings_response = self.db.table("bookings").select(
             "id", count="exact"
         ).eq("salon_id", salon_id).execute()
         
         booking_count = bookings_response.count or 0
         
         # Get average rating (if reviews exist)
-        reviews_response = db.table("reviews").select(
+        reviews_response = self.db.table("reviews").select(
             "rating"
         ).eq("salon_id", salon_id).execute()
         
@@ -425,7 +431,7 @@ class SalonService:
         """
         if hard_delete:
             # Hard delete - remove from database
-            response = db.table("salons").delete().eq("id", salon_id).execute()
+            response = self.db.table("salons").delete().eq("id", salon_id).execute()
             
             logger.warning(f"🗑️ Salon {salon_id} permanently deleted")
             
@@ -445,7 +451,7 @@ class SalonService:
         Returns:
             List of salons pending verification
         """
-        response = db.table("salons").select("*").eq(
+        response = self.db.table("salons").select("*").eq(
             "registration_fee_paid", True
         ).eq("is_verified", False).order("payment_verified_at", desc=True).limit(limit).execute()
         
@@ -461,7 +467,7 @@ class SalonService:
         Returns:
             List of salons with pending payments
         """
-        response = db.table("salons").select("*").eq(
+        response = self.db.table("salons").select("*").eq(
             "registration_fee_paid", False
         ).order("approved_at", desc=True).limit(limit).execute()
         
@@ -491,7 +497,7 @@ class SalonService:
         """
         # Build query with all three required conditions
         query = (
-            db.table("salons")
+            self.db.table("salons")
             .select("*")
             .eq("is_active", True)
             .eq("is_verified", True)
@@ -535,7 +541,7 @@ class SalonService:
             List of approved salons
         """
         query = (
-            db.table("salons")
+            self.db.table("salons")
             .select("*")
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
@@ -575,7 +581,7 @@ class SalonService:
         """
         # Start with public salons filter
         query = (
-            db.table("salons")
+            self.db.table("salons")
             .select("*")
             .eq("is_active", True)
             .eq("is_verified", True)
@@ -626,7 +632,7 @@ class SalonService:
             raise ValueError("Salon not available")
         
         # Get services from database with category join
-        response = db.table("services").select(
+        response = self.db.table("services").select(
             "*, service_categories(id, name, icon_url)"
         ).eq("salon_id", salon_id).eq("is_active", True).order("category_id").execute()
         
@@ -635,6 +641,73 @@ class SalonService:
         logger.info(f"📋 Retrieved {len(services)} services for salon {salon_id}")
         
         return services
+
+    async def add_salon_service(self, salon_id: str, service: ServiceCreate) -> Dict[str, Any]:
+        """
+        Add a new service to a salon (admin action).
+
+        Args:
+            salon_id: Salon ID
+            service: ServiceCreate Pydantic model
+
+        Returns:
+            Created service data
+        """
+        try:
+            # Ensure salon exists
+            await self.get_salon(salon_id)
+
+            service_data = service.model_dump()
+            service_data["salon_id"] = salon_id
+
+            response = self.db.table("services").insert(service_data).execute()
+            created = response.data[0] if response.data else None
+
+            logger.info(f"Admin created service for salon {salon_id}: {service.name}")
+            return created
+
+        except Exception as e:
+            logger.error(f"Failed to add service to salon {salon_id}: {e}")
+            raise
+
+    async def update_salon_service(self, salon_id: str, service_id: str, service: ServiceUpdate) -> Dict[str, Any]:
+        """
+        Update a salon service (admin action).
+        """
+        try:
+            # Ensure salon exists
+            await self.get_salon(salon_id)
+
+            update_data = service.model_dump(exclude_none=True)
+            if not update_data:
+                raise ValueError("No fields provided for update")
+
+            response = self.db.table("services").update(update_data).eq("id", service_id).eq("salon_id", salon_id).execute()
+            if not response.data:
+                raise ValueError("Service not found or update failed")
+
+            logger.info(f"Admin updated service {service_id} for salon {salon_id}")
+            return response.data[0]
+
+        except Exception as e:
+            logger.error(f"Failed to update service {service_id} for salon {salon_id}: {e}")
+            raise
+
+    async def delete_salon_service(self, salon_id: str, service_id: str) -> Dict[str, Any]:
+        """
+        Delete a service from a salon (admin action).
+        """
+        try:
+            # Ensure salon exists
+            await self.get_salon(salon_id)
+
+            self.db.table("services").delete().eq("id", service_id).eq("salon_id", salon_id).execute()
+            logger.info(f"Admin deleted service {service_id} from salon {salon_id}")
+            return {"success": True, "service_id": service_id}
+
+        except Exception as e:
+            logger.error(f"Failed to delete service {service_id} from salon {salon_id}: {e}")
+            raise
     
     async def get_salon_staff(self, salon_id: str) -> List[Dict[str, Any]]:
         """
@@ -656,7 +729,7 @@ class SalonService:
             raise ValueError("Salon not available")
         
         # Get active staff members
-        response = db.table("staff").select("*").eq(
+        response = self.db.table("staff").select("*").eq(
             "salon_id", salon_id
         ).eq("is_active", True).order("name").execute()
         
@@ -665,6 +738,63 @@ class SalonService:
         logger.info(f"👥 Retrieved {len(staff)} staff members for salon {salon_id}")
         
         return staff
+
+    async def add_salon_staff(self, salon_id: str, staff: StaffCreate) -> Dict[str, Any]:
+        """
+        Add a staff member to a salon (admin action).
+        """
+        try:
+            await self.get_salon(salon_id)
+
+            staff_data = staff.model_dump()
+            staff_data["salon_id"] = salon_id
+
+            response = self.db.table("salon_staff").insert(staff_data).execute()
+            created = response.data[0] if response.data else None
+
+            logger.info(f"Admin added staff to salon {salon_id}: {staff.full_name}")
+            return created
+
+        except Exception as e:
+            logger.error(f"Failed to add staff to salon {salon_id}: {e}")
+            raise
+
+    async def update_salon_staff(self, salon_id: str, staff_id: str, staff: StaffUpdate) -> Dict[str, Any]:
+        """
+        Update a salon staff member (admin action).
+        """
+        try:
+            await self.get_salon(salon_id)
+
+            update_data = staff.model_dump(exclude_none=True)
+            if not update_data:
+                raise ValueError("No fields provided for update")
+
+            response = self.db.table("salon_staff").update(update_data).eq("id", staff_id).eq("salon_id", salon_id).execute()
+            if not response.data:
+                raise ValueError("Staff not found or update failed")
+
+            logger.info(f"Admin updated staff {staff_id} for salon {salon_id}")
+            return response.data[0]
+
+        except Exception as e:
+            logger.error(f"Failed to update staff {staff_id} for salon {salon_id}: {e}")
+            raise
+
+    async def delete_salon_staff(self, salon_id: str, staff_id: str) -> Dict[str, Any]:
+        """
+        Delete a salon staff member (admin action).
+        """
+        try:
+            await self.get_salon(salon_id)
+
+            self.db.table("salon_staff").delete().eq("id", staff_id).eq("salon_id", salon_id).execute()
+            logger.info(f"Admin deleted staff {staff_id} from salon {salon_id}")
+            return {"success": True, "staff_id": staff_id}
+
+        except Exception as e:
+            logger.error(f"Failed to delete staff {staff_id} from salon {salon_id}: {e}")
+            raise
     
     async def get_platform_commission_config(self) -> float:
         """
@@ -674,7 +804,7 @@ class SalonService:
             Commission percentage (defaults to 10.0 if not found)
         """
         try:
-            response = db.table("system_config").select("config_value").eq(
+            response = self.db.table("system_config").select("config_value").eq(
                 "config_key", "platform_commission_percentage"
             ).eq("is_active", True).single().execute()
             

@@ -11,9 +11,6 @@ from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client
-supabase = get_db()
-
 
 class StorageService:
     """
@@ -33,9 +30,9 @@ class StorageService:
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     }
     
-    def __init__(self):
+    def __init__(self, db_client):
         """Initialize storage service"""
-        self.client = supabase
+        self.client = db_client
     
     def validate_file(self, file: UploadFile, allowed_types: Optional[set] = None) -> bool:
         """

@@ -1,33 +1,19 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import Optional
+from supabase import Client
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import get_db_client
 from app.services.geocoding import geocoding_service
-
-# Get database client using factory function
-db = get_db()
+from app.schemas import (
+    GeocodeRequest,
+    GeocodeResponse,
+    NearbySalonsResponse,
+)
 
 
 router = APIRouter(prefix="/api/location", tags=["location"])
-
-
-
-class GeocodeRequest(BaseModel):
-    address: str
-
-
-class GeocodeResponse(BaseModel):
-    latitude: float
-    longitude: float
-    address: str
-
-
-class NearbySalonsResponse(BaseModel):
-    salons: list
-    count: int
-    query: dict
 
 
 @router.post("/geocode", response_model=GeocodeResponse)
@@ -70,35 +56,33 @@ async def get_salons_nearby(
     lat: float = Query(..., description="User latitude"),
     lon: float = Query(..., description="User longitude"),
     radius: float = Query(10.0, description="Search radius in kilometers", ge=0.5, le=50),
-    limit: int = Query(50, description="Maximum results", ge=1, le=100)
+    limit: int = Query(50, description="Maximum results", ge=1, le=100),
+    db: Client = Depends(get_db_client)
 ):
     """
     Get salons near the specified location
     Uses PostGIS function for efficient distance calculation
     Much faster than Python-based Haversine calculation
     """
-    try:
-        # Query approved salons within radius using PostGIS
-        response = db.rpc(
-            'get_nearby_salons',
-            {
-                'user_lat': lat,
-                'user_lon': lon,
-                'radius_km': radius,
-                'result_limit': limit
-            }
-        ).execute()
-        
-        salons = response.data if response.data else []
-        
-        return {
-            "salons": salons,
-            "count": len(salons),
-            "query": {
-                "latitude": lat,
-                "longitude": lon,
-                "radius_km": radius
-            }
+    # Query approved salons within radius using PostGIS
+    response = db.rpc(
+        'get_nearby_salons',
+        {
+            'user_lat': lat,
+            'user_lon': lon,
+            'radius_km': radius,
+            'result_limit': limit
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch nearby salons: {str(e)}")
+    ).execute()
+    
+    salons = response.data if response.data else []
+    
+    return {
+        "salons": salons,
+        "count": len(salons),
+        "query": {
+            "latitude": lat,
+            "longitude": lon,
+            "radius_km": radius
+        }
+    }

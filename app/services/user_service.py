@@ -7,14 +7,12 @@ import uuid
 import logging
 import requests
 from typing import Optional, Dict, Any
+from app.schemas.user import UserUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 @dataclass
@@ -22,7 +20,7 @@ class CreateUserRequest:
     """Data class for user creation request"""
     email: str
     full_name: str
-    role: str
+    user_role: str
     password: str
     phone: Optional[str] = None
     
@@ -31,7 +29,7 @@ class CreateUserRequest:
         if not self.email or not self.full_name:
             raise ValueError("Email and full name are required")
         
-        if self.role not in ["relationship_manager", "customer"]:
+        if self.user_role not in ["relationship_manager", "customer"]:
             raise ValueError("Invalid role. Must be 'relationship_manager' or 'customer'")
         
         if not self.email_is_valid():
@@ -49,7 +47,6 @@ class UserCreationResult:
     """Result of user creation operation"""
     success: bool
     user_id: Optional[str] = None
-    employee_id: Optional[str] = None
     profile_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     rm_profile_created: bool = False
@@ -112,21 +109,18 @@ class UserService:
             return UserCreationResult(success=False, error=str(e))
         
         # Step 5: Create RM profile if needed
-        employee_id = None
-        if request.role == "relationship_manager":
+        if request.user_role == "relationship_manager":
             try:
-                rm_profile_data = await self._create_rm_profile(auth_user_id)
-                employee_id = rm_profile_data.get("employee_id")
+                rm_profile_data = await self._create_rm_profile(auth_user_id, request)
             except Exception as e:
                 logger.warning(f"Failed to create RM profile: {str(e)}")
                 # Don't rollback - user and profile are created
         
-        logger.info(f"✅ User created successfully: {request.email} ({request.role})")
+        logger.info(f"✅ User created successfully: {request.email} ({request.user_role})")
         
         return UserCreationResult(
             success=True,
             user_id=auth_user_id,
-            employee_id=employee_id,
             profile_data=profile_data
         )
     
@@ -157,7 +151,7 @@ class UserService:
             "email_confirm": True,
             "user_metadata": {
                 "full_name": request.full_name,
-                "role": request.role
+                "user_role": request.user_role
             }
         }
         
@@ -199,10 +193,9 @@ class UserService:
             "id": user_id,
             "email": request.email,
             "full_name": request.full_name,
-            "phone": request.phone or "",
-            "role": request.role,
-            "is_active": True,
-            "email_verified": True
+            "phone": request.phone if request.phone else None,  # Use None instead of empty string
+            "user_role": request.user_role,
+            "is_active": True
         }
         
         response = db.table("profiles").insert(profile_data).execute()
@@ -213,9 +206,9 @@ class UserService:
         logger.info(f"✅ Profile created for {request.email}")
         return response.data[0]
     
-    async def _create_rm_profile(self, user_id: str) -> Dict[str, Any]:
+    async def _create_rm_profile(self, user_id: str, request: CreateUserRequest) -> Dict[str, Any]:
         """
-        Create RM profile with UUID-based employee ID.
+        Create RM profile matching actual production schema.
         
         Returns:
             Dict: Created RM profile data
@@ -223,15 +216,13 @@ class UserService:
         Raises:
             Exception: If RM profile creation fails
         """
-        # Generate UUID-based employee ID (more robust than random numbers)
-        employee_id = f"RM-{uuid.uuid4().hex[:8].upper()}"
-        
         rm_profile_data = {
             "id": user_id,
-            "employee_id": employee_id,
-            "total_score": 0,
-            "total_salons_added": 0,
-            "total_approved_salons": 0,
+            "full_name": request.full_name,
+            "phone": request.phone if request.phone else "0000000000",  # Default phone if not provided
+            "email": request.email,
+            "assigned_territories": [],
+            "performance_score": 0,
             "is_active": True
         }
         
@@ -240,7 +231,7 @@ class UserService:
         if not response.data:
             raise Exception("Failed to create RM profile - no data returned")
         
-        logger.info(f"✅ RM profile created with employee_id: {employee_id}")
+        logger.info(f"✅ RM profile created for {request.email}")
         return response.data[0]
     
     async def _delete_auth_user(self, user_id: str) -> None:
@@ -259,56 +250,7 @@ class UserService:
         except Exception as e:
             logger.error(f"Failed to rollback auth user {user_id}: {str(e)}")
     
-    async def update_user(
-        self, 
-        user_id: str, 
-        updates: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Update user profile (admin).
-        
-        Args:
-            user_id: User ID to update
-            updates: Dictionary of fields to update
-            
-        Returns:
-            Dict with 'success', 'message', 'data' keys
-            
-        Raises:
-            ValueError: If user not found
-            Exception: If update fails
-        """
-        try:
-            # Check if user exists
-            existing = db.table("profiles").select("id").eq("id", user_id).execute()
-            if not existing.data:
-                raise ValueError(f"User not found")
-            
-            # Remove sensitive fields that shouldn't be updated directly
-            safe_updates = {
-                k: v for k, v in updates.items() 
-                if k not in ["id", "email"]  # Allow role updates for admins
-            }
-            
-            # Perform update
-            response = db.table("profiles").update(safe_updates).eq("id", user_id).execute()
-            
-            if not response.data:
-                raise Exception("Update failed - no data returned")
-            
-            logger.info(f"Admin updated user: {user_id}")
-            
-            return {
-                "success": True,
-                "message": "User updated successfully",
-                "data": response.data[0]
-            }
-        
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to update user {user_id}: {str(e)}")
-            raise Exception(f"Failed to update user: {str(e)}")
+    # NOTE: consolidated admin/general update into single implementation below
     
     async def delete_user(self, user_id: str) -> bool:
         """
@@ -325,11 +267,11 @@ class UserService:
             ValueError: If user not found
         """
         # Check if user exists and get role
-        existing = db.table("profiles").select("id, role").eq("id", user_id).execute()
+        existing = db.table("profiles").select("id, user_role").eq("id", user_id).execute()
         if not existing.data:
             raise ValueError(f"User {user_id} not found")
         
-        user_role = existing.data[0].get("role")
+        user_role = existing.data[0].get("user_role")
         
         # Soft delete in profiles table
         db.table("profiles").update({
@@ -348,6 +290,83 @@ class UserService:
         
         logger.info(f"🗑️ User {user_id} soft deleted")
         return True
+    
+    async def update_user(self, user_id: str, updates: UserUpdate) -> Dict[str, Any]:
+        """
+        Update user profile with authorization checks.
+        
+        Args:
+            user_id: User ID to update
+            updates: Fields to update
+            
+        Returns:
+            Dict with success status and updated data
+            
+        Raises:
+            ValueError: If user not found or invalid updates
+            Exception: If update fails
+        """
+        # Check if user exists and get current data
+        existing = db.table("profiles").select("*").eq("id", user_id).execute()
+        if not existing.data:
+            raise ValueError(f"User {user_id} not found")
+        
+        user_data = existing.data[0]
+        current_role = user_data.get("user_role")
+        
+        # Prevent updating admin users (security measure)
+        if current_role == "admin":
+            raise ValueError("Cannot modify admin user accounts")
+        
+        # Validate updates (convert Pydantic model to dict excluding None)
+        updates_dict = updates.model_dump(exclude_none=True)
+
+        allowed_fields = {
+            "full_name", "phone", "address", "city", "state", 
+            "pincode", "profile_image_url", "is_active"
+        }
+        # Filter out invalid fields
+        filtered_updates = {k: v for k, v in updates_dict.items() if k in allowed_fields}
+        
+        if not filtered_updates:
+            raise ValueError("No valid fields to update")
+        
+        # Prevent deactivating admin users
+        if "is_active" in filtered_updates and not filtered_updates["is_active"] and current_role == "admin":
+            raise ValueError("Cannot deactivate admin user accounts")
+        
+        try:
+            # Update profile
+            response = db.table("profiles").update(filtered_updates).eq("id", user_id).execute()
+            
+            if not response.data:
+                raise Exception("Update failed - no data returned")
+            
+            updated_user = response.data[0]
+            
+            # If deactivating RM, also deactivate RM profile
+            if (filtered_updates.get("is_active") == False and current_role == "relationship_manager"):
+                try:
+                    db.table("rm_profiles").update({
+                        "is_active": False
+                    }).eq("id", user_id).execute()
+                    logger.info(f"🗑️ RM profile also deactivated for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to deactivate RM profile for {user_id}: {str(e)}")
+            
+            logger.info(f"✅ User {user_id} updated: {list(filtered_updates.keys())}")
+            
+            return {
+                "success": True,
+                "message": "User updated successfully",
+                "data": updated_user
+            }
+        
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to update user {user_id}: {str(e)}")
+            raise Exception(f"Failed to update user: {str(e)}")
     
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user by ID"""
@@ -388,7 +407,7 @@ class UserService:
             
             # Apply role filter
             if role:
-                query = query.eq("role", role)
+                query = query.eq("user_role", role)
             
             # Apply active status filter
             if is_active is not None:

@@ -8,7 +8,12 @@ from pydantic import BaseModel, EmailStr
 from datetime import datetime
 import logging
 
+from app.core.database import get_db_client
 from app.services.career_service import CareerService
+from app.schemas import (
+    CareerApplicationResponse,
+    ApplicationStatusUpdate,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -18,28 +23,9 @@ router = APIRouter()
 # DEPENDENCY INJECTION
 # =====================================================
 
-def get_career_service() -> CareerService:
+def get_career_service(db=Depends(get_db_client)) -> CareerService:
     """Dependency injection for CareerService"""
-    return CareerService()
-
-
-# =====================================================
-# SCHEMAS
-# =====================================================
-
-class CareerApplicationResponse(BaseModel):
-    """Response after successful career application submission"""
-    id: str
-    message: str
-    application_number: str
-    
-class ApplicationStatusUpdate(BaseModel):
-    """Schema for updating application status"""
-    status: str
-    admin_notes: Optional[str] = None
-    rejection_reason: Optional[str] = None
-    interview_scheduled_at: Optional[datetime] = None
-    interview_location: Optional[str] = None
+    return CareerService(db_client=db)
 
 # =====================================================
 # API ENDPOINTS
