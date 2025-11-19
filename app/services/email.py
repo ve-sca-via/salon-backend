@@ -51,6 +51,10 @@ class MockEmailService:
             subject=f"🎉 Congratulations! {salon_name} has been approved",
             html_body=f"Mock approval email for {owner_name}",
             text_body=None
+            
+            
+            
+            
         )
     
     async def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
@@ -251,7 +255,7 @@ class EmailService:
         try:
             template = self.env.get_template('vendor_approval.html')
             
-            registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
+            registration_url = f"{settings.VENDOR_PORsTAL_URL}/complete-registration?token={registration_token}"
             
             # Log registration URL in dev mode for easy testing
             if not settings.EMAIL_ENABLED:
@@ -627,6 +631,166 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Failed to send career application admin notification: {str(e)}")
+            return False
+    
+    async def send_booking_confirmation_to_customer(
+        self,
+        customer_email: str,
+        customer_name: str,
+        salon_name: str,
+        booking_number: str,
+        booking_date: str,
+        booking_time: str,
+        services: list,
+        total_amount: float,
+        convenience_fee: float,
+        service_price: float
+    ) -> bool:
+        """
+        Send booking confirmation email to customer
+        
+        Args:
+            customer_email: Customer's email
+            customer_name: Customer's name
+            salon_name: Salon name
+            booking_number: Booking reference number
+            booking_date: Booking date
+            booking_time: Booking time
+            services: List of services booked
+            total_amount: Total booking amount
+            convenience_fee: Online convenience fee paid
+            service_price: Service price to be paid at salon
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            # Simple HTML email (template can be created later)
+            html_body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #4CAF50;">✅ Booking Confirmed!</h2>
+                    <p>Hi {customer_name},</p>
+                    <p>Your booking at <strong>{salon_name}</strong> has been confirmed.</p>
+                    
+                    <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3>Booking Details:</h3>
+                        <p><strong>Booking Number:</strong> {booking_number}</p>
+                        <p><strong>Date:</strong> {booking_date}</p>
+                        <p><strong>Time:</strong> {booking_time}</p>
+                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
+                    </div>
+                    
+                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3>Payment Details:</h3>
+                        <p><strong>Convenience Fee (Paid Online):</strong> ₹{convenience_fee:.2f}</p>
+                        <p><strong>Service Amount (Pay at Salon):</strong> ₹{service_price:.2f}</p>
+                        <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
+                    </div>
+                    
+                    <p style="color: #666; font-size: 14px;">
+                        Please arrive 5 minutes before your appointment time. 
+                        Remember to pay the service amount (₹{service_price:.2f}) at the salon after your service.
+                    </p>
+                    
+                    <p>See you soon!<br><strong>SalonHub Team</strong></p>
+                </div>
+            </body>
+            </html>
+            """
+            
+            subject = f"✅ Booking Confirmed - {salon_name} ({booking_number})"
+            
+            result = await self._send_email(customer_email, subject, html_body)
+            logger.info(f"Booking confirmation email sent to {customer_email} for booking {booking_number}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to send customer booking confirmation: {str(e)}")
+            return False
+    
+    async def send_new_booking_notification_to_vendor(
+        self,
+        vendor_email: str,
+        salon_name: str,
+        customer_name: str,
+        customer_phone: str,
+        booking_number: str,
+        booking_date: str,
+        booking_time: str,
+        services: list,
+        total_amount: float,
+        booking_id: str
+    ) -> bool:
+        """
+        Send new booking notification email to vendor
+        
+        Args:
+            vendor_email: Vendor's email
+            salon_name: Salon name
+            customer_name: Customer's name
+            customer_phone: Customer's phone
+            booking_number: Booking reference number
+            booking_date: Booking date
+            booking_time: Booking time
+            services: List of services booked
+            total_amount: Total booking amount
+            booking_id: Booking UUID
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            # Simple HTML email (template can be created later)
+            html_body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #2196F3;">🔔 New Booking Received!</h2>
+                    <p>Hi {salon_name} Team,</p>
+                    <p>You have received a new booking. Please check your dashboard for details.</p>
+                    
+                    <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <h3>Booking Details:</h3>
+                        <p><strong>Booking Number:</strong> {booking_number}</p>
+                        <p><strong>Customer:</strong> {customer_name}</p>
+                        <p><strong>Phone:</strong> {customer_phone}</p>
+                        <p><strong>Date:</strong> {booking_date}</p>
+                        <p><strong>Time:</strong> {booking_time}</p>
+                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
+                        <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
+                    </div>
+                    
+                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p><strong>⚠️ Action Required:</strong></p>
+                        <p>Please confirm this booking from your vendor dashboard.</p>
+                        <p>Customer has already paid the convenience fee online.</p>
+                    </div>
+                    
+                    <p style="text-align: center; margin-top: 30px;">
+                        <a href="{settings.VENDOR_PORTAL_URL}/bookings" 
+                           style="background: #2196F3; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                            View in Dashboard
+                        </a>
+                    </p>
+                    
+                    <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                        This is an automated notification from SalonHub.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+            
+            subject = f"🔔 New Booking - {customer_name} ({booking_number})"
+            
+            result = await self._send_email(vendor_email, subject, html_body)
+            logger.info(f"New booking notification email sent to vendor {vendor_email} for booking {booking_number}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to send vendor booking notification: {str(e)}")
             return False
 
 

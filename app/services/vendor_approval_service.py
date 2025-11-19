@@ -68,43 +68,42 @@ class VendorApprovalService:
         # Step 2: Get system config (RM score, registration fee)
         config = await self._get_approval_config()
         
-        # Use transaction for multi-step operations
-        async with self.db.transaction():
-            # Step 3: Update request status
-            try:
-                await self._update_request_status(request_id, admin_notes, admin_id)
-            except Exception as e:
-                return ApprovalResult(success=False, error=f"Failed to update request: {str(e)}")
-            
-            # Step 4: Geocode address if needed
-            coordinates = await self._geocode_salon_address(request_data)
-            warnings = []
-            if coordinates['latitude'] == 0.0:
-                warnings.append("Geocoding failed - coordinates set to 0.0")
-            
-            # Step 5: Create salon
-            try:
-                salon_id = await self._create_salon(request_id, request_data, coordinates, config)
-            except Exception as e:
-                logger.error(f"Failed to create salon: {str(e)}")
-                return ApprovalResult(success=False, error=str(e))
-            
-            # Step 6: Insert services if provided
-            services_created = await self._create_salon_services(salon_id, request_data)
-            if services_created:
-                logger.info(f"✅ Created {services_created} services")
-            
-            # Step 7: Update RM score
-            try:
-                await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)
-            except Exception as e:
-                warnings.append(f"Failed to update RM score: {str(e)}")
-            
-            # Step 8: Send approval email (within transaction context)
-            try:
-                await self._send_approval_email(request_id, salon_id, request_data, config)
-            except Exception as e:
-                warnings.append(f"Failed to send email: {str(e)}")
+        warnings = []
+        
+        # Step 3: Update request status
+        try:
+            await self._update_request_status(request_id, admin_notes, admin_id)
+        except Exception as e:
+            return ApprovalResult(success=False, error=f"Failed to update request: {str(e)}")
+        
+        # Step 4: Geocode address if needed
+        coordinates = await self._geocode_salon_address(request_data)
+        if coordinates['latitude'] == 0.0:
+            warnings.append("Geocoding failed - coordinates set to 0.0")
+        
+        # Step 5: Create salon
+        try:
+            salon_id = await self._create_salon(request_id, request_data, coordinates, config)
+        except Exception as e:
+            logger.error(f"Failed to create salon: {str(e)}")
+            return ApprovalResult(success=False, error=str(e))
+        
+        # Step 6: Insert services if provided
+        services_created = await self._create_salon_services(salon_id, request_data)
+        if services_created:
+            logger.info(f"✅ Created {services_created} services")
+        
+        # Step 7: Update RM score
+        try:
+            await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)
+        except Exception as e:
+            warnings.append(f"Failed to update RM score: {str(e)}")
+        
+        # Step 8: Send approval email
+        try:
+            await self._send_approval_email(request_id, salon_id, request_data, config)
+        except Exception as e:
+            warnings.append(f"Failed to send email: {str(e)}")
         
         logger.info(f"✅ Vendor request {request_id} approved. Salon: {salon_id}")
         
@@ -137,23 +136,40 @@ class VendorApprovalService:
         return model
     
     async def _get_approval_config(self) -> Dict[str, Any]:
-        """Get RM score and registration fee from system config"""
-        # Get RM score
-        rm_score_response = self.db.table("system_config").select("config_value").eq(
-            "config_key", "rm_score_per_approval"
-        ).eq("is_active", True).single().execute()
+        """Get RM score, penalty, and registration fee from system config"""
+        # Get RM score for approval (with fallback)
+        try:
+            rm_score_response = self.db.table("system_config").select("config_value").eq(
+                "config_key", "rm_score_per_approval"
+            ).eq("is_active", True).maybe_single().execute()
+            
+            rm_score = int(rm_score_response.data.get("config_value", 10)) if rm_score_response.data else 10
+        except Exception:
+            rm_score = 10  # Default fallback
         
-        rm_score = int(rm_score_response.data.get("config_value", 10)) if rm_score_response.data else 10
+        # Get RM penalty for rejection (with fallback)
+        try:
+            penalty_response = self.db.table("system_config").select("config_value").eq(
+                "config_key", "rm_score_penalty_rejection"
+            ).eq("is_active", True).maybe_single().execute()
+            
+            rm_penalty = abs(int(penalty_response.data.get("config_value", 5))) if penalty_response.data else 5
+        except Exception:
+            rm_penalty = 5  # Default fallback
         
-        # Get registration fee
-        fee_response = self.db.table("system_config").select("config_value").eq(
-            "config_key", "registration_fee_amount"
-        ).eq("is_active", True).single().execute()
-        
-        registration_fee = float(fee_response.data.get("config_value", 5000)) if fee_response.data else 5000.0
+        # Get registration fee (with fallback)
+        try:
+            fee_response = self.db.table("system_config").select("config_value").eq(
+                "config_key", "registration_fee_amount"
+            ).eq("is_active", True).maybe_single().execute()
+            
+            registration_fee = float(fee_response.data.get("config_value", 5000)) if fee_response.data else 5000.0
+        except Exception:
+            registration_fee = 5000.0  # Default fallback
         
         return {
             "rm_score": rm_score,
+            "rm_score_penalty_rejection": rm_penalty,
             "registration_fee": registration_fee
         }
     
@@ -200,7 +216,7 @@ class VendorApprovalService:
             # Fallback to city-level geocoding
             logger.warning(f"⚠️ Full address geocoding failed, trying city...")
             city_coords = await geocoding_service.geocode_address(
-                f"{request_data['city']}, {request_data['state']}"
+                f"{request_data.city}, {request_data.state}"
             )
             
             if city_coords:
@@ -369,6 +385,43 @@ class VendorApprovalService:
             "description": f"Salon approved: {salon_name}"
         }).execute()
     
+    async def _penalize_rm_for_rejection(
+        self,
+        rm_id: str,
+        salon_name: str,
+        rejection_reason: str
+    ) -> None:
+        """Deduct RM score for rejected vendor request (quality incentive)"""
+        # Get penalty from system config (default -5 points)
+        config_response = self.db.table("system_config").select("value").eq(
+            "key", "rm_rejection_penalty"
+        ).single().execute()
+        
+        penalty = int(config_response.data.get("value", -5)) if config_response.data else -5
+        
+        # Get current RM performance_score
+        rm_response = self.db.table("rm_profiles").select(
+            "performance_score"
+        ).eq("id", rm_id).single().execute()
+        
+        current_score = rm_response.data.get("performance_score", 0) if rm_response.data else 0
+        new_score = max(0, current_score + penalty)  # Don't go below 0
+        
+        # Update RM profile
+        self.db.table("rm_profiles").update({
+            "performance_score": new_score
+        }).eq("id", rm_id).execute()
+        
+        logger.info(f"📉 RM score penalized: {penalty} points (Total: {new_score})")
+        
+        # Add score history
+        self.db.table("rm_score_history").insert({
+            "rm_id": rm_id,
+            "action": "salon_rejected",
+            "points": penalty,
+            "description": f"Salon rejected: {salon_name} - {rejection_reason[:100]}"
+        }).execute()
+    
     async def _send_approval_email(
         self,
         request_id: str,
@@ -392,13 +445,78 @@ class VendorApprovalService:
             owner_name=request_data.owner_name,
             salon_name=request_data.business_name,
             registration_token=registration_token,
-            registration_fee=config.registration_fee
+            registration_fee=config["registration_fee"]
         )
         
         if email_sent:
             logger.info(f"✉️ Approval email sent to {request_data.owner_email}")
         else:
             logger.warning(f"⚠️ Failed to send approval email to {request_data.owner_email}")
+    
+    async def _update_rm_score(
+        self, 
+        rm_id: str, 
+        score_points: int, 
+        salon_id: str, 
+        salon_name: str
+    ) -> None:
+        """
+        Update RM's performance score after successful salon approval.
+        Uses RMService's update_rm_score method for consistency.
+        """
+        from app.services.rm_service import RMService
+        
+        rm_service = RMService(db_client=self.db)
+        
+        result = await rm_service.update_rm_score(
+            rm_id=rm_id,
+            score_change=score_points,
+            reason=f"Salon '{salon_name}' approved and created",
+            salon_id=salon_id,
+            admin_id=None  # System-generated, not admin action
+        )
+        
+        if result.success:
+            logger.info(f"✅ RM {rm_id} awarded {score_points} points (new total: {result.new_total_score})")
+        else:
+            logger.error(f"❌ Failed to update RM score: {result.error}")
+            raise Exception(result.error or "Failed to update RM score")
+    
+    async def _penalize_rm_for_rejection(
+        self,
+        rm_id: str,
+        salon_name: str,
+        rejection_reason: str
+    ) -> None:
+        """
+        Deduct points from RM when their vendor request is rejected.
+        Encourages quality submissions.
+        """
+        from app.services.rm_service import RMService
+        
+        # Get penalty from config (default -5 points)
+        config_response = self.db.table("system_config").select(
+            "rejection_penalty"
+        ).eq("id", 1).single().execute()
+        
+        penalty = -5  # Default
+        if config_response.data and "rejection_penalty" in config_response.data:
+            penalty = -abs(config_response.data["rejection_penalty"])  # Ensure negative
+        
+        rm_service = RMService(db_client=self.db)
+        
+        result = await rm_service.update_rm_score(
+            rm_id=rm_id,
+            score_change=penalty,
+            reason=f"Vendor request rejected: '{salon_name}' - {rejection_reason[:50]}",
+            salon_id=None,
+            admin_id=None
+        )
+        
+        if result.success:
+            logger.info(f"⚠️ RM {rm_id} penalized {penalty} points (new total: {result.new_total_score})")
+        else:
+            logger.warning(f"Failed to penalize RM: {result.error}")
     
     async def reject_vendor_request(
         self,
@@ -435,6 +553,19 @@ class VendorApprovalService:
             
         self.db.table("vendor_join_requests").update(update_data).eq("id", request_id).execute()
         
+        # Penalize RM score for rejection
+        try:
+            config = await self._get_approval_config()
+            score_penalty = config.get("rm_score_penalty_rejection", 5)  # Default 5 points penalty
+            await self._penalize_rm_score(
+                rm_id=request_data["rm_id"],
+                score_penalty=score_penalty,
+                request_id=request_id,
+                salon_name=request_data["business_name"]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to penalize RM score: {str(e)}")
+        
         # Get RM details and send email
         rm_response = self.db.table("rm_profiles").select(
             "*, profiles(email, full_name)"
@@ -462,3 +593,49 @@ class VendorApprovalService:
             "success": True,
             "message": "Vendor request rejected"
         }
+    
+    async def _update_rm_score(
+        self,
+        rm_id: str,
+        score_change: int,
+        salon_id: str,
+        salon_name: str
+    ) -> None:
+        """Update RM score for approved salon"""
+        from app.services.rm_service import RMService
+        
+        rm_service = RMService(db_client=self.db)
+        
+        reason = f"Salon '{salon_name}' approved"
+        
+        await rm_service.update_rm_score(
+            rm_id=rm_id,
+            score_change=score_change,
+            reason=reason,
+            salon_id=salon_id
+        )
+        
+        logger.info(f"📊 RM {rm_id} awarded {score_change} points for salon approval")
+    
+    async def _penalize_rm_score(
+        self,
+        rm_id: str,
+        score_penalty: int,
+        request_id: str,
+        salon_name: str
+    ) -> None:
+        """Penalize RM score for rejected request"""
+        from app.services.rm_service import RMService
+        
+        rm_service = RMService(db_client=self.db)
+        
+        reason = f"Salon '{salon_name}' rejected"
+        
+        await rm_service.update_rm_score(
+            rm_id=rm_id,
+            score_change=-score_penalty,  # Negative for penalty
+            reason=reason,
+            salon_id=None
+        )
+        
+        logger.info(f"⚠️ RM {rm_id} penalized {score_penalty} points for rejection")

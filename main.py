@@ -13,6 +13,11 @@ from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
+from dotenv import load_dotenv
+
+# Load environment variables from .env file BEFORE importing settings
+load_dotenv()
+
 from app.core.config import settings
 from app.core.exceptions import AppException
 from app.core.database import get_db, get_db_client, get_auth_client, MockSupabaseClient

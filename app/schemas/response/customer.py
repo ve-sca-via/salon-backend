@@ -25,12 +25,16 @@ class FavoriteResponse(BaseModel):
 
 class CartItem(BaseModel):
     """Cart item schema"""
+    id: str
     service_id: str
-    service_name: str
+    salon_id: str
     quantity: int
+    metadata: Dict[str, Any]
+    service_details: Dict[str, Any]
+    salon_details: Dict[str, Any]
     unit_price: float
     line_total: float
-    service_details: Dict[str, Any]
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -40,7 +44,7 @@ class CartResponse(BaseModel):
     """Cart response schema"""
     success: bool
     items: List[CartItem]
-    salon_id: Optional[int] = None
+    salon_id: Optional[str] = None  # UUID string
     salon_name: Optional[str] = None
     salon_details: Optional[Dict[str, Any]] = None
     total_amount: float
@@ -54,7 +58,7 @@ class CartOperationResponse(BaseModel):
     """Response for cart add/update operations"""
     success: bool
     message: str
-    cart: Optional[Dict[str, Any]] = None
+    cart_item: Optional[Dict[str, Any]] = None  # Changed from 'cart' to 'cart_item'
 
     class Config:
         from_attributes = True

@@ -72,6 +72,7 @@ class SalonResponse(BaseModel):
     registration_fee_paid: bool
     registration_payment_id: Optional[str] = None
     assigned_rm: Optional[str] = None
+    accepting_bookings: bool = True
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
     deleted_at: Optional[datetime] = None
@@ -104,7 +105,7 @@ class SalonListResponse(BaseModel):
     """List view with minimal fields for performance"""
     id: str
     business_name: str
-    business_type: BusinessType
+    business_type: Optional[BusinessType] = None  # Optional as not stored in salons table
     city: str
     state: str
     latitude: float

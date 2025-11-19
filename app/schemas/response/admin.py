@@ -12,12 +12,15 @@ from datetime import datetime
 # =====================================================
 
 class SystemConfigResponse(BaseModel):
+    id: str
     config_key: str
     config_value: str
+    config_type: str
     description: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    updated_by: Optional[str] = None
 
     class Config:
         from_attributes = True

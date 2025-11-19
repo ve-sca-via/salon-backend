@@ -25,7 +25,6 @@ router.include_router(rms_router, prefix="/rms", tags=["admin-rms"])
 router.include_router(users_router, prefix="/users", tags=["admin-users"])
 router.include_router(salons_router, prefix="/salons", tags=["admin-salons"])
 router.include_router(bookings_router, prefix="/bookings", tags=["admin-bookings"])
-# Mount services and staff under explicit salon resource paths to avoid
-# ambiguous mounts like multiple routers sharing the same prefix.
-router.include_router(services_router, prefix="/salons/{salon_id}/services", tags=["admin-services"])
-router.include_router(staff_router, prefix="/salons/{salon_id}/staff", tags=["admin-staff"])
+# Mount services and staff as global admin resources (all services/staff across all salons)
+router.include_router(services_router, prefix="/services", tags=["admin-services-global"])
+router.include_router(staff_router, prefix="/staff", tags=["admin-staff-global"])

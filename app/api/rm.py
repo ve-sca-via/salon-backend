@@ -7,7 +7,10 @@ from typing import List, Optional
 import logging
 from supabase import Client
 
+logger = logging.getLogger(__name__)
+
 from app.core.auth import require_rm, TokenData, get_current_user_id
+from app.schemas.user import UserProfileUpdate
 from app.schemas import (
     VendorJoinRequestCreate,
     VendorJoinRequestResponse,
@@ -106,6 +109,7 @@ async def get_own_vendor_requests(
     
     return {
         "success": True,
+        "message": "Vendor requests fetched successfully",
         "data": requests,
         "count": len(requests)
     }
@@ -158,7 +162,7 @@ async def get_own_profile(
 
 @router.put("/profile", response_model=RMProfileUpdateResponse)
 async def update_own_profile(
-    profile_data: 'UserProfileUpdate',
+    profile_data: UserProfileUpdate,
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)
 ):
@@ -229,6 +233,7 @@ async def get_rm_leaderboard(
     
     return {
         "success": True,
+        "message": "RM leaderboard retrieved successfully",
         "data": leaderboard,
         "total": len(leaderboard)
     }
@@ -250,5 +255,6 @@ async def get_service_categories(
     
     return {
         "success": True,
+        "message": "Service categories fetched successfully",
         "data": categories
     }

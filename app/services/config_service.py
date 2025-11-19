@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from app.schemas.request.admin import SystemConfigUpdate
 from app.core.database import get_db
 from app.core.encryption import get_encryption_service
+from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,10 @@ class ConfigService:
                     logger.info(f"Decrypted sensitive config: {config_key}")
                 except Exception as e:
                     logger.error(f"Failed to decrypt config {config_key}: {e}")
-                    # Don't fail the request, but log the error
+                    if settings.is_production:
+                        raise Exception(f"Failed to decrypt sensitive configuration in production: {config_key}")
+                    # In development, set to None so fallback is used
+                    config['config_value'] = None
             
             logger.info(f"Retrieved configuration: {config_key}")
             

@@ -10,6 +10,7 @@ Uses Factory Pattern to support mocking in test environments.
 from supabase import create_client, Client
 from app.core.config import settings
 from typing import Optional
+from contextlib import asynccontextmanager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -113,9 +114,12 @@ class MockSupabaseClient:
             return type('obj', (object,), {'data': [], 'count': 0})()
     
     def transaction(self):
-        """Mock transaction context manager"""
-        from unittest.mock import MagicMock
-        return MagicMock()
+        """Mock async transaction context manager (no-op)."""
+        @asynccontextmanager
+        async def _noop():
+            yield None
+
+        return _noop()
     
     @property
     def auth(self):
@@ -165,10 +169,34 @@ def get_db() -> Client:
     
     # Create real client
     logger.info("✅ Creating real Supabase client (SERVICE_ROLE)")
-    return create_client(
+    real_client = create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_SERVICE_ROLE_KEY
     )
+
+    # Wrap the real client to provide a compatible async transaction() method
+    class SupabaseClientWrapper:
+        def __init__(self, client):
+            self._client = client
+
+        def __getattr__(self, name):
+            return getattr(self._client, name)
+
+        def transaction(self):
+            """Provide an async no-op transaction context manager.
+
+            Supabase REST client does not support DB transactions in this setup,
+            but service layer code expects an async context manager. This wrapper
+            provides a safe no-op implementation to keep the existing service
+            code working across real and mock clients.
+            """
+            @asynccontextmanager
+            async def _noop():
+                yield None
+
+            return _noop()
+
+    return SupabaseClientWrapper(real_client)
 
 
 def get_auth_client() -> Client:

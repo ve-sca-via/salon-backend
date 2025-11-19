@@ -23,7 +23,8 @@ from app.schemas import (
     SalonsSearchResponse, SalonDetailsResponse, BookingResponse,
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate,
-    BookingCreate, BookingCancellation, FavoriteCreate, ReviewUpdate
+    BookingCreate, BookingCancellation, FavoriteCreate, ReviewUpdate,
+    CartCheckoutCreate
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -62,12 +63,7 @@ async def add_to_cart(
     """
     return await customer_service.add_to_cart(
         customer_id=current_user.user_id,
-        cart_item={
-            "salon_id": cart_item.salon_id,
-            "service_id": cart_item.service_id,
-            "quantity": cart_item.quantity,
-            "metadata": cart_item.metadata or {}
-        }
+        cart_item=cart_item
     )
 
 
@@ -112,6 +108,57 @@ async def clear_cart(
     Clear all items from cart
     """
     return await customer_service.clear_cart(current_user.user_id)
+
+
+@router.post("/cart/checkout", response_model=BookingResponse)
+async def checkout_cart(
+    checkout_data: CartCheckoutCreate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Create booking from cart items with date/time selection and payment verification.
+    
+    Complete Cart Checkout Flow:
+    1. Frontend: User adds services to cart (POST /customers/cart)
+    2. Frontend: User proceeds to checkout page
+    3. Frontend: User selects date and time slots (max 3)
+    4. Frontend: Clicks "Proceed to Payment"
+    5. Frontend: Calls POST /payments/cart/create-order
+       - Backend creates Razorpay order with convenience_fee + GST
+       - Returns order_id, amount, key_id
+    6. Frontend: Opens Razorpay modal with order_id
+    7. Customer: Completes payment on Razorpay
+    8. Razorpay: Returns payment_id, signature to frontend
+    9. Frontend: Calls this endpoint (POST /customers/cart/checkout) with:
+       - booking_date, time_slots
+       - razorpay_order_id, razorpay_payment_id, razorpay_signature
+    10. Backend: Verifies payment signature with Razorpay
+    11. Backend: Creates booking with all cart services
+    12. Backend: Creates booking_payment record
+    13. Backend: Clears cart
+    14. Backend: Returns booking details
+    
+    Payment Split Model:
+    - Convenience Fee (10% + GST): Paid ONLINE during checkout
+    - Service Amount (100%): Paid AT SALON after service completion
+    
+    Validates salon is accepting bookings and clears cart after successful booking.
+    """
+    result = await customer_service.checkout_cart(
+        customer_id=current_user.user_id,
+        checkout_data={
+            "booking_date": checkout_data.booking_date,
+            "time_slots": checkout_data.time_slots,
+            "razorpay_order_id": checkout_data.razorpay_order_id,
+            "razorpay_payment_id": checkout_data.razorpay_payment_id,
+            "razorpay_signature": checkout_data.razorpay_signature,
+            "payment_method": checkout_data.payment_method,
+            "notes": checkout_data.notes
+        }
+    )
+    # Return only the booking data, not the wrapper dict
+    return result["booking"]
 
 
 # =====================================================

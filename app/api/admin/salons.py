@@ -7,6 +7,7 @@ from typing import Optional
 from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService, SalonSearchParams
 from app.schemas.request.vendor import SalonUpdate
+from app.schemas.admin import StatusToggle
 from app.core.database import get_db_client
 from supabase import Client
 import logging
@@ -102,7 +103,7 @@ async def delete_salon(
 @router.put("/{salon_id}/status", operation_id="admin_toggle_salon_status")
 async def toggle_salon_status(
     salon_id: str,
-    request_body: 'StatusToggle',
+    request_body: StatusToggle,
     current_user: TokenData = Depends(require_admin),
     salon_service: SalonService = Depends(get_salon_service)
 ):

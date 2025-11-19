@@ -1,0 +1,1784 @@
+{
+	"info": {
+		"_postman_id": "salon-management-api-v2",
+		"name": "Salon Management API - Complete Testing Suite",
+		"description": "Comprehensive API collection for testing all endpoints of the Salon Management Platform",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000/api/v1",
+			"type": "string"
+		},
+		{
+			"key": "access_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "refresh_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "admin_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "vendor_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "rm_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "customer_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "user_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "salon_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "booking_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "service_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "staff_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "order_id",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "1. Authentication",
+			"item": [
+				{
+					"name": "Signup - Customer",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201 || pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.access_token) {",
+									"        pm.collectionVariables.set('customer_token', jsonData.access_token);",
+									"        pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    }",
+									"    if (jsonData.user && jsonData.user.id) {",
+									"        pm.collectionVariables.set('user_id', jsonData.user.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"customer@test.com\",\n  \"password\": \"Password123!\",\n  \"full_name\": \"Test Customer\",\n  \"phone\": \"+919876543210\",\n  \"role\": \"customer\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/signup",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "signup"]
+						}
+					}
+				},
+				{
+					"name": "⚠️ Note: Admin/RM Creation",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": ["{{base_url}}"],
+							"path": [""]
+						},
+						"description": "⚠️ IMPORTANT: Admin and RM accounts CANNOT be created via public signup.\n\nTo create Admin:\n1. Go to Supabase Dashboard → Authentication → Users\n2. Add user manually with email/password\n3. Then add to 'profiles' table with user_role='admin'\n\nTo create RM:\n1. First create an admin (see above)\n2. Login as admin to get token\n3. Use 'Admin Panel > User Management > Create RM User' endpoint\n\nSee USER_ROLES_REFERENCE.md for detailed instructions."
+					}
+				},
+				{
+					"name": "Login - Customer",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('customer_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"    if (jsonData.user && jsonData.user.id) {",
+									"        pm.collectionVariables.set('user_id', jsonData.user.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"customer@test.com\",\n  \"password\": \"Password123!\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/login",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "login"]
+						}
+					}
+				},
+				{
+					"name": "Login - Admin",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('admin_token', jsonData.access_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"admin@salon.com\",\n  \"password\": \"Admin123!\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/login",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "login"]
+						}
+					}
+				},
+				{
+					"name": "Get Current User",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/me",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "me"]
+						}
+					}
+				},
+				{
+					"name": "Refresh Token",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/refresh",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "refresh"]
+						}
+					}
+				},
+				{
+					"name": "Logout",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/logout",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "logout"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "2. Salons - Public",
+			"item": [
+				{
+					"name": "Get All Salons (Public)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.salons && jsonData.salons.length > 0) {",
+									"        pm.collectionVariables.set('salon_id', jsonData.salons[0].id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/",
+							"host": ["{{base_url}}"],
+							"path": ["salons", ""]
+						}
+					}
+				},
+				{
+					"name": "Get Salon Details",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/{{salon_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "{{salon_id}}"]
+						}
+					}
+				},
+				{
+					"name": "Get Salon Services",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.services && jsonData.services.length > 0) {",
+									"        pm.collectionVariables.set('service_id', jsonData.services[0].id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/{{salon_id}}/services",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "{{salon_id}}", "services"]
+						}
+					}
+				},
+				{
+					"name": "Get Salon Staff",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.staff && jsonData.staff.length > 0) {",
+									"        pm.collectionVariables.set('staff_id', jsonData.staff[0].id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/{{salon_id}}/staff",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "{{salon_id}}", "staff"]
+						}
+					}
+				},
+				{
+					"name": "Get Available Slots",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/{{salon_id}}/available-slots?date=2025-11-25&service_id={{service_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "{{salon_id}}", "available-slots"],
+							"query": [
+								{
+									"key": "date",
+									"value": "2025-11-25"
+								},
+								{
+									"key": "service_id",
+									"value": "{{service_id}}"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Search Nearby Salons",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/search/nearby?latitude=28.6139&longitude=77.2090&radius=5",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "search", "nearby"],
+							"query": [
+								{
+									"key": "latitude",
+									"value": "28.6139"
+								},
+								{
+									"key": "longitude",
+									"value": "77.2090"
+								},
+								{
+									"key": "radius",
+									"value": "5"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Search Salons by Query",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/salons/search/query?q=hair&city=Delhi",
+							"host": ["{{base_url}}"],
+							"path": ["salons", "search", "query"],
+							"query": [
+								{
+									"key": "q",
+									"value": "hair"
+								},
+								{
+									"key": "city",
+									"value": "Delhi"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "3. Bookings - Customer",
+			"item": [
+				{
+					"name": "Create Booking",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201 || pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.booking && jsonData.booking.id) {",
+									"        pm.collectionVariables.set('booking_id', jsonData.booking.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"salon_id\": \"{{salon_id}}\",\n  \"service_id\": \"{{service_id}}\",\n  \"booking_date\": \"2025-11-25\",\n  \"booking_time\": \"14:00\",\n  \"staff_id\": \"{{staff_id}}\",\n  \"notes\": \"First time customer\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/bookings/",
+							"host": ["{{base_url}}"],
+							"path": ["bookings", ""]
+						}
+					}
+				},
+				{
+					"name": "Get My Bookings",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/customers/bookings/my-bookings",
+							"host": ["{{base_url}}"],
+							"path": ["customers", "bookings", "my-bookings"]
+						}
+					}
+				},
+				{
+					"name": "Get Booking Details",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/bookings/{{booking_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["bookings", "{{booking_id}}"]
+						}
+					}
+				},
+				{
+					"name": "Cancel Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Schedule conflict\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/bookings/{{booking_id}}/cancel",
+							"host": ["{{base_url}}"],
+							"path": ["bookings", "{{booking_id}}", "cancel"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "4. Customer Portal",
+			"item": [
+				{
+					"name": "Cart",
+					"item": [
+						{
+							"name": "Get Cart",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/customers/cart",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "cart"]
+								}
+							}
+						},
+						{
+							"name": "Add to Cart",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"salon_id\": \"{{salon_id}}\",\n  \"service_id\": \"{{service_id}}\",\n  \"quantity\": 1\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/customers/cart",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "cart"]
+								}
+							}
+						},
+						{
+							"name": "Clear Cart",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/customers/cart/clear/all",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "cart", "clear", "all"]
+								}
+							}
+						},
+						{
+							"name": "Checkout Cart",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"booking_date\": \"2025-11-25\",\n  \"booking_time\": \"15:00\",\n  \"staff_id\": \"{{staff_id}}\",\n  \"notes\": \"Cart checkout\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/customers/cart/checkout",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "cart", "checkout"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "Favorites",
+					"item": [
+						{
+							"name": "Get Favorites",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/customers/favorites",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "favorites"]
+								}
+							}
+						},
+						{
+							"name": "Add to Favorites",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"salon_id\": \"{{salon_id}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/customers/favorites",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "favorites"]
+								}
+							}
+						},
+						{
+							"name": "Remove from Favorites",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/customers/favorites/{{salon_id}}",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "favorites", "{{salon_id}}"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "Reviews",
+					"item": [
+						{
+							"name": "Get My Reviews",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/customers/reviews/my-reviews",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "reviews", "my-reviews"]
+								}
+							}
+						},
+						{
+							"name": "Submit Review",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{customer_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"salon_id\": \"{{salon_id}}\",\n  \"booking_id\": \"{{booking_id}}\",\n  \"rating\": 5,\n  \"comment\": \"Excellent service!\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/customers/reviews",
+									"host": ["{{base_url}}"],
+									"path": ["customers", "reviews"]
+								}
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "5. Payments",
+			"item": [
+				{
+					"name": "Create Booking Payment Order",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.order_id) {",
+									"        pm.collectionVariables.set('order_id', jsonData.order_id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"booking_id\": \"{{booking_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/payments/booking/create-order",
+							"host": ["{{base_url}}"],
+							"path": ["payments", "booking", "create-order"]
+						}
+					}
+				},
+				{
+					"name": "Verify Booking Payment",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"razorpay_order_id\": \"{{order_id}}\",\n  \"razorpay_payment_id\": \"pay_test123\",\n  \"razorpay_signature\": \"signature_test123\",\n  \"booking_id\": \"{{booking_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/payments/booking/verify",
+							"host": ["{{base_url}}"],
+							"path": ["payments", "booking", "verify"]
+						}
+					}
+				},
+				{
+					"name": "Get Payment History",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{customer_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/payments/history",
+							"host": ["{{base_url}}"],
+							"path": ["payments", "history"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "6. Admin Panel",
+			"item": [
+				{
+					"name": "Dashboard",
+					"item": [
+						{
+							"name": "Get Dashboard Stats",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/dashboard/stats",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "dashboard", "stats"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "User Management",
+					"item": [
+						{
+							"name": "Create RM Account",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"if (pm.response.code === 200) {",
+											"    const response = pm.response.json();",
+											"    if (response.data && response.data.user_id) {",
+											"        pm.collectionVariables.set('rm_user_id', response.data.user_id);",
+											"        console.log('✓ RM user_id saved:', response.data.user_id);",
+											"    }",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"email\": \"rm@salonhub.com\",\n  \"full_name\": \"Relationship Manager\",\n  \"password\": \"12345678\",\n  \"role\": \"relationship_manager\",\n  \"phone\": \"+919876543210\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/users/",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "users", ""]
+								},
+								"description": "Admin creates a new Relationship Manager account. Requires admin token."
+							}
+						},
+						{
+							"name": "Create Customer Account",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"if (pm.response.code === 200) {",
+											"    const response = pm.response.json();",
+											"    if (response.data && response.data.user_id) {",
+											"        pm.collectionVariables.set('customer_user_id', response.data.user_id);",
+											"        console.log('✓ Customer user_id saved:', response.data.user_id);",
+											"    }",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"email\": \"customer2@example.com\",\n  \"full_name\": \"Test Customer\",\n  \"password\": \"12345678\",\n  \"role\": \"customer\",\n  \"phone\": \"+919876543211\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/users/",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "users", ""]
+								},
+								"description": "Admin creates a new Customer account. Requires admin token."
+							}
+						},
+						{
+							"name": "Get All Users",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/users/?page=1&limit=20",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "users", ""],
+									"query": [
+										{
+											"key": "page",
+											"value": "1"
+										},
+										{
+											"key": "limit",
+											"value": "20"
+										},
+										{
+											"key": "search",
+											"value": "",
+											"disabled": true
+										},
+										{
+											"key": "role",
+											"value": "relationship_manager",
+											"disabled": true
+										},
+										{
+											"key": "is_active",
+											"value": "true",
+											"disabled": true
+										}
+									]
+								},
+								"description": "Get all users with pagination and optional filters (search, role, is_active)"
+							}
+						},
+						{
+							"name": "Update User",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"full_name\": \"Updated Name\",\n  \"is_active\": true\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/users/{{rm_user_id}}",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "users", "{{rm_user_id}}"]
+								},
+								"description": "Update user profile (admin only)"
+							}
+						}
+					]
+				},
+				{
+					"name": "Salons Management",
+					"item": [
+						{
+							"name": "Get All Salons",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/salons/",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "salons", ""]
+								}
+							}
+						},
+						{
+							"name": "Update Salon",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"name\": \"Updated Salon Name\",\n  \"is_active\": true\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/salons/{{salon_id}}",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "salons", "{{salon_id}}"]
+								}
+							}
+						},
+						{
+							"name": "Toggle Salon Status",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"is_active\": false\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/salons/{{salon_id}}/status",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "salons", "{{salon_id}}", "status"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "Services Management",
+					"item": [
+						{
+							"name": "Get All Services",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/services",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "services"]
+								}
+							}
+						},
+						{
+							"name": "Create Service",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"name\": \"Hair Cut\",\n  \"description\": \"Professional hair cutting service\",\n  \"category\": \"Hair\",\n  \"duration_minutes\": 30,\n  \"price\": 500\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/services",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "services"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "Bookings Management",
+					"item": [
+						{
+							"name": "Get All Bookings",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/bookings/",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "bookings", ""]
+								}
+							}
+						},
+						{
+							"name": "Update Booking Status",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"status\": \"confirmed\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/bookings/{{booking_id}}/status",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "bookings", "{{booking_id}}", "status"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "System Config",
+					"item": [
+						{
+							"name": "Get All Config",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/config",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "config"]
+								}
+							}
+						},
+						{
+							"name": "Update Config",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "PUT",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"value\": \"5\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{base_url}}/admin/config/booking_fee_percentage",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "config", "booking_fee_percentage"]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": "RM Management",
+					"item": [
+						{
+							"name": "Get All RMs",
+							"request": {
+								"auth": {
+									"type": "bearer",
+									"bearer": [
+										{
+											"key": "token",
+											"value": "{{admin_token}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/admin/rms",
+									"host": ["{{base_url}}"],
+									"path": ["admin", "rms"]
+								}
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "7. RM Portal",
+			"item": [
+				{
+					"name": "Get RM Dashboard",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{rm_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/rm/dashboard",
+							"host": ["{{base_url}}"],
+							"path": ["rm", "dashboard"]
+						}
+					}
+				},
+				{
+					"name": "Get RM Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{rm_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/rm/profile",
+							"host": ["{{base_url}}"],
+							"path": ["rm", "profile"]
+						}
+					}
+				},
+				{
+					"name": "Get Vendor Requests",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{rm_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/rm/vendor-requests",
+							"host": ["{{base_url}}"],
+							"path": ["rm", "vendor-requests"]
+						}
+					}
+				},
+				{
+					"name": "Get My Salons",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{rm_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/rm/salons",
+							"host": ["{{base_url}}"],
+							"path": ["rm", "salons"]
+						}
+					}
+				},
+				{
+					"name": "Get Leaderboard",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{rm_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/rm/leaderboard",
+							"host": ["{{base_url}}"],
+							"path": ["rm", "leaderboard"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "8. Vendors",
+			"item": [
+				{
+					"name": "Get Vendor Dashboard",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{vendor_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/vendors/dashboard",
+							"host": ["{{base_url}}"],
+							"path": ["vendors", "dashboard"]
+						}
+					}
+				},
+				{
+					"name": "Get My Salons",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{vendor_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/vendors/salons",
+							"host": ["{{base_url}}"],
+							"path": ["vendors", "salons"]
+						}
+					}
+				},
+				{
+					"name": "Get Salon Bookings",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{vendor_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/vendors/salons/{{salon_id}}/bookings",
+							"host": ["{{base_url}}"],
+							"path": ["vendors", "salons", "{{salon_id}}", "bookings"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "9. Location Services",
+			"item": [
+				{
+					"name": "Geocode Address",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"address\": \"Connaught Place, New Delhi, India\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/location/geocode",
+							"host": ["{{base_url}}"],
+							"path": ["location", "geocode"]
+						}
+					}
+				},
+				{
+					"name": "Reverse Geocode",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/location/reverse-geocode?latitude=28.6139&longitude=77.2090",
+							"host": ["{{base_url}}"],
+							"path": ["location", "reverse-geocode"],
+							"query": [
+								{
+									"key": "latitude",
+									"value": "28.6139"
+								},
+								{
+									"key": "longitude",
+									"value": "77.2090"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Get Nearby Salons",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/location/salons/nearby?latitude=28.6139&longitude=77.2090&radius=10",
+							"host": ["{{base_url}}"],
+							"path": ["location", "salons", "nearby"],
+							"query": [
+								{
+									"key": "latitude",
+									"value": "28.6139"
+								},
+								{
+									"key": "longitude",
+									"value": "77.2090"
+								},
+								{
+									"key": "radius",
+									"value": "10"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "10. Career Applications",
+			"item": [
+				{
+					"name": "Submit Career Application",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "email",
+									"value": "applicant@example.com",
+									"type": "text"
+								},
+								{
+									"key": "full_name",
+									"value": "John Doe",
+									"type": "text"
+								},
+								{
+									"key": "phone",
+									"value": "+919876543213",
+									"type": "text"
+								},
+								{
+									"key": "position",
+									"value": "Hair Stylist",
+									"type": "text"
+								},
+								{
+									"key": "experience_years",
+									"value": "3",
+									"type": "text"
+								},
+								{
+									"key": "cover_letter",
+									"value": "I am passionate about hairstyling...",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/careers/apply",
+							"host": ["{{base_url}}"],
+							"path": ["careers", "apply"]
+						}
+					}
+				},
+				{
+					"name": "Get All Applications (Admin)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{admin_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/careers/applications",
+							"host": ["{{base_url}}"],
+							"path": ["careers", "applications"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health",
+					"host": ["{{base_url}}"],
+					"path": ["health"]
+				}
+			}
+		}
+	]
+}

@@ -526,9 +526,10 @@ class VendorService:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Build query
+            # Build query - Note: customer details are denormalized in bookings table
+            # (customer_name, customer_phone, customer_email columns)
             query = self.db.table("bookings").select(
-                "*, services(*), salon_staff(*), profiles(*)"
+                "*, services(*)"
             ).eq("salon_id", salon_id)
             
             if status_filter:
@@ -1053,7 +1054,7 @@ class VendorService:
         token_data = {
             "sub": user_id,
             "email": vendor_email,
-            "role": "vendor"
+            "user_role": "vendor"
         }
         
         access_token = create_access_token(token_data)

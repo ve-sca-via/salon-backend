@@ -1,5 +1,31 @@
 # Salon Management Backend
 
+> ⚠️ **IMPORTANT**: A comprehensive frontend-backend audit has been completed. See [`INDEX.md`](./INDEX.md) for the complete audit documentation.
+
+## 🚀 Quick Start by Environment
+
+| Environment | Purpose | Command | Documentation |
+|------------|---------|---------|---------------|
+| **Local Dev** | Daily development | `.\run-local.ps1` | [GETTING_STARTED.md](./GETTING_STARTED.md) |
+| **Staging** | Online testing | `.\run-staging.ps1` | [STAGING_DEPLOYMENT_GUIDE.md](./STAGING_DEPLOYMENT_GUIDE.md) |
+| **Production** | Live system | `.\run-production.ps1` | [DEPLOYMENT.md](./DEPLOYMENT.md) |
+
+**New to staging?** Run `.\setup-staging.ps1` for guided setup.
+
+## 📋 Recent Audit (November 18, 2025)
+
+A full system audit identified:
+- **7 critical bugs** preventing production deployment
+- **15+ missing UI pages** for existing backend features
+- **60% of RM features** have no frontend implementation
+
+**Action Required**: 
+1. Read [`AUDIT_SUMMARY.md`](./AUDIT_SUMMARY.md) for high-level findings
+2. Follow [`CRITICAL_FIXES_CHECKLIST.md`](./CRITICAL_FIXES_CHECKLIST.md) to fix critical bugs
+3. See [`INDEX.md`](./INDEX.md) for complete documentation index
+
+---
+
 A production-ready FastAPI backend for a salon management platform, built with modern Python practices and comprehensive security measures.
 
 ## 🚀 Features

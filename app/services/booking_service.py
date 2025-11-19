@@ -259,6 +259,12 @@ class BookingService:
                     "line_total": svc["line_total"],
                     "duration_minutes": svc["duration_minutes"]
                 })
+            
+            # Prepare time slots (up to 3)
+            time_slots = booking.time_slots if booking.time_slots else [booking.booking_time]
+            if len(time_slots) > 3:
+                from app.core.exceptions import ValidationError
+                raise ValidationError("Maximum 3 time slots allowed", "time_slots")
 
             # Prepare database data
             db_booking_data = {
@@ -268,51 +274,152 @@ class BookingService:
                 "services": services_jsonb,
                 "booking_date": booking.booking_date,
                 "booking_time": db_time,
+                "time_slots": time_slots,  # Store time slots array
                 "duration_minutes": total_duration,
                 "status": "confirmed" if booking.payment_status == "paid" else "pending",
                 "service_price": total_service_price,
                 "convenience_fee": totals["convenience_fee"],
                 "total_amount": totals["total_amount"],
                 "convenience_fee_paid": totals["convenience_fee_paid"],
-                "service_paid": totals["service_paid"],
-                "payment_completed_at": totals["payment_completed_at"],
-                "customer_notes": booking.notes,
+                "convenience_fee_paid_at": datetime.utcnow().isoformat() if totals["convenience_fee_paid"] else None,
+                "service_price_paid": totals.get("service_paid", False),
+                "service_price_paid_at": None,  # Will be set when vendor confirms payment at salon
+                "notes": booking.notes,
+                "customer_name": customer_data["full_name"],
+                "customer_phone": customer_data.get("phone", ""),
+                "customer_email": customer_data.get("email", ""),
                 "created_by": current_user_id
             }
 
             # Create booking within transaction
-            async with self.db.transaction():
-                # Create booking
+            try:
                 response = self.db.table("bookings").insert(db_booking_data).execute()
                 created_booking = response.data[0] if response.data else None
+            except Exception as insert_exc:
+                # Log error and re-raise
+                logger.error(f"Failed to insert booking: {insert_exc}")
+                from app.core.exceptions import DatabaseError
+                raise DatabaseError("insert", f"Failed to create booking: {str(insert_exc)}")
+            
+            if not created_booking:
+                from app.core.exceptions import DatabaseError
+                raise DatabaseError("insert", "Failed to create booking")
+            
+            # Create payment records in new unified payments table
+            booking_id = created_booking["id"]
+            
+            # 1. Create convenience fee payment record (online payment)
+            if booking.razorpay_order_id or booking.razorpay_payment_id:
+                convenience_payment_data = {
+                    "booking_id": booking_id,
+                    "customer_id": current_user_id,
+                    "payment_type": "convenience_fee",
+                    "amount": totals["convenience_fee"],
+                    "currency": "INR",
+                    "razorpay_order_id": booking.razorpay_order_id,
+                    "razorpay_payment_id": booking.razorpay_payment_id,
+                    "razorpay_signature": booking.razorpay_signature,
+                    "status": "success" if booking.razorpay_payment_id else "pending",
+                    "payment_method": booking.payment_method or "razorpay",
+                    "paid_at": datetime.utcnow().isoformat() if booking.razorpay_payment_id else None,
+                    "created_by": current_user_id
+                }
+                
+                try:
+                    self.db.table("payments").insert(convenience_payment_data).execute()
+                    logger.info(f"Created convenience_fee payment record for booking {booking_id}")
+                except Exception as payment_exc:
+                    logger.error(f"Failed to create convenience_fee payment: {payment_exc}")
+                    # Don't fail booking creation, payment flags are set on booking
+            
+            # 2. Create service payment record (to be paid at salon)
+            try:
+                service_payment_data = {
+                    "booking_id": booking_id,
+                    "customer_id": current_user_id,
+                    "payment_type": "service_payment",
+                    "amount": total_service_price,
+                    "currency": "INR",
+                    "status": "pending",
+                    "payment_method": None,
+                    "notes": f"Service payment for {len(processed_services)} service(s)",
+                    "created_by": current_user_id
+                }
+                
+                self.db.table("payments").insert(service_payment_data).execute()
+                logger.info(f"Created service_payment record for booking {booking_id} (pending)")
+            except Exception as service_payment_exc:
+                logger.error(f"Failed to create service_payment record: {service_payment_exc}")
+                # Don't fail booking creation
+            
+            # Prepare typed service summaries and totals for notification
+            service_summaries = [
+                ServiceSummary(
+                    service_id=svc["service_id"],
+                    quantity=svc["quantity"],
+                    unit_price=svc["unit_price"],
+                    line_total=svc["line_total"],
+                    duration_minutes=svc.get("duration_minutes")
+                )
+                for svc in processed_services
+            ]
+            totals_obj = Totals.model_validate(totals)
 
-                if not created_booking:
-                    from app.core.exceptions import DatabaseError
-                    raise DatabaseError("insert", "Failed to create booking")
-
-                # Prepare typed service summaries and totals for notification
-                service_summaries = [
-                    ServiceSummary(
-                        service_id=svc["service_id"],
-                        quantity=svc["quantity"],
-                        unit_price=svc["unit_price"],
-                        line_total=svc["line_total"],
-                        duration_minutes=svc.get("duration_minutes")
-                    )
-                    for svc in processed_services
-                ]
-                totals_obj = Totals.model_validate(totals)
-
-                # Send confirmation email (within transaction context)
-                await self._send_booking_confirmation(
+            # Send confirmation emails to customer and vendor
+            try:
+                # 1. Send confirmation to customer
+                await email_service.send_booking_confirmation_to_customer(
                     customer_email=customer_data["email"],
                     customer_name=customer_data["full_name"],
                     salon_name=salon_data["business_name"],
-                    booking=booking,
-                    services=service_summaries,
-                    totals=totals_obj,
-                    booking_id=created_booking.get("id", "N/A")
+                    booking_number=booking_number,
+                    booking_date=str(booking.booking_date),
+                    booking_time=booking.booking_time,
+                    services=[{
+                        "name": svc.get("service_details", {}).get("name", "Service"),
+                        "price": svc["unit_price"]
+                    } for svc in processed_services],
+                    total_amount=totals["total_amount"],
+                    convenience_fee=totals["convenience_fee"],
+                    service_price=total_service_price
                 )
+                logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
+                
+                # 2. Send notification to vendor
+                # Get vendor email from salon
+                vendor_response = self.db.table("vendors")\
+                    .select("profiles(email)")\
+                    .eq("user_id", salon_data.get("vendor_id"))\
+                    .single()\
+                    .execute()
+                
+                if vendor_response.data and vendor_response.data.get("profiles"):
+                    vendor_email = vendor_response.data["profiles"].get("email")
+                    if vendor_email:
+                        await email_service.send_new_booking_notification_to_vendor(
+                            vendor_email=vendor_email,
+                            salon_name=salon_data["business_name"],
+                            customer_name=customer_data["full_name"],
+                            customer_phone=customer_data.get("phone", "N/A"),
+                            booking_number=booking_number,
+                            booking_date=str(booking.booking_date),
+                            booking_time=booking.booking_time,
+                            services=[{
+                                "name": svc.get("service_details", {}).get("name", "Service"),
+                                "price": svc["unit_price"]
+                            } for svc in processed_services],
+                            total_amount=totals["total_amount"],
+                            booking_id=created_booking.get("id", "")
+                        )
+                        logger.info(f"Booking notification email sent to vendor {vendor_email}")
+                    else:
+                        logger.warning(f"No vendor email found for salon {salon_data['id']}")
+                else:
+                    logger.warning(f"No vendor found for salon {salon_data['id']}")
+                    
+            except Exception as email_error:
+                # Don't fail booking if email fails
+                logger.error(f"Failed to send booking notification emails: {str(email_error)}")
 
             logger.info(f"Booking created: {booking_number} for customer {current_user_id} with {len(processed_services)} services")
 
@@ -597,15 +704,13 @@ class BookingService:
         # Payment flags - convenience fee paid online, service paid at salon
         convenience_fee_paid = True  # Assume paid if booking is created
         service_paid = False  # Always paid at salon
-        payment_completed_at = None
 
         return {
             "service_price": total_service_price,
             "convenience_fee": convenience_fee,
             "total_amount": total_amount,
             "convenience_fee_paid": convenience_fee_paid,
-            "service_paid": service_paid,
-            "payment_completed_at": payment_completed_at
+            "service_paid": service_paid
         }
 
     async def _get_service_details(self, service_id: str) -> Dict[str, Any]:

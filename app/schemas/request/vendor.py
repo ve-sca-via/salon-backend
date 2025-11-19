@@ -20,21 +20,39 @@ class CompleteRegistrationRequest(BaseModel):
     confirm_password: str
 
 class VendorJoinRequestBase(BaseModel):
-    """Vendor join request schema matching updated database schema"""
+    """Vendor join request schema - comprehensive salon onboarding data"""
+    # Business Info
     business_name: str = Field(..., min_length=2, max_length=255)
-    business_type: BusinessType
+    business_type: str = Field(..., max_length=50, description="salon, spa, unisex_salon, barber_shop, etc.")
     owner_name: str = Field(..., min_length=2, max_length=255)
     owner_email: EmailStr
     owner_phone: str = Field(..., max_length=20)
-    business_address: str
+    
+    # Location
+    business_address: str = Field(..., min_length=10, description="Full address string")
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., pattern=r'^\d{6}$', description="6-digit pincode")
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    gst_number: Optional[str] = Field(None, max_length=15)
-    business_license: Optional[str] = None
-    documents: Optional[Dict[str, Any]] = None
+    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    
+    # Legal & Compliance
+    gst_number: Optional[str] = Field(None, max_length=50)
+    pan_number: Optional[str] = Field(None, pattern=r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$', description="PAN format: ABCDE1234F")
+    business_license: Optional[str] = Field(None, description="Business license document URL")
+    registration_certificate: Optional[str] = Field(None, description="Registration certificate URL")
+    documents: Optional[Dict[str, Any]] = Field(None, description="Additional documents {doc_type: url}")
+    
+    # Media
+    cover_image_url: Optional[str] = None
+    gallery_images: Optional[List[str]] = Field(default_factory=list)
+    
+    # Operations
+    services_offered: Optional[Dict[str, Any]] = Field(None, description="Services by category")
+    staff_count: Optional[int] = Field(1, ge=1)
+    opening_time: Optional[time] = None
+    closing_time: Optional[time] = None
+    working_days: Optional[List[str]] = Field(default_factory=list)
 
 class VendorJoinRequestCreate(VendorJoinRequestBase):
     pass
@@ -106,6 +124,7 @@ class SalonUpdate(BaseModel):
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
+    accepting_bookings: Optional[bool] = None
 # =====================================================
 # SERVICE REQUEST SCHEMAS
 # =====================================================

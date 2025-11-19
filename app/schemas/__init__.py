@@ -28,7 +28,7 @@ from .request.customer import (
     ReviewCreate, ReviewUpdate, CartItemCreate, CartItemUpdate, FavoriteCreate
 )
 from .request.booking import (
-    BookingCreate, BookingUpdate, BookingCancellation
+    BookingCreate, BookingUpdate, BookingCancellation, CartCheckoutCreate
 )
 from .request.vendor import (
     CompleteRegistrationRequest, VendorJoinRequestBase, VendorJoinRequestCreate, VendorJoinRequestUpdate,

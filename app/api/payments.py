@@ -74,6 +74,29 @@ async def verify_booking_payment(
     )
 
 
+@router.post("/cart/create-order", response_model=RazorpayOrderResponse)
+async def create_cart_payment_order(
+    current_user: TokenData = Depends(get_current_user),
+    payment_service: PaymentService = Depends(get_payment_service)
+):
+    """
+    Create Razorpay order for cart checkout (convenience fee payment)
+    
+    Cart Payment Flow - Step 5 of checkout:
+    1. Frontend calls this endpoint before opening Razorpay modal
+    2. Backend calculates total from cart items
+    3. Backend calculates booking_fee (10% of service total) + GST (18% of booking_fee)
+    4. Backend creates Razorpay order for total payment amount
+    5. Backend returns order_id, amount, key_id
+    6. Frontend uses this data to open Razorpay checkout modal
+    7. After payment, frontend calls /customers/cart/checkout with payment details
+    
+    Note: This does NOT create a booking. It only initiates the payment.
+    The booking is created in /customers/cart/checkout after payment verification.
+    """
+    return await payment_service.create_cart_payment_order(current_user.user_id)
+
+
 # =====================================================
 # VENDOR REGISTRATION FEE
 # =====================================================

@@ -86,10 +86,10 @@ class Settings(BaseSettings):
     # =====================================================
     # FRONTEND URLS
     # =====================================================
-    FRONTEND_URL: str = Field(default="http://localhost:5173")
+    FRONTEND_URL: str = Field(default="http://localhost:3000")
     ADMIN_PANEL_URL: str = Field(default="http://localhost:5174")
-    VENDOR_PORTAL_URL: str = Field(default="http://localhost:5173/vendor")
-    RM_PORTAL_URL: str = Field(default="http://localhost:5173/rm")
+    VENDOR_PORTAL_URL: str = Field(default="http://localhost:3000/vendor")
+    RM_PORTAL_URL: str = Field(default="http://localhost:3000/rm")
     
     # =====================================================
     # CORS SETTINGS

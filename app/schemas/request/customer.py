@@ -30,8 +30,11 @@ class ReviewUpdate(BaseModel):
 
 
 class CartItemCreate(BaseModel):
-    """Normalized cart item - no denormalized fields"""
-    salon_id: str
+    """
+    Normalized cart item - no denormalized fields.
+    Note: salon_id is optional since it's derived from the service.
+    """
+    salon_id: Optional[str] = None  # Optional - derived from service
     service_id: str
     quantity: int = Field(default=1, gt=0)
     metadata: Optional[Dict] = None

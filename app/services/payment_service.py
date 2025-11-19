@@ -119,7 +119,9 @@ class PaymentService:
             
             # Get Razorpay key from config
             razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
-            razorpay_key_id = razorpay_key_config.get("config_value", settings.RAZORPAY_KEY_ID)
+            # If config exists but value is None (e.g. decryption failed in dev),
+            # fall back to environment setting to avoid returning None to clients.
+            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
             
             return {
                 "order_id": order["order_id"],
@@ -254,6 +256,137 @@ class PaymentService:
                 detail=f"Payment verification failed: {str(e)}"
             )
     
+    async def create_cart_payment_order(
+        self,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """
+        Create Razorpay order for cart checkout (convenience fee payment)
+        
+        This is Step 8 of the cart checkout flow.
+        
+        Process:
+        1. Fetches all cart items for user
+        2. Calculates total service price from cart
+        3. Calculates booking_fee (config: booking_fee_percentage, default 10%)
+        4. Calculates GST (18% of booking_fee)
+        5. Creates Razorpay order for total payment (booking_fee + GST)
+        6. Returns order details for frontend to open Razorpay modal
+        
+        Important: This does NOT create a booking or payment record.
+        It only initiates the payment process with Razorpay.
+        The actual booking is created in CustomerService.checkout_cart()
+        after payment verification.
+        
+        Args:
+            user_id: Customer user ID
+        
+        Returns:
+            Dict with:
+                - order_id: Razorpay order ID
+                - amount: Payment amount in rupees
+                - amount_paise: Payment amount in paise (for Razorpay)
+                - currency: Currency code (INR)
+                - key_id: Razorpay public key for frontend
+                - breakdown: Dict with service_price, booking_fee, gst_amount, totals
+                
+        Raises:
+            HTTPException 400: Cart is empty or invalid amount
+            HTTPException 500: Failed to create Razorpay order
+        """
+        try:
+            # Get cart items
+            cart_response = self.db.table("cart_items")\
+                .select(
+                    "id, service_id, quantity, "
+                    "services(id, name, price, salon_id)"
+                )\
+                .eq("user_id", user_id)\
+                .execute()
+            
+            if not cart_response.data or len(cart_response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cart is empty"
+                )
+            
+            # Calculate totals
+            total_service_price = 0.0
+            salon_id = None
+            
+            for item in cart_response.data:
+                service = item.get("services", {})
+                if salon_id is None:
+                    salon_id = service.get("salon_id")
+                
+                unit_price = float(service.get("price", 0))
+                quantity = item.get("quantity", 1)
+                total_service_price += unit_price * quantity
+            
+            # Get booking fee percentage from config
+            booking_fee_percentage = 10.0  # Default 10%
+            try:
+                booking_fee_config = await self.config_service.get_config("booking_fee_percentage")
+                booking_fee_percentage = float(booking_fee_config.get("config_value", 10.0))
+            except (ValueError, Exception) as e:
+                logger.warning(f"Failed to get booking_fee_percentage from config, using default: {e}")
+                booking_fee_percentage = 10.0
+            
+            booking_fee = total_service_price * (booking_fee_percentage / 100)
+            gst_amount = booking_fee * 0.18  # 18% GST
+            total_payment = booking_fee + gst_amount
+            
+            if total_payment <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid payment amount"
+                )
+            
+            # Create Razorpay order
+            order = self.razorpay.create_order(
+                amount=total_payment,
+                currency="INR",
+                receipt=f"cart_{user_id[:8]}",
+                notes={
+                    "customer_id": user_id,
+                    "salon_id": salon_id,
+                    "type": "cart_checkout",
+                    "service_total": total_service_price,
+                    "booking_fee": booking_fee,
+                    "gst_amount": gst_amount
+                }
+            )
+            
+            logger.info(f"Created cart payment order: {order['order_id']} for user {user_id}")
+            
+            # Get Razorpay key from config
+            razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
+            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
+            
+            return {
+                "order_id": order["order_id"],
+                "amount": total_payment,
+                "amount_paise": int(total_payment * 100),
+                "currency": "INR",
+                "key_id": razorpay_key_id,
+                "breakdown": {
+                    "service_price": total_service_price,
+                    "booking_fee": booking_fee,
+                    "gst_amount": gst_amount,
+                    "total_to_pay_now": total_payment,
+                    "pay_at_salon": total_service_price
+                }
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to create cart payment order: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create payment order: {str(e)}"
+            )
+    
     # =====================================================
     # VENDOR REGISTRATION FEE
     # =====================================================
@@ -328,7 +461,7 @@ class PaymentService:
             
             # Get Razorpay key from config
             razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
-            razorpay_key_id = razorpay_key_config.get("config_value", settings.RAZORPAY_KEY_ID)
+            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
             
             return {
                 "order_id": order["order_id"],

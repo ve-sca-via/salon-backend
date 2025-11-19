@@ -78,10 +78,10 @@ class RMService:
         # Get RM profile for performance score
         rm_profile = await self.get_rm_profile(rm_id)
         
-        # Get all requests created by this RM user (via user_id)
+        # Get all requests created by this RM (via rm_id)
         requests_response = self.db.table("vendor_join_requests").select(
             "status"
-        ).eq("user_id", rm_id).execute()
+        ).eq("rm_id", rm_id).execute()
         
         requests = requests_response.data or []
         
@@ -222,10 +222,10 @@ class RMService:
             limit: Max entries to return
             
         Returns:
-            List of score history entries with salon details
+            List of score history entries
         """
         response = self.db.table("rm_score_history").select(
-            "*, salons(business_name, id)"
+            "*"
         ).eq("rm_id", rm_id).order("created_at", desc=True).limit(limit).execute()
         
         return response.data or []
@@ -249,7 +249,7 @@ class RMService:
         Returns:
             List of vendor requests
         """
-        query = self.db.table("vendor_join_requests").select("*").eq("user_id", rm_id)
+        query = self.db.table("vendor_join_requests").select("*").eq("rm_id", rm_id)
         
         if status:
             query = query.eq("status", status)
@@ -417,8 +417,8 @@ class RMService:
                     detail="RM account is inactive"
                 )
             
-            # Prepare request data
-            db_data = request_data.model_dump()
+            # Prepare request data (mode='json' converts time objects to strings)
+            db_data = request_data.model_dump(mode='json')
             db_data["rm_id"] = rm_id
             db_data["status"] = "draft" if is_draft else "pending"
             
@@ -430,10 +430,6 @@ class RMService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to create vendor request"
                 )
-            
-            # Update RM total salons added count (only if not draft)
-            if not is_draft:
-                await self._increment_rm_salons_count(rm_id)
             
             status_label = "draft" if is_draft else "for approval"
             logger.info(f"RM {rm_id} submitted vendor request {status_label} for {request_data.business_name}")
@@ -506,10 +502,6 @@ class RMService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Vendor request not found"
                 )
-            
-            # Increment salons count if submitting for approval
-            if submit_for_approval:
-                await self._increment_rm_salons_count(rm_id)
             
             logger.info(f"RM {rm_id} updated vendor request {request_id}")
             
@@ -678,8 +670,8 @@ class RMService:
                 "profile": profile,
                 "statistics": {
                     "total_score": stats.total_score,
-                    "total_salons_added": profile.get("total_salons_added", 0),
-                    "total_approved_salons": profile.get("total_approved_salons", 0),
+                    "total_salons_added": stats.total_requests,
+                    "total_approved_salons": stats.approved_requests,
                     "pending_requests": stats.pending_requests,
                     "approved_requests": stats.approved_requests,
                     "rejected_requests": stats.rejected_requests,

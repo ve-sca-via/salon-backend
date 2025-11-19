@@ -2,9 +2,10 @@
 Admin Services Management API Endpoints
 Handles salon services CRUD operations for admins
 """
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Query
 from typing import Optional
 from app.core.auth import require_admin, TokenData
+from app.core.database import get_db_client
 from app.services.salon_service import SalonService
 from app.schemas.admin import ServiceCreate, ServiceUpdate
 import logging
@@ -18,53 +19,112 @@ router = APIRouter()
 # SERVICES MANAGEMENT
 # =====================================================
 
-@router.get("", operation_id="admin_get_salon_services")
-async def get_salon_services_admin(
-    salon_id: str,
-    current_user: TokenData = Depends(require_admin)
+@router.get("", operation_id="admin_get_all_services")
+async def get_all_services_admin(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: TokenData = Depends(require_admin),
+    db = Depends(get_db_client)
 ):
-    """Get all services for a salon"""
-    salon_service = SalonService()
-    services = await salon_service.get_salon_services(salon_id)
+    """Get all services across all salons"""
+    try:
+        # Query all services from all salons
+        response = db.table("salon_services").select("*").range(offset, offset + limit - 1).execute()
+        
+        return {"data": response.data, "total": len(response.data)}
+    except Exception as e:
+        logger.error(f"Error fetching all services: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch services: {str(e)}"
+        )
 
-    return {"services": services}
+
+@router.get("/{service_id}", operation_id="admin_get_service")
+async def get_service_admin(
+    service_id: str,
+    current_user: TokenData = Depends(require_admin),
+    db = Depends(get_db_client)
+):
+    """Get a specific service by ID"""
+    try:
+        response = db.table("salon_services").select("*").eq("id", service_id).single().execute()
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Service not found"
+            )
+        
+        return response.data
+    except Exception as e:
+        logger.error(f"Error fetching service {service_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch service: {str(e)}"
+        )
 
 
-@router.post("", operation_id="admin_add_salon_service")
-async def add_salon_service_admin(
-    salon_id: str,
+@router.post("", operation_id="admin_create_service")
+async def create_service_admin(
     service_data: ServiceCreate,
-    current_user: TokenData = Depends(require_admin)
+    current_user: TokenData = Depends(require_admin),
+    db = Depends(get_db_client)
 ):
-    """Add a new service to a salon"""
-    salon_service = SalonService()
-    result = await salon_service.add_salon_service(salon_id, service_data)
+    """Create a new service"""
+    try:
+        response = db.table("salon_services").insert(service_data.model_dump()).execute()
+        
+        return {"success": True, "data": response.data[0]}
+    except Exception as e:
+        logger.error(f"Error creating service: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create service: {str(e)}"
+        )
 
-    return result
 
-
-@router.put("/{service_id}", operation_id="admin_update_salon_service")
-async def update_salon_service_admin(
-    salon_id: str,
+@router.put("/{service_id}", operation_id="admin_update_service")
+async def update_service_admin(
     service_id: str,
     service_data: ServiceUpdate,
-    current_user: TokenData = Depends(require_admin)
+    current_user: TokenData = Depends(require_admin),
+    db = Depends(get_db_client)
 ):
-    """Update a salon service"""
-    salon_service = SalonService()
-    result = await salon_service.update_salon_service(salon_id, service_id, service_data)
+    """Update a service"""
+    try:
+        update_data = service_data.model_dump(exclude_unset=True)
+        response = db.table("salon_services").update(update_data).eq("id", service_id).execute()
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Service not found"
+            )
+        
+        return {"success": True, "data": response.data[0]}
+    except Exception as e:
+        logger.error(f"Error updating service {service_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update service: {str(e)}"
+        )
 
-    return result
 
-
-@router.delete("/{service_id}", operation_id="admin_delete_salon_service")
-async def delete_salon_service_admin(
-    salon_id: str,
+@router.delete("/{service_id}", operation_id="admin_delete_service")
+async def delete_service_admin(
     service_id: str,
-    current_user: TokenData = Depends(require_admin)
+    current_user: TokenData = Depends(require_admin),
+    db = Depends(get_db_client)
 ):
-    """Delete a salon service"""
-    salon_service = SalonService()
-    result = await salon_service.delete_salon_service(salon_id, service_id)
-
-    return result
+    """Delete a service"""
+    try:
+        response = db.table("salon_services").delete().eq("id", service_id).execute()
+        
+        return {"success": True, "message": "Service deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting service {service_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete service: {str(e)}"
+        )

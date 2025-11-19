@@ -30,7 +30,7 @@ class CustomerService:
     
     async def get_cart(self, customer_id: str) -> Dict[str, Any]:
         """
-        Get all cart items for a customer.
+        Get all cart items for a customer from normalized cart_items table.
         
         Args:
             customer_id: Customer user ID
@@ -42,17 +42,18 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = self.db.table("user_carts")\
+            # Query cart_items with service and salon details
+            response = self.db.table("cart_items")\
                 .select(
-                    "id, user_id, salon_id, items, created_at, updated_at, total_amount, item_count, salon_name"
+                    "id, service_id, salon_id, quantity, metadata, created_at, "
+                    "services(id, name, price, duration_minutes, image_url, is_active), "
+                    "salons(id, business_name, city, state)"
                 )\
                 .eq("user_id", customer_id)\
                 .execute()
             
-            cart_data = response.data[0] if response.data else None
-            
-            if not cart_data:
-                # Return empty cart if no cart exists
+            if not response.data:
+                # Return empty cart if no cart items exist
                 return {
                     "success": True,
                     "items": [],
@@ -63,14 +64,22 @@ class CustomerService:
                     "item_count": 0
                 }
             
-            # Parse items from jsonb
-            raw_items = cart_data.get("items", [])
+            # Process cart items
             items_with_details: List[Dict[str, Any]] = []
             total_amount = 0.0
             item_count = 0
+            salon_id = None
+            salon_name = None
             
-            for item in raw_items:
-                service_details = item.get("service_details", {})
+            for item in response.data:
+                service_details = item.get("services", {})
+                salon_details = item.get("salons", {})
+                
+                # Set salon info from first item
+                if salon_id is None:
+                    salon_id = item.get("salon_id")
+                    salon_name = salon_details.get("business_name")
+                
                 unit_price = self._get_effective_service_price(service_details)
                 quantity = item.get("quantity", 1)
                 line_total = unit_price * quantity
@@ -78,10 +87,16 @@ class CustomerService:
                 item_count += quantity
                 
                 items_with_details.append({
-                    **item,
+                    "id": item.get("id"),
+                    "service_id": item.get("service_id"),
+                    "salon_id": item.get("salon_id"),
+                    "quantity": quantity,
+                    "metadata": item.get("metadata", {}),
                     "service_details": service_details,
+                    "salon_details": salon_details,
                     "unit_price": unit_price,
-                    "line_total": line_total
+                    "line_total": line_total,
+                    "created_at": item.get("created_at")
                 })
             
             logger.info(f"Retrieved cart for customer {customer_id}: {item_count} items")
@@ -89,9 +104,9 @@ class CustomerService:
             return {
                 "success": True,
                 "items": items_with_details,
-                "salon_id": cart_data.get("salon_id"),
-                "salon_name": cart_data.get("salon_name"),
-                "salon_details": None,  # Could be populated if needed
+                "salon_id": salon_id,
+                "salon_name": salon_name,
+                "salon_details": None,
                 "total_amount": total_amount,
                 "item_count": item_count
             }
@@ -130,11 +145,11 @@ class CustomerService:
                     detail="service_id is required"
                 )
 
-            # Get service details
+            # Get service details to validate and get salon_id
             service_response = self.db.table("services")\
                 .select("id, name, price, duration_minutes, salon_id, is_active, image_url")\
                 .eq("id", service_id)\
-                .limit(1)\
+                .single()\
                 .execute()
 
             if not service_response.data:
@@ -143,7 +158,7 @@ class CustomerService:
                     detail="Service not available"
                 )
 
-            service_details = service_response.data[0]
+            service_details = service_response.data
             if not service_details.get("is_active", True):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -152,111 +167,93 @@ class CustomerService:
 
             service_salon_id = service_details['salon_id']
             
-            # Get or create user cart
-            cart_response = self.db.table("user_carts")\
-                .select("*")\
-                .eq("user_id", customer_id)\
+            # Check if salon is accepting bookings
+            salon_response = self.db.table("salons")\
+                .select("id, business_name, accepting_bookings, is_active")\
+                .eq("id", service_salon_id)\
+                .single()\
                 .execute()
             
-            cart_exists = len(cart_response.data) > 0
-            cart_data = cart_response.data[0] if cart_exists else None
+            if not salon_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
             
-            # Parse quantity (CartItemCreate guarantees integer > 0)
-            quantity = cart_item.quantity
+            salon = salon_response.data
+            if not salon.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is currently inactive"
+                )
             
-            # Prepare cart item
-            new_item = {
-                "service_id": service_id,
-                "quantity": quantity,
-                "service_details": service_details,
-                "added_at": "now()"
-            }
+            if not salon.get("accepting_bookings", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This salon is not accepting bookings at this time"
+                )
             
-            if cart_exists:
-                # Check salon consistency
-                existing_salon_id = cart_data.get("salon_id")
-                if existing_salon_id and existing_salon_id != service_salon_id:
+            # Check if user has cart items from a different salon
+            existing_cart = self.db.table("cart_items")\
+                .select("salon_id")\
+                .eq("user_id", customer_id)\
+                .limit(1)\
+                .execute()
+            
+            if existing_cart.data:
+                existing_salon_id = existing_cart.data[0].get("salon_id")
+                if existing_salon_id != service_salon_id:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Cannot add services from different salons. Please clear cart first."
                     )
+            
+            # Check if item already exists in cart
+            check_response = self.db.table("cart_items")\
+                .select("id, quantity")\
+                .eq("user_id", customer_id)\
+                .eq("service_id", service_id)\
+                .execute()
+            
+            quantity = cart_item.quantity
+            
+            if check_response.data:
+                # Item exists - update quantity
+                existing_item = check_response.data[0]
+                new_quantity = existing_item.get("quantity", 1) + quantity
                 
-                # Update existing cart
-                items = cart_data.get("items", [])
-                
-                # Check if service already exists
-                existing_item_index = None
-                for i, item in enumerate(items):
-                    if item.get("service_id") == service_id:
-                        existing_item_index = i
-                        break
-                
-                if existing_item_index is not None:
-                    # Update quantity
-                    items[existing_item_index]["quantity"] += quantity
-                else:
-                    # Add new item
-                    items.append(new_item)
-                
-                # Recalculate totals
-                total_amount = sum(
-                    self._get_effective_service_price(item["service_details"]) * item["quantity"]
-                    for item in items
-                )
-                item_count = sum(item["quantity"] for item in items)
-                
-                salon_name_value = None
-                if getattr(cart_item, 'metadata', None):
-                    salon_name_value = cart_item.metadata.get('salon_name')
-
-                update_data = {
-                    "items": items,
-                    "total_amount": total_amount,
-                    "item_count": item_count,
-                    "salon_id": service_salon_id,
-                    "salon_name": salon_name_value
-                }
-                
-                response = self.db.table("user_carts")\
-                    .update(update_data)\
-                    .eq("user_id", customer_id)\
+                response = self.db.table("cart_items")\
+                    .update({"quantity": new_quantity})\
+                    .eq("id", existing_item["id"])\
                     .execute()
                 
-                logger.info(f"Updated cart for customer {customer_id}")
+                logger.info(f"Updated cart item quantity for customer {customer_id}")
                 
                 return {
                     "success": True,
-                    "message": "Cart updated successfully",
-                    "cart": response.data[0] if response.data else None
+                    "message": "Cart item quantity updated",
+                    "cart_item": response.data[0] if response.data else None
                 }
             else:
-                # Create new cart
-                items = [new_item]
-                total_amount = self._get_effective_service_price(service_details) * quantity
-                
-                salon_name_value = None
-                if getattr(cart_item, 'metadata', None):
-                    salon_name_value = cart_item.metadata.get('salon_name')
-
-                cart_data = {
+                # Item doesn't exist - insert new
+                cart_item_data = {
                     "user_id": customer_id,
                     "salon_id": service_salon_id,
-                    "items": items,
-                    "total_amount": total_amount,
-                    "item_count": quantity,
-                    "salon_name": salon_name_value
+                    "service_id": service_id,
+                    "quantity": quantity,
+                    "metadata": cart_item.metadata or {}
                 }
                 
-                response = self.db.table("user_carts")\
-                    .insert(cart_data)\
+                response = self.db.table("cart_items")\
+                    .insert(cart_item_data)\
                     .execute()
                 
-                logger.info(f"Created new cart for customer {customer_id}")
+                logger.info(f"Added new item to cart for customer {customer_id}")
                 
                 return {
                     "success": True,
                     "message": "Item added to cart",
-                    "cart": response.data[0] if response.data else None
+                    "cart_item": response.data[0] if response.data else None
                 }
         
         except HTTPException:
@@ -275,7 +272,7 @@ class CustomerService:
         quantity: int
     ) -> Dict[str, Any]:
         """
-        Update cart item quantity using proper jsonb operations.
+        Update cart item quantity in normalized cart_items table.
 
         Args:
             customer_id: Customer user ID
@@ -283,7 +280,7 @@ class CustomerService:
             quantity: New quantity (must be > 0)
 
         Returns:
-            Updated cart data
+            Updated cart item data
 
         Raises:
             HTTPException: If cart/item not found or update fails
@@ -291,75 +288,53 @@ class CustomerService:
         try:
             # Validate quantity
             if quantity <= 0:
-                from app.core.exceptions import ValidationError
-                raise ValidationError("Quantity must be greater than 0", "quantity")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Quantity must be greater than 0"
+                )
 
-            # Get current cart
-            cart_response = self.db.table("user_carts")\
-                .select("id, items")\
+            # Verify cart item exists and belongs to user
+            check_response = self.db.table("cart_items")\
+                .select("id")\
+                .eq("id", item_id)\
                 .eq("user_id", customer_id)\
                 .execute()
 
-            if not cart_response.data:
-                from app.core.exceptions import NotFoundError
-                raise NotFoundError("Cart", f"for user {customer_id}")
+            if not check_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Cart item not found"
+                )
 
-            cart = cart_response.data[0]
-            items = cart.get("items", [])
-
-            # Find and update the item
-            item_found = False
-            updated_items = []
-
-            for item in items:
-                if item.get("id") == item_id:
-                    # Update this item's quantity
-                    item["quantity"] = quantity
-                    item_found = True
-                updated_items.append(item)
-
-            if not item_found:
-                from app.core.exceptions import NotFoundError
-                raise NotFoundError("Cart item", item_id)
-
-            # Recalculate totals
-            total_amount = sum(
-                self._get_effective_service_price(item["service_details"]) * item["quantity"]
-                for item in updated_items
-            )
-            item_count = sum(item["quantity"] for item in updated_items)
-
-            # Update cart in database
-            update_data = {
-                "items": updated_items,
-                "total_amount": total_amount,
-                "item_count": item_count,
-                "updated_at": "now()"
-            }
-
-            response = self.db.table("user_carts")\
-                .update(update_data)\
+            # Update quantity
+            response = self.db.table("cart_items")\
+                .update({"quantity": quantity})\
+                .eq("id", item_id)\
                 .eq("user_id", customer_id)\
                 .execute()
 
             if not response.data:
-                from app.core.exceptions import DatabaseError
-                raise DatabaseError("update", "Failed to update cart item")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update cart item"
+                )
 
             logger.info(f"Updated cart item {item_id} quantity to {quantity} for customer {customer_id}")
 
             return {
                 "success": True,
                 "message": "Cart item updated successfully",
-                "cart": response.data[0]
+                "cart_item": response.data[0]
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to update cart item {item_id} for {customer_id}: {str(e)}")
-            if isinstance(e, (ValidationError, NotFoundError, DatabaseError)):
-                raise
-            from app.core.exceptions import DatabaseError
-            raise DatabaseError("update", f"Failed to update cart item: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update cart item: {str(e)}"
+            )
     
     async def remove_from_cart(
         self,
@@ -367,10 +342,10 @@ class CustomerService:
         customer_id: str
     ) -> Dict[str, Any]:
         """
-        Remove item from cart.
+        Remove item from cart using normalized cart_items table.
 
         Args:
-            item_id: Cart item ID (service_id in jsonb structure)
+            item_id: Cart item ID to remove
             customer_id: Customer user ID (for ownership verification)
 
         Returns:
@@ -380,34 +355,18 @@ class CustomerService:
             HTTPException: If item not found
         """
         try:
-            # Get current cart
-            cart_response = self.db.table("user_carts")\
-                .select("items")\
+            # Delete cart item (user_id ensures ownership)
+            response = self.db.table("cart_items")\
+                .delete()\
+                .eq("id", item_id)\
                 .eq("user_id", customer_id)\
                 .execute()
 
-            if not cart_response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Cart not found"
-                )
-
-            current_items = cart_response.data[0].get("items", [])
-
-            # Find and remove the item
-            updated_items = [item for item in current_items if item.get("service_id") != item_id]
-
-            if len(updated_items) == len(current_items):
+            if not response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Cart item not found"
                 )
-
-            # Update cart with filtered items
-            update_response = self.db.table("user_carts")\
-                .update({"items": updated_items})\
-                .eq("user_id", customer_id)\
-                .execute()
 
             logger.info(f"Removed cart item {item_id} for customer {customer_id}")
 
@@ -427,7 +386,7 @@ class CustomerService:
     
     async def clear_cart(self, customer_id: str) -> Dict[str, Any]:
         """
-        Clear all items from cart.
+        Clear all items from cart using normalized cart_items table.
 
         Args:
             customer_id: Customer user ID
@@ -439,22 +398,19 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            # Get current cart to count items before clearing
-            cart_response = self.db.table("user_carts")\
-                .select("items")\
+            # Count items before deletion
+            count_response = self.db.table("cart_items")\
+                .select("id", count="exact")\
                 .eq("user_id", customer_id)\
                 .execute()
 
-            deleted_count = 0
-            if cart_response.data:
-                current_items = cart_response.data[0].get("items", [])
-                deleted_count = len(current_items)
-
-            # Clear cart by setting items to empty array
-            update_response = self.db.table("user_carts")\
-                .update({"items": []})\
+            # Delete all cart items for user
+            delete_response = self.db.table("cart_items")\
+                .delete()\
                 .eq("user_id", customer_id)\
                 .execute()
+
+            deleted_count = count_response.count if count_response.count else 0
 
             logger.info(f"Cleared cart for customer {customer_id}: {deleted_count} items")
 
@@ -469,6 +425,197 @@ class CustomerService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to clear cart: {str(e)}"
+            )
+    
+    async def checkout_cart(
+        self,
+        customer_id: str,
+        checkout_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Create booking from cart items with payment verification.
+        
+        This is the final step (Step 9-14) of the cart checkout flow:
+        - Receives payment details from Razorpay
+        - Verifies payment signature for security
+        - Creates booking with all cart services
+        - Creates booking_payment record in database
+        - Clears cart after successful booking
+        
+        Payment Verification:
+        - If razorpay_payment_id provided: Verifies signature with Razorpay API
+        - If signature invalid: Rejects checkout (prevents fraud)
+        - If signature valid: Proceeds to create booking
+        
+        Args:
+            customer_id: Customer user ID
+            checkout_data: Dict with:
+                - booking_date: Date for appointment (YYYY-MM-DD)
+                - time_slots: List of time slots (max 3) e.g. ["2:30 PM", "2:45 PM"]
+                - razorpay_order_id: Order ID from payment/cart/create-order
+                - razorpay_payment_id: Payment ID from Razorpay after payment
+                - razorpay_signature: Signature from Razorpay for verification
+                - payment_method: Payment method (default: 'razorpay')
+                - notes: Optional booking notes
+            
+        Returns:
+            Dict with:
+                - success: True if booking created
+                - message: Success message
+                - booking: Complete booking data
+                - booking_id: UUID of created booking
+                - booking_number: Human-readable booking number
+            
+        Raises:
+            HTTPException 400: Cart empty, salon inactive, or payment verification failed
+            HTTPException 404: Salon not found
+            HTTPException 500: Booking creation failed
+        """
+        try:
+            # Get cart items
+            cart_response = await self.get_cart(customer_id)
+            
+            if not cart_response.get("items") or len(cart_response["items"]) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cart is empty"
+                )
+            
+            cart_items = cart_response["items"]
+            salon_id = cart_response["salon_id"]
+            
+            # Check if salon is accepting bookings
+            salon_response = self.db.table("salons")\
+                .select("id, business_name, accepting_bookings, is_active")\
+                .eq("id", salon_id)\
+                .single()\
+                .execute()
+            
+            if not salon_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            salon = salon_response.data
+            
+            if not salon.get("is_active"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is currently inactive"
+                )
+            
+            if not salon.get("accepting_bookings", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is not accepting bookings at this time"
+                )
+            
+            # Prepare services for booking
+            from app.schemas.request.booking import ServiceItem
+            services = [
+                ServiceItem(
+                    service_id=item["service_id"],
+                    quantity=item["quantity"]
+                )
+                for item in cart_items
+            ]
+            
+            # Calculate totals
+            total_amount = cart_response["total_amount"]
+            
+            # Get system config for booking fee percentage
+            # Use actual column names `config_key` / `config_value` (not `key`/`value`)
+            config_response = self.db.table("system_config")\
+                .select("config_key, config_value")\
+                .eq("config_key", "booking_fee_percentage")\
+                .single()\
+                .execute()
+
+            booking_fee_percentage = 10.0  # Default 10%
+            if config_response.data:
+                # When using single(), response.data is a dict
+                raw_value = config_response.data.get("config_value", 10.0)
+                try:
+                    booking_fee_percentage = float(raw_value)
+                except Exception:
+                    logger.warning(f"Invalid booking_fee_percentage config value: {raw_value}; using default")
+            
+            booking_fee = total_amount * (booking_fee_percentage / 100)
+            gst_amount = booking_fee * 0.18  # 18% GST on booking fee
+            
+            # Verify Razorpay payment signature if payment details provided
+            if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
+                from app.services.payment import RazorpayService
+                razorpay_service = RazorpayService()
+                
+                # Verify signature to ensure payment authenticity
+                try:
+                    razorpay_service.verify_payment_signature(
+                        razorpay_order_id=checkout_data["razorpay_order_id"],
+                        razorpay_payment_id=checkout_data["razorpay_payment_id"],
+                        razorpay_signature=checkout_data["razorpay_signature"]
+                    )
+                    logger.info(f"Payment signature verified for customer {customer_id}")
+                except Exception as e:
+                    logger.error(f"Payment signature verification failed: {str(e)}")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Payment verification failed. Please contact support."
+                    )
+            
+            # Create booking using BookingService
+            from app.services.booking_service import BookingService
+            from app.schemas import BookingCreate
+            
+            booking_service = BookingService(self.db)
+            
+            # Prepare booking data
+            booking_data = BookingCreate(
+                salon_id=salon_id,
+                booking_date=checkout_data["booking_date"],
+                booking_time=checkout_data["time_slots"][0],  # Primary time slot
+                time_slots=checkout_data["time_slots"],
+                services=services,
+                total_amount=total_amount,
+                booking_fee=booking_fee,
+                gst_amount=gst_amount,
+                amount_paid=booking_fee + gst_amount,  # Convenience fee paid online
+                remaining_amount=total_amount,  # Service price paid at salon
+                payment_status="paid" if checkout_data.get("razorpay_payment_id") else "pending",
+                payment_method=checkout_data.get("payment_method", "razorpay"),
+                razorpay_order_id=checkout_data.get("razorpay_order_id"),
+                razorpay_payment_id=checkout_data.get("razorpay_payment_id"),
+                razorpay_signature=checkout_data.get("razorpay_signature"),
+                notes=checkout_data.get("notes")
+            )
+            
+            # Create booking
+            booking = await booking_service.create_booking(
+                booking=booking_data,
+                current_user_id=customer_id
+            )
+            
+            # Clear cart after successful booking
+            await self.clear_cart(customer_id)
+            
+            logger.info(f"Checkout completed for customer {customer_id}, booking created: {booking.get('id')}")
+            
+            return {
+                "success": True,
+                "message": "Booking created successfully",
+                "booking": booking,
+                "booking_id": booking.get("id"),
+                "booking_number": booking.get("booking_number")
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to checkout cart for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to complete checkout: {str(e)}"
             )
     
     # =====================================================

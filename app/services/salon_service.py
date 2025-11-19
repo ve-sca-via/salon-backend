@@ -213,8 +213,8 @@ class SalonService:
             if params.filters.is_verified is not None:
                 salons = [s for s in salons if s["is_verified"] == params.filters.is_verified]
             
-            if params.filters.business_type:
-                salons = [s for s in salons if s["business_type"] == params.filters.business_type]
+            # Note: business_type column doesn't exist in salons table
+            # Removed filter for business_type
         
         return salons
     

@@ -126,6 +126,7 @@ class UserService:
     
     async def _check_existing_user(self, email: str) -> bool:
         """Check if user with email already exists"""
+        db = get_db()
         response = db.table("profiles").select("id").eq("email", email).execute()
         return bool(response.data)
     
@@ -198,13 +199,31 @@ class UserService:
             "is_active": True
         }
         
-        response = db.table("profiles").insert(profile_data).execute()
+        # Use direct HTTP request with service_role key to bypass RLS
+        headers = {
+            "apikey": self.service_role_key,
+            "Authorization": f"Bearer {self.service_role_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
         
-        if not response.data:
+        response = requests.post(
+            f"{self.db_url}/rest/v1/profiles",
+            json=profile_data,
+            headers=headers
+        )
+        
+        if response.status_code not in [200, 201]:
+            error_msg = response.json() if response.text else {}
+            logger.error(f"Profile creation failed: {error_msg}")
+            raise Exception(str(error_msg))
+        
+        created_profile = response.json()
+        if not created_profile:
             raise Exception("Failed to create profile - no data returned")
         
         logger.info(f"✅ Profile created for {request.email}")
-        return response.data[0]
+        return created_profile[0] if isinstance(created_profile, list) else created_profile
     
     async def _create_rm_profile(self, user_id: str, request: CreateUserRequest) -> Dict[str, Any]:
         """
@@ -226,13 +245,31 @@ class UserService:
             "is_active": True
         }
         
-        response = db.table("rm_profiles").insert(rm_profile_data).execute()
+        # Use direct HTTP request with service_role key to bypass RLS
+        headers = {
+            "apikey": self.service_role_key,
+            "Authorization": f"Bearer {self.service_role_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
         
-        if not response.data:
+        response = requests.post(
+            f"{self.db_url}/rest/v1/rm_profiles",
+            json=rm_profile_data,
+            headers=headers
+        )
+        
+        if response.status_code not in [200, 201]:
+            error_msg = response.json() if response.text else {}
+            logger.error(f"RM profile creation failed: {error_msg}")
+            raise Exception(str(error_msg))
+        
+        created_rm_profile = response.json()
+        if not created_rm_profile:
             raise Exception("Failed to create RM profile - no data returned")
         
         logger.info(f"✅ RM profile created for {request.email}")
-        return response.data[0]
+        return created_rm_profile[0] if isinstance(created_rm_profile, list) else created_rm_profile
     
     async def _delete_auth_user(self, user_id: str) -> None:
         """Delete auth user (rollback operation)"""
@@ -267,6 +304,7 @@ class UserService:
             ValueError: If user not found
         """
         # Check if user exists and get role
+        db = get_db()
         existing = db.table("profiles").select("id, user_role").eq("id", user_id).execute()
         if not existing.data:
             raise ValueError(f"User {user_id} not found")
@@ -307,6 +345,7 @@ class UserService:
             Exception: If update fails
         """
         # Check if user exists and get current data
+        db = get_db()
         existing = db.table("profiles").select("*").eq("id", user_id).execute()
         if not existing.data:
             raise ValueError(f"User {user_id} not found")
@@ -370,6 +409,7 @@ class UserService:
     
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user by ID"""
+        db = get_db()
         response = db.table("profiles").select("*").eq("id", user_id).execute()
         return response.data[0] if response.data else None
     
@@ -398,6 +438,7 @@ class UserService:
             Exception: If query fails
         """
         try:
+            db = get_db()
             offset = (page - 1) * limit
             query = db.table("profiles").select("*", count="exact")
             
