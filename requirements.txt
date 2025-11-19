@@ -27,6 +27,7 @@ python-multipart==0.0.6
 
 # Payment Gateway
 razorpay==1.4.1
+setuptools==65.5.1
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0

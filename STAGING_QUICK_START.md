@@ -38,7 +38,7 @@ Copy-Item .env.staging.example .env.staging
 
 ### 4. Apply Database Migrations
 ```bash
-supabase link --project-ref your-staging-project-ref
+supabase link --project-ref fxqiskpjuiutwalseljs
 supabase db push
 ```
 
