@@ -97,10 +97,10 @@ class AdminService:
             ).eq("registration_fee_paid", False).execute()
             stats.pending_payment_salons = pending_payment_response.count if pending_payment_response.count is not None else 0
             
-            # Count total active RMs
-            total_rms_response = self.db.table("rm_profiles").select(
+            # Count total active RMs from profiles table
+            total_rms_response = self.db.table("profiles").select(
                 "id", count="exact"
-            ).eq("is_active", True).execute()
+            ).eq("user_role", "relationship_manager").eq("is_active", True).execute()
             stats.total_rms = total_rms_response.count if total_rms_response.count is not None else 0
             
             # Count total bookings

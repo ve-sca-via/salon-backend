@@ -138,6 +138,13 @@ def verify_token(token: str, db) -> TokenPayload:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
+        if not jti:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: missing jti",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
         # Check if token is blacklisted (revoked)
         if jti:
             # Avoid logging blacklist contents or secrets

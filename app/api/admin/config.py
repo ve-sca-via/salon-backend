@@ -12,6 +12,7 @@ from app.schemas import (
 )
 from app.schemas.request.admin import SystemConfigCreate
 from app.services.config_service import ConfigService
+from app.services.activity_log_service import ActivityLogger
 import logging
 
 logger = logging.getLogger(__name__)
@@ -86,10 +87,25 @@ async def update_config(
 ):
     """Update system configuration"""
     try:
+        # Get old value first for logging
+        old_config = await config_service.get_config(config_key)
+        old_value = old_config.config_value if old_config else None
+        
         # Update config (config_service.update_config expects the update object directly)
         updated_config = await config_service.update_config(config_key, update)
 
         logger.info(f"System config updated: {config_key} = {update.config_value}")
+
+        # Log activity
+        try:
+            await ActivityLogger.config_updated(
+                user_id=current_user.user_id,
+                config_key=config_key,
+                old_value=old_value,
+                new_value=update.config_value
+            )
+        except Exception as e:
+            logger.error(f"Failed to log activity: {e}")
 
         return {
             "success": True,

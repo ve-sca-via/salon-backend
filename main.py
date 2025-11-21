@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from dotenv import load_dotenv
 
 # Load environment variables from .env file BEFORE importing settings
-load_dotenv()
+load_dotenv(encoding='utf-8')
 
 from app.core.config import settings
 from app.core.exceptions import AppException

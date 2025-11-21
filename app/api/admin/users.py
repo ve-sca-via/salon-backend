@@ -3,6 +3,7 @@ from typing import Optional
 from app.core.auth import require_admin, TokenData
 from app.services.user_service import UserService, CreateUserRequest
 from app.schemas.user import UserCreate, UserUpdate
+from app.services.activity_log_service import ActivityLogger
 import logging
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,17 @@ async def create_user(
         )
 
     logger.info(f"User created by admin {current_user.user_id}: {user_data.email} ({role})")
+
+    # Log activity
+    try:
+        await ActivityLogger.user_created(
+            admin_id=current_user.user_id,
+            new_user_id=result.user_id,
+            role=role,
+            email=user_data.email
+        )
+    except Exception as e:
+        logger.error(f"Failed to log activity: {e}")
 
     return {
         "success": True,

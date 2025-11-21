@@ -14,6 +14,7 @@ from app.schemas import (
 )
 from app.services.admin_service import AdminService
 from app.services.vendor_approval_service import VendorApprovalService
+from app.services.activity_log_service import ActivityLogger
 import logging
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,16 @@ async def approve_vendor_request(
         for warning in result.warnings:
             logger.warning(f"⚠️ {warning}")
 
+    # Log activity
+    try:
+        await ActivityLogger.salon_approved(
+            user_id=current_user.user_id,
+            salon_id=result.salon_id,
+            salon_name=result.salon_name or "Unknown"
+        )
+    except Exception as e:
+        logger.error(f"Failed to log activity: {e}")
+
     return {
         "success": True,
         "message": "Vendor request approved successfully",
@@ -138,5 +149,16 @@ async def reject_vendor_request(
         admin_notes=request_body.admin_notes,
         admin_id=current_user.user_id
     )
+
+    # Log activity
+    try:
+        await ActivityLogger.salon_rejected(
+            user_id=current_user.user_id,
+            salon_id=result.get("salon_id", request_id),
+            salon_name=result.get("salon_name", "Unknown"),
+            reason=request_body.admin_notes or "No reason provided"
+        )
+    except Exception as e:
+        logger.error(f"Failed to log activity: {e}")
 
     return result

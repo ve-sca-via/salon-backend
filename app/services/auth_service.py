@@ -396,15 +396,19 @@ class AuthService:
             Dict with success message
         """
         try:
-            # Revoke the access token by adding to blacklist
-            revoke_token(
-                db=self.db,
-                token_jti=token_jti,
-                user_id=user_id,
-                token_type="access",
-                expires_at=expires_at,
-                reason="logout"
-            )
+            # Only revoke if we have a JTI
+            if token_jti:
+                # Revoke the access token by adding to blacklist
+                revoke_token(
+                    db=self.db,
+                    token_jti=token_jti,
+                    user_id=user_id,
+                    token_type="access",
+                    expires_at=expires_at,
+                    reason="logout"
+                )
+            else:
+                logger.warning(f"Logout attempted without JTI for user: {user_id}")
             
             logger.info(f"User logged out: {user_id}")
             
@@ -415,10 +419,12 @@ class AuthService:
             
         except Exception as e:
             logger.error(f"Logout error: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Logout failed"
-            )
+            # Don't fail logout if blacklist fails - user can still clear client-side
+            logger.warning("Logout completed with errors, but allowing client-side cleanup")
+            return {
+                "success": True,
+                "message": "Logged out (with warnings)"
+            }
     
     async def logout_all_devices(
         self,

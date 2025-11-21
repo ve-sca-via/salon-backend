@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client
 from app.services.admin_service import AdminService
+from app.services.activity_log_service import ActivityLogService
 from supabase import Client
 import logging
 
@@ -36,3 +37,22 @@ async def get_dashboard_stats(
     stats = await admin_service.get_dashboard_stats()
 
     return stats.to_dict()
+
+
+@router.get("/recent-activity")
+async def get_recent_activity(
+    limit: int = 10,
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Get recent activity logs for dashboard
+    - Admin only
+    - Returns last N activity logs with user details
+    """
+    activities = await ActivityLogService.get_recent(limit=limit)
+    
+    return {
+        "success": True,
+        "data": activities,
+        "count": len(activities)
+    }

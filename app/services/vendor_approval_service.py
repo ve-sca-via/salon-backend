@@ -21,6 +21,7 @@ class ApprovalResult:
     """Result of vendor approval operation"""
     success: bool
     salon_id: Optional[str] = None
+    salon_name: Optional[str] = None
     rm_score_awarded: Optional[int] = None
     error: Optional[str] = None
     warnings: List[str] = None
@@ -110,6 +111,7 @@ class VendorApprovalService:
         return ApprovalResult(
             success=True,
             salon_id=salon_id,
+            salon_name=request_data.business_name,
             rm_score_awarded=config['rm_score'],
             warnings=warnings if warnings else None
         )
