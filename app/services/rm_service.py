@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
+from app.services.activity_log_service import ActivityLogger, ActivityLogService
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,27 @@ class RMService:
             status_label = "draft" if is_draft else "for approval"
             logger.info(f"RM {rm_id} submitted vendor request {status_label} for {request_data.business_name}")
             
+            # Log activity
+            try:
+                action_text = "vendor_request_draft_saved" if is_draft else "vendor_request_submitted"
+                await ActivityLogService.log(
+                    user_id=rm_id,
+                    action=action_text,
+                    entity_type="vendor_request",
+                    entity_id=response.data[0]["id"],
+                    details={
+                        "business_name": request_data.business_name,
+                        "business_type": request_data.business_type,
+                        "city": request_data.city,
+                        "state": request_data.state,
+                        "owner_name": request_data.owner_name,
+                        "is_draft": is_draft,
+                        "status": "draft" if is_draft else "pending"
+                    }
+                )
+            except Exception as log_error:
+                logger.error(f"Failed to log activity: {log_error}")
+            
             return response.data[0]
         
         except HTTPException:
@@ -504,6 +526,27 @@ class RMService:
                 )
             
             logger.info(f"RM {rm_id} updated vendor request {request_id}")
+            
+            # Log activity
+            try:
+                action_text = "vendor_request_submitted_for_approval" if submit_for_approval else "vendor_request_draft_updated"
+                await ActivityLogService.log(
+                    user_id=rm_id,
+                    action=action_text,
+                    entity_type="vendor_request",
+                    entity_id=request_id,
+                    details={
+                        "business_name": request_data.business_name,
+                        "business_type": request_data.business_type,
+                        "city": request_data.city,
+                        "state": request_data.state,
+                        "owner_name": request_data.owner_name,
+                        "submitted_for_approval": submit_for_approval,
+                        "new_status": "pending" if submit_for_approval else "draft"
+                    }
+                )
+            except Exception as log_error:
+                logger.error(f"Failed to log activity: {log_error}")
             
             return response.data[0]
         

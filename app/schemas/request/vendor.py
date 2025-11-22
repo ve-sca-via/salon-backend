@@ -23,13 +23,13 @@ class VendorJoinRequestBase(BaseModel):
     """Vendor join request schema - comprehensive salon onboarding data"""
     # Business Info
     business_name: str = Field(..., min_length=2, max_length=255)
-    business_type: str = Field(..., max_length=50, description="salon, spa, unisex_salon, barber_shop, etc.")
+    business_type: BusinessType = Field(..., description="Type of business: salon, spa, clinic, unisex_salon, barber_shop, beauty_parlor")
     owner_name: str = Field(..., min_length=2, max_length=255)
     owner_email: EmailStr
     owner_phone: str = Field(..., max_length=20)
     
     # Location
-    business_address: str = Field(..., min_length=10, description="Full address string")
+    business_address: str = Field(..., min_length=10, description="Full business address (minimum 10 characters)")
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
     pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")

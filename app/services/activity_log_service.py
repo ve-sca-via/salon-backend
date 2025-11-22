@@ -185,3 +185,37 @@ class ActivityLogger:
             entity_id=salon_id,
             details={"salon_name": salon_name, "rm_id": rm_id, "rm_name": rm_name}
         )
+    
+    @staticmethod
+    async def vendor_request_created(rm_id: str, request_id: str, business_name: str, business_type: str):
+        """Log vendor request creation"""
+        await ActivityLogService.log(
+            user_id=rm_id,
+            action="vendor_request_created",
+            entity_type="vendor_request",
+            entity_id=request_id,
+            details={"business_name": business_name, "business_type": business_type}
+        )
+    
+    @staticmethod
+    async def vendor_request_submitted(rm_id: str, request_id: str, business_name: str):
+        """Log vendor request submission for approval"""
+        await ActivityLogService.log(
+            user_id=rm_id,
+            action="vendor_request_submitted",
+            entity_type="vendor_request",
+            entity_id=request_id,
+            details={"business_name": business_name}
+        )
+    
+    @staticmethod
+    async def log(user_id: Optional[str], action: str, entity_type: Optional[str] = None, 
+                  entity_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+        """Generic activity log method"""
+        await ActivityLogService.log(
+            user_id=user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details=details
+        )

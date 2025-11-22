@@ -41,11 +41,20 @@ class VendorJoinRequestResponse(BaseModel):
     business_address: str
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., pattern=r'^\d{6}$', description="6-digit pincode")
+    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    gst_number: Optional[str] = Field(None, max_length=15)
+    gst_number: Optional[str] = Field(None, max_length=50)
+    pan_number: Optional[str] = Field(None, max_length=10)
     business_license: Optional[str] = None
+    registration_certificate: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    gallery_images: Optional[List[str]] = None
+    services_offered: Optional[Dict[str, Any]] = None
+    staff_count: Optional[int] = None
+    opening_time: Optional[time] = None
+    closing_time: Optional[time] = None
+    working_days: Optional[List[str]] = None
     documents: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
