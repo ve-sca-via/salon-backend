@@ -15,6 +15,7 @@ from supabase import Client
 
 from app.core.config import settings
 from app.core.database import get_db_client
+from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService
 from app.schemas import (
     PublicSalonsResponse,
@@ -485,6 +486,7 @@ async def search_salons(
 
 @router.post("/", response_model=SalonResponse)
 async def create_salon(
+    current_user: TokenData = Depends(require_admin),
     name: str = Form(...),
     description: Optional[str] = Form(None),
     phone: str = Form(...),
@@ -500,9 +502,9 @@ async def create_salon(
     status: str = Form("pending")
 ):
     """
-    Create new salon
+    Create new salon - Admin only
     
-    RLS ensures only admins/HMR agents can create salons
+    Authorization handled in Python via require_admin dependency
     If cover_image provided, uploads to db Storage
     """
     # Prepare salon data
@@ -578,13 +580,14 @@ async def update_salon(
 @router.post("/{salon_id}/approve", response_model=SuccessResponse)
 async def approve_salon(
     salon_id: int,
+    admin: TokenData = Depends(require_admin),
     reviewed_by: str = Form(...),
     rejection_reason: Optional[str] = Form(None)
 ):
     """
-    Approve or reject salon
+    Approve or reject salon - Admin only
     
-    RLS ensures only admins can approve/reject
+    Authorization handled in Python via require_admin dependency
     """
     success = db.approve_salon(
         salon_id=salon_id,

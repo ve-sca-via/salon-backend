@@ -149,13 +149,36 @@ class MockSupabaseClient:
 
 def get_db() -> Client:
     """
-    Factory function to get database client.
+    Factory function to get database client with SERVICE_ROLE key.
+    
+    ==================== ARCHITECTURE DECISION ====================
+    We use SERVICE_ROLE key to bypass RLS entirely.
+    This is the standard pattern for backend-only Supabase applications.
+    
+    WHY SERVICE_ROLE?
+    - FastAPI backend is the ONLY client accessing Supabase
+    - All authentication/authorization is handled in FastAPI code
+    - We use custom JWT tokens (not Supabase JWT)
+    - RLS policies don't work with service_role (and we don't need them)
+    
+    SECURITY MODEL:
+    - Service role key NEVER exposed to frontend (stays in .env)
+    - Every protected endpoint uses Depends(get_current_user) for JWT validation
+    - Authorization enforced via role checks (require_admin, require_vendor, etc.)
+    - All security logic is explicit and auditable in Python code
+    
+    ALTERNATIVE APPROACH (Not Used):
+    If we wanted RLS to work, we would need to:
+    1. Use Supabase JWT tokens (not custom FastAPI JWT)
+    2. Pass user's access_token to create_client()
+    3. Use ANON key instead of SERVICE_ROLE key
+    4. Let RLS policies handle authorization
+    But this is unnecessarily complex for backend-only architecture.
+    ===============================================================
     
     Returns:
         - MockSupabaseClient if ENVIRONMENT is 'test' or credentials missing
-        - Real Supabase Client otherwise
-    
-    This allows testing without real Supabase connection.
+        - Real Supabase Client with SERVICE_ROLE key otherwise
     """
     # Check if we're in test environment
     if settings.ENVIRONMENT == "test":
@@ -167,8 +190,8 @@ def get_db() -> Client:
         logger.warning("⚠️  Supabase credentials missing - using MockSupabaseClient")
         return MockSupabaseClient()
     
-    # Create real client
-    logger.info("✅ Creating real Supabase client (SERVICE_ROLE)")
+    # Create real client with SERVICE_ROLE (bypasses RLS)
+    logger.info("✅ Creating real Supabase client (SERVICE_ROLE - bypasses RLS)")
     real_client = create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_SERVICE_ROLE_KEY

@@ -12,6 +12,7 @@ import asyncio
 from app.core.database import get_auth_client, get_db
 from app.core.auth import create_access_token, create_refresh_token, revoke_token, verify_refresh_token
 from app.core.config import settings
+from app.services.activity_log_service import ActivityLogService
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,23 @@ class AuthService:
             }
             
             logger.info(f"New user registered: {email}")
+            
+            # Log activity for new user signup
+            try:
+                await ActivityLogService.log(
+                    user_id=user.id,
+                    action="user_signup",
+                    entity_type="user",
+                    entity_id=user.id,
+                    details={
+                        "email": email,
+                        "full_name": sanitized_full_name,
+                        "user_role": user_role,
+                        "signup_method": "email_password"
+                    }
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to log signup activity: {log_error}")
             
             return {
                 "success": True,

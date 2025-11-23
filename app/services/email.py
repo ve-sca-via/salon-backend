@@ -155,8 +155,11 @@ class EmailService:
         try:
             # Check if email sending is enabled
             if not settings.EMAIL_ENABLED:
-                # Log minimal email info in dev mode
-                logger.info(f"📧 DEV MODE - Email not sent to {to_email}: {subject}")
+                # Log email info in dev mode
+                logger.info(f"📧 DEV MODE - Email not sent")
+                logger.info(f"   To: {to_email}")
+                logger.info(f"   Subject: {subject}")
+                logger.info(f"   Body length: {len(html_body)} chars")
                 return True
             
             # Create message
@@ -255,7 +258,7 @@ class EmailService:
         try:
             template = self.env.get_template('vendor_approval.html')
             
-            registration_url = f"{settings.VENDOR_PORsTAL_URL}/complete-registration?token={registration_token}"
+            registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
             
             # Log registration URL in dev mode for easy testing
             if not settings.EMAIL_ENABLED:
@@ -607,8 +610,8 @@ class EmailService:
             from datetime import datetime
             current_date = datetime.now().strftime("%B %d, %Y at %I:%M %p")
             
-            # Admin email - you should configure this in settings
-            admin_email = "admin@salonplatform.com"  # TODO: Add to settings
+            # Admin email from settings
+            admin_email = settings.ADMIN_EMAIL
             
             html_body = template.render(
                 applicant_name=applicant_name,

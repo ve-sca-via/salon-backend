@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     EMAIL_ENABLED: bool = Field(default=False)  # Toggle email sending (False = log only)
     EMAIL_FROM: str = Field(default="noreply@salonplatform.com")
     EMAIL_FROM_NAME: str = Field(default="Salon Management Platform")
+    ADMIN_EMAIL: str = Field(default="admin@salonplatform.com")  # Admin notification email
     
     # Resend API (legacy)
     RESEND_API_KEY: str = Field(default="")

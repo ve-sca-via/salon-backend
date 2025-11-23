@@ -19,6 +19,7 @@ from app.schemas import (
     SalonStaffCreate,
     SalonStaffUpdate
 )
+from app.services.activity_log_service import ActivityLogService
 
 logger = logging.getLogger(__name__)
 
@@ -1061,6 +1062,23 @@ class VendorService:
         refresh_token = create_refresh_token(token_data)
         
         logger.info(f"🎉 Vendor registration completed successfully for {vendor_email}")
+        
+        # Log activity for vendor registration completion
+        try:
+            await ActivityLogService.log(
+                user_id=user_id,
+                action="vendor_registration_completed",
+                entity_type="vendor",
+                entity_id=user_id,
+                details={
+                    "email": vendor_email,
+                    "full_name": vendor_full_name,
+                    "salon_id": salon_id,
+                    "request_id": request_id
+                }
+            )
+        except Exception as log_error:
+            logger.warning(f"Failed to log vendor registration activity: {log_error}")
         
         return {
             "success": True,

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
 from supabase import Client
 from app.core.config import settings
 from app.core.auth import get_current_user, TokenData
+from app.core.rate_limit import limiter, RateLimits
 from app.schemas import (
     LoginRequest,
     LoginResponse,
@@ -29,7 +30,9 @@ if not all([settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY, settings.SUPABASE
 
 # --- Auth Routes ---
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit(RateLimits.AUTH_LOGIN)  # Max 5 attempts per minute
 async def login(
+    request: Request,  # Required for rate limiter
     credentials: LoginRequest,
     db: Client = Depends(get_db_client),
     auth_client: Client = Depends(get_auth_client)
@@ -39,6 +42,7 @@ async def login(
     - Validates credentials with Supabase Auth
     - Returns access token and refresh token
     - Includes user profile data
+    - Rate limited: 5 attempts per minute to prevent brute-force
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     result = await auth_service.authenticate_user(
@@ -49,8 +53,10 @@ async def login(
 
 
 @router.post("/signup", response_model=SignupResponse)
+@limiter.limit(RateLimits.AUTH_SIGNUP)  # Max 3 signups per minute
 async def signup(
-    request: SignupRequest,
+    request: Request,  # Required for rate limiter
+    signup_data: SignupRequest,
     db: Client = Depends(get_db_client),
     auth_client: Client = Depends(get_auth_client)
 ):
@@ -59,21 +65,24 @@ async def signup(
     - Creates Supabase auth user
     - Creates profile entry
     - Role defaults to 'customer'
+    - Rate limited: 3 signups per minute to prevent abuse
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     result = await auth_service.register_user(
-        email=request.email,
-        password=request.password,
-        full_name=request.full_name,
-        phone=request.phone,
-        user_role=request.user_role
+        email=signup_data.email,
+        password=signup_data.password,
+        full_name=signup_data.full_name,
+        phone=signup_data.phone,
+        user_role=signup_data.user_role
     )
     return SignupResponse(**result)
 
 
 @router.post("/refresh")
+@limiter.limit(RateLimits.AUTH_REFRESH)  # Max 10 refreshes per minute
 async def refresh_access_token(
-    request: RefreshTokenRequest,
+    request: Request,  # Required for rate limiter
+    refresh_data: RefreshTokenRequest,
     db: Client = Depends(get_db_client),
     auth_client: Client = Depends(get_auth_client)
 ):
@@ -82,9 +91,10 @@ async def refresh_access_token(
     - Validates refresh token
     - Returns new access token
     - Extends session
+    - Rate limited: 10 refreshes per minute
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
-    return await auth_service.refresh_user_session(request.refresh_token)
+    return await auth_service.refresh_user_session(refresh_data.refresh_token)
 
 
 @router.get("/me")
@@ -148,8 +158,10 @@ async def logout_all_devices(
 
 
 @router.post("/password-reset", response_model=PasswordResetResponse)
+@limiter.limit(RateLimits.AUTH_PASSWORD_RESET)  # Max 3 attempts per hour
 async def initiate_password_reset(
-    request: PasswordResetRequest,
+    request: Request,  # Required for rate limiter
+    reset_data: PasswordResetRequest,
     db: Client = Depends(get_db_client),
     auth_client: Client = Depends(get_auth_client)
 ):
@@ -158,9 +170,10 @@ async def initiate_password_reset(
     
     Sends password reset email to user if account exists
     Returns success message regardless for security
+    Rate limited: 3 attempts per hour to prevent abuse
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
-    return await auth_service.initiate_password_reset(request.email)
+    return await auth_service.initiate_password_reset(reset_data.email)
 
 
 @router.post("/password-reset/confirm", response_model=PasswordResetConfirmResponse)

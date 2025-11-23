@@ -21,9 +21,14 @@ load_dotenv(encoding='utf-8')
 from app.core.config import settings
 from app.core.exceptions import AppException
 from app.core.database import get_db, get_db_client, get_auth_client, MockSupabaseClient
+from app.core.rate_limit import limiter, rate_limit_exceeded_handler
 from supabase import Client
 from app.schemas.response import ErrorResponse, ValidationErrorResponse, ErrorDetail
 from app.api import location, auth, salons, bookings, realtime, admin, rm, vendors, payments, customers, careers, upload
+
+# Import test email router (only for dev/staging)
+if settings.ENVIRONMENT.lower() != "production":
+    from app.api import test_email
 
 # Configure logging
 logging.basicConfig(
@@ -101,13 +106,13 @@ else:
 logger.info("🚀 Salon Management API starting up...")
 logger.info(f"📧 Email sending: {'ENABLED' if settings.EMAIL_ENABLED else 'DISABLED (Dev Mode)'}")
 
-# Configure rate limiting
-limiter = Limiter(key_func=get_remote_address, default_limits=[f"{settings.RATE_LIMIT_PER_MINUTE}/minute"])
+# Configure rate limiting (using centralized rate_limit module)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-logger.info(f"🛡️ Rate limiting enabled: {settings.RATE_LIMIT_PER_MINUTE}/minute per IP")
+logger.info(f"🛡️ Rate limiting enabled: {settings.RATE_LIMIT_PER_MINUTE}/minute per IP (global default)")
+logger.info("🛡️ Auth endpoints have stricter limits (5 login, 3 signup, 3 password reset)")
 
 
 # Configure CORS
@@ -274,6 +279,11 @@ app.include_router(payments.router, prefix=settings.API_PREFIX)
 app.include_router(customers.router, prefix=settings.API_PREFIX)  # Customer portal endpoints
 app.include_router(careers.router, prefix=f"{settings.API_PREFIX}/careers", tags=["Careers"])  # Career applications
 app.include_router(upload.router, prefix=settings.API_PREFIX)  # File upload endpoints
+
+# Include test email router (only for dev/staging)
+if settings.ENVIRONMENT.lower() != "production":
+    app.include_router(test_email.router, prefix=settings.API_PREFIX)
+    logger.info("🧪 Test email endpoint enabled (dev/staging mode)")
 
 
 

@@ -507,8 +507,8 @@ class RMService:
                     detail="Only draft requests can be updated"
                 )
             
-            # Prepare update data
-            update_data = request_data.model_dump()
+            # Prepare update data (mode='json' converts time objects to strings)
+            update_data = request_data.model_dump(mode='json')
             
             # Change status if submitting for approval
             if submit_for_approval:
@@ -525,6 +525,7 @@ class RMService:
                     detail="Vendor request not found"
                 )
             
+            status_message = "Vendor request submitted for approval successfully" if submit_for_approval else "Draft updated successfully"
             logger.info(f"RM {rm_id} updated vendor request {request_id}")
             
             # Log activity
@@ -548,7 +549,11 @@ class RMService:
             except Exception as log_error:
                 logger.error(f"Failed to log activity: {log_error}")
             
-            return response.data[0]
+            return {
+                "success": True,
+                "message": status_message,
+                "data": response.data[0]
+            }
         
         except HTTPException:
             raise
