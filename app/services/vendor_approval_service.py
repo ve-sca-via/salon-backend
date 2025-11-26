@@ -249,12 +249,38 @@ class VendorApprovalService:
             import json
             documents = json.loads(documents)
         
-        # Extract cover images - convert single image to array
-        cover_images_data = documents.get("cover_image") or documents.get("cover_images", [])
-        if isinstance(cover_images_data, str):
-            cover_images = [cover_images_data] if cover_images_data else []
+        # Extract cover_image_url from direct column (primary source)
+        # Fallback to documents.cover_image for backward compatibility
+        cover_image_url = getattr(request_data, "cover_image_url", None) or documents.get("cover_image")
+        
+        # Extract gallery_images from direct column (primary source)
+        # Fallback to documents.cover_images for backward compatibility
+        gallery_images_data = getattr(request_data, "gallery_images", None) or documents.get("cover_images", [])
+        if isinstance(gallery_images_data, str):
+            gallery_images = [gallery_images_data] if gallery_images_data else []
         else:
-            cover_images = cover_images_data if isinstance(cover_images_data, list) else []
+            gallery_images = gallery_images_data if isinstance(gallery_images_data, list) else []
+        
+        # Combine cover + gallery into cover_images array for database
+        # Database uses cover_images (JSONB array) not cover_image_url
+        cover_images_array = []
+        if cover_image_url:
+            cover_images_array.append(cover_image_url)
+        cover_images_array.extend(gallery_images)
+        
+        # Extract logo from documents
+        logo_url = documents.get("logo")
+        
+        # Extract business hours from direct columns (primary) or documents (fallback)
+        opening_time = getattr(request_data, "opening_time", None) or documents.get("opening_time")
+        closing_time = getattr(request_data, "closing_time", None) or documents.get("closing_time")
+        working_days = getattr(request_data, "working_days", None) or documents.get("working_days", [])
+        
+        # Convert time objects to strings if needed (fix JSON serialization)
+        if opening_time and hasattr(opening_time, 'strftime'):
+            opening_time = opening_time.strftime('%H:%M:%S')
+        if closing_time and hasattr(closing_time, 'strftime'):
+            closing_time = closing_time.strftime('%H:%M:%S')
         
         # Note: vendor_id will be set when vendor completes registration
         # assigned_rm should be the RM user_id from request (not rm_id column)
@@ -273,11 +299,11 @@ class VendorApprovalService:
             "longitude": coordinates["longitude"],
             "gst_number": getattr(request_data, "gst_number", None),
             "pan_number": getattr(request_data, "pan_number", None),
-            "logo_url": documents.get("logo"),
-            "cover_images": cover_images,
-            "opening_time": documents.get("opening_time"),
-            "closing_time": documents.get("closing_time"),
-            "working_days": documents.get("working_days", []),
+            "logo_url": logo_url,
+            "cover_images": cover_images_array if cover_images_array else [],
+            "opening_time": opening_time,
+            "closing_time": closing_time,
+            "working_days": working_days if isinstance(working_days, list) else [],
             "registration_fee_paid": False,
             "is_active": False,
             "is_verified": False

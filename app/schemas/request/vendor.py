@@ -125,6 +125,8 @@ class SalonUpdate(BaseModel):
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
     accepting_bookings: Optional[bool] = None
+    is_active: Optional[bool] = None
+    is_verified: Optional[bool] = None
 # =====================================================
 # SERVICE REQUEST SCHEMAS
 # =====================================================
