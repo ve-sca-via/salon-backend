@@ -192,7 +192,7 @@ async def update_career_application_status(
     - rejection_reason
     - interview details
     """
-    application = career_service.update_application_status(
+    application = await career_service.update_application_status(
         application_id=application_id,
         new_status=update_data.status,
         admin_notes=update_data.admin_notes,

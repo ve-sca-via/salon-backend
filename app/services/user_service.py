@@ -272,27 +272,40 @@ class UserService:
         return created_rm_profile[0] if isinstance(created_rm_profile, list) else created_rm_profile
     
     async def _delete_auth_user(self, user_id: str) -> None:
-        """Delete auth user (rollback operation)"""
+        """Delete auth user from Supabase Auth"""
         try:
             headers = {
                 "apikey": self.service_role_key,
                 "Authorization": f"Bearer {self.service_role_key}",
             }
             
-            requests.delete(
+            response = requests.delete(
                 f"{self.db_url}/auth/v1/admin/users/{user_id}",
                 headers=headers
             )
-            logger.info(f"🔄 Rolled back auth user: {user_id}")
+            
+            if response.status_code in [200, 204]:
+                logger.info(f"✅ Auth user deleted: {user_id}")
+            elif response.status_code == 404:
+                logger.warning(f"Auth user not found (may already be deleted): {user_id}")
+            else:
+                logger.error(f"Failed to delete auth user {user_id}: {response.status_code} - {response.text}")
+                raise Exception(f"Auth deletion failed with status {response.status_code}")
         except Exception as e:
-            logger.error(f"Failed to rollback auth user {user_id}: {str(e)}")
+            logger.error(f"Failed to delete auth user {user_id}: {str(e)}")
+            raise
     
     # NOTE: consolidated admin/general update into single implementation below
     
     async def delete_user(self, user_id: str) -> bool:
         """
-        Soft delete user by setting is_active=false.
-        For relationship managers, also deactivates their RM profile.
+        Hard delete user from auth and profiles table.
+        This allows the email to be reused for new accounts.
+        For relationship managers, also deletes their RM profile.
+        
+        Note: This will fail if user has:
+        - Reviews (ON DELETE RESTRICT on reviews.customer_id)
+        - Salons as vendor (ON DELETE RESTRICT on salons.vendor_id)
         
         Args:
             user_id: User ID to delete
@@ -301,32 +314,67 @@ class UserService:
             bool: True if successful
             
         Raises:
-            ValueError: If user not found
+            ValueError: If user not found, user is admin, or has dependencies
         """
         # Check if user exists and get role
         db = get_db()
-        existing = db.table("profiles").select("id, user_role").eq("id", user_id).execute()
+        existing = db.table("profiles").select("id, user_role, email").eq("id", user_id).execute()
         if not existing.data:
             raise ValueError(f"User {user_id} not found")
         
-        user_role = existing.data[0].get("user_role")
+        user_data = existing.data[0]
+        user_role = user_data.get("user_role")
+        user_email = user_data.get("email")
         
-        # Soft delete in profiles table
-        db.table("profiles").update({
-            "is_active": False
-        }).eq("id", user_id).execute()
+        # Prevent deleting admin users
+        if user_role == "admin":
+            raise ValueError("Cannot delete admin users")
         
-        # If relationship manager, also deactivate RM profile
+        logger.info(f"🗑️ Starting deletion process for user {user_id} ({user_email})")
+        
+        # Check for dependencies that would prevent deletion (ON DELETE RESTRICT constraints)
+        
+        # 1. Check for bookings
+        bookings_check = db.table("bookings").select("id", count="exact").eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        if bookings_check.count and bookings_check.count > 0:
+            raise ValueError(f"Cannot delete user: Has {bookings_check.count} active booking(s). Please cancel or complete bookings first.")
+        
+        # 2. Check for booking payments
+        payments_check = db.table("booking_payments").select("id", count="exact").eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        if payments_check.count and payments_check.count > 0:
+            raise ValueError(f"Cannot delete user: Has {payments_check.count} payment record(s). Please resolve payments first.")
+        
+        # 3. Check for reviews
+        reviews_check = db.table("reviews").select("id", count="exact").eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        if reviews_check.count and reviews_check.count > 0:
+            raise ValueError(f"Cannot delete user: Has {reviews_check.count} active review(s). Please delete reviews first.")
+        
+        # 4. Check for salons (if vendor)
+        if user_role == "vendor":
+            salons_check = db.table("salons").select("id", count="exact").eq("vendor_id", user_id).execute()
+            if salons_check.count and salons_check.count > 0:
+                raise ValueError(f"Cannot delete vendor: Has {salons_check.count} salon(s). Please delete or reassign salons first.")
+        
+        # Step 1: Delete RM profile first if exists (due to foreign key constraint)
+        # This must happen before auth deletion because rm_profiles.id -> auth.users.id (CASCADE)
         if user_role == "relationship_manager":
             try:
-                db.table("rm_profiles").update({
-                    "is_active": False
-                }).eq("id", user_id).execute()
-                logger.info(f"🗑️ RM profile also deactivated for user {user_id}")
+                db.table("rm_profiles").delete().eq("id", user_id).execute()
+                logger.info(f"🗑️ RM profile deleted for user {user_id}")
             except Exception as e:
-                logger.warning(f"Failed to deactivate RM profile for {user_id}: {str(e)}")
+                logger.error(f"Failed to delete RM profile for {user_id}: {str(e)}")
+                raise Exception(f"Failed to delete RM profile: {str(e)}")
         
-        logger.info(f"🗑️ User {user_id} soft deleted")
+        # Step 2: Delete from Supabase auth
+        # This will CASCADE delete the profile due to profiles.id_fkey constraint
+        try:
+            await self._delete_auth_user(user_id)
+            logger.info(f"🗑️ Auth user deleted for {user_id} (profile auto-deleted via CASCADE)")
+        except Exception as e:
+            logger.error(f"Failed to delete auth user {user_id}: {str(e)}")
+            raise Exception(f"Failed to delete user from authentication system: {str(e)}")
+        
+        logger.info(f"✅ User {user_id} ({user_email}) fully deleted and email is now available for reuse")
         return True
     
     async def update_user(self, user_id: str, updates: UserUpdate) -> Dict[str, Any]:
