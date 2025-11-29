@@ -333,8 +333,7 @@ class CareerService:
                 )
             
             update_dict = {
-                "status": new_status,
-                "reviewed_at": datetime.now().isoformat()
+                "status": new_status
             }
             
             if admin_notes:
