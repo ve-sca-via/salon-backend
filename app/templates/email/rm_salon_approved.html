@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salon Approved - Points Awarded</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #4CAF50;
+        }
+        .header h1 {
+            color: #4CAF50;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .success-box {
+            background-color: #f0fdf4;
+            border-left: 4px solid #4CAF50;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .points-box {
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .points-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #f59e0b;
+            margin: 10px 0;
+        }
+        .info-table {
+            width: 100%;
+            margin: 20px 0;
+            border-collapse: collapse;
+        }
+        .info-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+        .info-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .info-table tr:last-child td {
+            border-bottom: none;
+        }
+        .highlight-box {
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">🎊</div>
+            <h1>Salon Approved!</h1>
+            <p style="font-size: 18px; color: #666; margin: 10px 0 0 0;">You've earned performance points</p>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ rm_name }},</p>
+
+            <div class="success-box">
+                <p style="margin: 0; font-size: 16px;">
+                    <strong>Excellent work!</strong> The salon you added, <strong>{{ salon_name }}</strong>, has been approved by our admin team. 
+                </p>
+            </div>
+
+            <div class="points-box">
+                <p style="margin: 0; font-size: 16px; color: #78350f;">🏆 Performance Points Awarded</p>
+                <div class="points-value">+{{ points_awarded }}</div>
+                <p style="margin: 0; font-size: 14px; color: #78350f;">Added to your score</p>
+            </div>
+
+            <h2 style="color: #333; margin-top: 30px;">📊 Approval Details</h2>
+            <table class="info-table">
+                <tr>
+                    <td>Salon Name</td>
+                    <td><strong>{{ salon_name }}</strong></td>
+                </tr>
+                <tr>
+                    <td>Owner Name</td>
+                    <td>{{ owner_name }}</td>
+                </tr>
+                <tr>
+                    <td>Owner Email</td>
+                    <td>{{ owner_email }}</td>
+                </tr>
+                <tr>
+                    <td>Points Earned</td>
+                    <td><strong style="color: #f59e0b;">+{{ points_awarded }}</strong></td>
+                </tr>
+                <tr>
+                    <td>New Total Score</td>
+                    <td><strong style="color: #4CAF50;">{{ new_total_score }}</strong></td>
+                </tr>
+            </table>
+
+            <div class="highlight-box">
+                <h3 style="margin-top: 0; color: #3b82f6;">📋 Next Steps for Vendor</h3>
+                <p style="margin: 10px 0;">
+                    The salon owner has been sent a registration link via email to complete their account setup and payment.
+                </p>
+                <ul style="line-height: 2; margin: 10px 0;">
+                    <li>They need to set up their password</li>
+                    <li>Complete the registration payment (₹{{ "%.2f"|format(registration_fee) }})</li>
+                    <li>Once payment is confirmed, their salon will be live</li>
+                </ul>
+                <p style="margin: 10px 0; font-size: 14px; color: #666;">
+                    You may want to follow up with the owner to ensure they complete the registration process.
+                </p>
+            </div>
+
+            <h2 style="color: #333; margin-top: 30px;">🎯 Keep Up the Great Work!</h2>
+            <p>
+                Continue adding quality salons to earn more points and improve your performance ranking. 
+                Your efforts in bringing new businesses to our platform are greatly appreciated!
+            </p>
+
+            <p style="margin-top: 30px;">
+                Best regards,<br>
+                <strong>Admin Team</strong>
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                Need help? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

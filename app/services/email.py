@@ -51,10 +51,17 @@ class MockEmailService:
             subject=f"🎉 Congratulations! {salon_name} has been approved",
             html_body=f"Mock approval email for {owner_name}",
             text_body=None
-            
-            
-            
-            
+        )
+    
+    async def send_rm_salon_approved_email(self, to_email: str, rm_name: str, salon_name: str,
+                                          owner_name: str, owner_email: str, points_awarded: int,
+                                          new_total_score: int, registration_fee: float) -> bool:
+        """Mock RM salon approved email"""
+        return self._send_email(
+            to_email=to_email,
+            subject=f"🎊 Salon Approved: {salon_name} - You've earned {points_awarded} points!",
+            html_body=f"Mock RM notification for {rm_name}",
+            text_body=None
         )
     
     async def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
@@ -287,6 +294,56 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Failed to send vendor approval email: {str(e)}")
+            return False
+    
+    async def send_rm_salon_approved_email(
+        self,
+        to_email: str,
+        rm_name: str,
+        salon_name: str,
+        owner_name: str,
+        owner_email: str,
+        points_awarded: int,
+        new_total_score: int,
+        registration_fee: float
+    ) -> bool:
+        """
+        Send salon approval notification email to RM
+        
+        Args:
+            to_email: RM email
+            rm_name: RM name
+            salon_name: Salon name
+            owner_name: Salon owner name
+            owner_email: Salon owner email
+            points_awarded: Points awarded to RM
+            new_total_score: RM's new total score
+            registration_fee: Registration fee amount
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            template = self.env.get_template('rm_salon_approved.html')
+            
+            html_body = template.render(
+                rm_name=rm_name,
+                salon_name=salon_name,
+                owner_name=owner_name,
+                owner_email=owner_email,
+                points_awarded=points_awarded,
+                new_total_score=new_total_score,
+                registration_fee=registration_fee,
+                support_email=settings.EMAIL_FROM,
+                current_year=2025
+            )
+            
+            subject = f"🎊 Salon Approved: {salon_name} - You've earned {points_awarded} points!"
+            
+            return await self._send_email(to_email, subject, html_body)
+            
+        except Exception as e:
+            logger.error(f"Failed to send RM approval notification email: {str(e)}")
             return False
     
     async def send_vendor_rejection_email(

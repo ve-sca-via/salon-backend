@@ -94,17 +94,48 @@ class VendorApprovalService:
         if services_created:
             logger.info(f"✅ Created {services_created} services")
         
-        # Step 7: Update RM score
+        # Step 7: Update RM score and get new total
+        rm_new_score = None
         try:
-            await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)
+            rm_new_score = await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)
         except Exception as e:
             warnings.append(f"Failed to update RM score: {str(e)}")
         
-        # Step 8: Send approval email
+        # Step 8: Get RM details for email notifications
+        rm_email = None
+        rm_name = None
         try:
-            await self._send_approval_email(request_id, salon_id, request_data, config)
+            rm_details = await self._get_rm_details(request_data.rm_id)
+            rm_email = rm_details.get("email")
+            rm_name = rm_details.get("name", "RM")
         except Exception as e:
-            warnings.append(f"Failed to send email: {str(e)}")
+            warnings.append(f"Failed to get RM details: {str(e)}")
+        
+        # Step 9: Send approval email to vendor (skip if vendor email same as RM)
+        try:
+            await self._send_approval_email(request_id, salon_id, request_data, config, rm_email)
+        except Exception as e:
+            warnings.append(f"Failed to send vendor email: {str(e)}")
+        
+        # Step 10: Send notification email to RM
+        try:
+            if rm_email and rm_name:
+                await self._send_rm_notification_email(
+                    rm_email,
+                    rm_name,
+                    request_data.business_name, 
+                    request_data.owner_name,
+                    request_data.owner_email,
+                    config['rm_score'],
+                    rm_new_score,
+                    config['registration_fee']
+                )
+            else:
+                warnings.append("Could not send RM notification - RM details not found")
+        except Exception as e:
+            warnings.append(f"Failed to send RM notification: {str(e)}")
+        except Exception as e:
+            warnings.append(f"Failed to send RM notification: {str(e)}")
         
         logger.info(f"✅ Vendor request {request_id} approved. Salon: {salon_id}")
         
@@ -383,36 +414,6 @@ class VendorApprovalService:
         
         return 0
     
-    async def _update_rm_score(
-        self,
-        rm_id: str,
-        score_change: int,
-        salon_id: str,
-        salon_name: str
-    ) -> None:
-        """Update RM score and create history entry"""
-        # Get current RM performance_score
-        rm_response = self.db.table("rm_profiles").select(
-            "performance_score"
-        ).eq("id", rm_id).single().execute()
-        
-        current_score = rm_response.data.get("performance_score", 0) if rm_response.data else 0
-        
-        # Update RM profile
-        self.db.table("rm_profiles").update({
-            "performance_score": current_score + score_change
-        }).eq("id", rm_id).execute()
-        
-        logger.info(f"📊 RM score updated: +{score_change} points (Total: {current_score + score_change})")
-        
-        # Add score history (match schema: action, points, description)
-        self.db.table("rm_score_history").insert({
-            "rm_id": rm_id,
-            "action": "salon_approved",
-            "points": score_change,
-            "description": f"Salon approved: {salon_name}"
-        }).execute()
-    
     async def _penalize_rm_for_rejection(
         self,
         rm_id: str,
@@ -455,9 +456,15 @@ class VendorApprovalService:
         request_id: str,
         salon_id: str,
         request_data: VendorJoinRequestResponse,
-        config: ApprovalConfig
+        config: ApprovalConfig,
+        rm_email: Optional[str] = None
     ) -> None:
         """Send approval email to vendor with registration link"""
+        # Skip if owner email is same as RM email (testing scenario)
+        if rm_email and request_data.owner_email.lower() == rm_email.lower():
+            logger.info(f"⏭️ Skipping vendor email - owner is the RM ({request_data.owner_email})")
+            return
+        
         # Generate registration token
         registration_token = create_registration_token(
             request_id=request_id,
@@ -481,16 +488,65 @@ class VendorApprovalService:
         else:
             logger.warning(f"⚠️ Failed to send approval email to {request_data.owner_email}")
     
+    async def _send_rm_notification_email(
+        self,
+        rm_email: str,
+        rm_name: str,
+        salon_name: str,
+        owner_name: str,
+        owner_email: str,
+        points_awarded: int,
+        new_total_score: Optional[int],
+        registration_fee: float
+    ) -> None:
+        """Send notification email to RM about salon approval"""
+        try:
+            # Send RM notification email
+            email_sent = await email_service.send_rm_salon_approved_email(
+                to_email=rm_email,
+                rm_name=rm_name,
+                salon_name=salon_name,
+                owner_name=owner_name,
+                owner_email=owner_email,
+                points_awarded=points_awarded,
+                new_total_score=new_total_score or 0,
+                registration_fee=registration_fee
+            )
+            
+            if email_sent:
+                logger.info(f"✉️ RM notification sent to {rm_email}")
+            else:
+                logger.warning(f"⚠️ Failed to send RM notification to {rm_email}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error sending RM notification: {str(e)}")
+            raise
+    
+    async def _get_rm_details(self, rm_id: str) -> Dict[str, str]:
+        """Get RM email and name from database"""
+        rm_response = self.db.table("rm_profiles").select(
+            "profiles(email, full_name)"
+        ).eq("id", rm_id).single().execute()
+        
+        if not rm_response.data or not rm_response.data.get("profiles"):
+            raise ValueError(f"RM profile not found for {rm_id}")
+        
+        return {
+            "email": rm_response.data["profiles"]["email"],
+            "name": rm_response.data["profiles"]["full_name"] or "RM"
+        }
+    
     async def _update_rm_score(
         self, 
         rm_id: str, 
         score_points: int, 
         salon_id: str, 
         salon_name: str
-    ) -> None:
+    ) -> Optional[int]:
         """
         Update RM's performance score after successful salon approval.
         Uses RMService's update_rm_score method for consistency.
+        Returns the new total score.
         """
         from app.services.rm_service import RMService
         
@@ -506,6 +562,7 @@ class VendorApprovalService:
         
         if result.success:
             logger.info(f"✅ RM {rm_id} awarded {score_points} points (new total: {result.new_total_score})")
+            return result.new_total_score
         else:
             logger.error(f"❌ Failed to update RM score: {result.error}")
             raise Exception(result.error or "Failed to update RM score")
@@ -621,29 +678,6 @@ class VendorApprovalService:
             "success": True,
             "message": "Vendor request rejected"
         }
-    
-    async def _update_rm_score(
-        self,
-        rm_id: str,
-        score_change: int,
-        salon_id: str,
-        salon_name: str
-    ) -> None:
-        """Update RM score for approved salon"""
-        from app.services.rm_service import RMService
-        
-        rm_service = RMService(db_client=self.db)
-        
-        reason = f"Salon '{salon_name}' approved"
-        
-        await rm_service.update_rm_score(
-            rm_id=rm_id,
-            score_change=score_change,
-            reason=reason,
-            salon_id=salon_id
-        )
-        
-        logger.info(f"📊 RM {rm_id} awarded {score_change} points for salon approval")
     
     async def _penalize_rm_score(
         self,
