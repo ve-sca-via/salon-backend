@@ -128,7 +128,8 @@ class VendorApprovalService:
                     request_data.owner_email,
                     config['rm_score'],
                     rm_new_score,
-                    config['registration_fee']
+                    config['registration_fee'],
+                    salon_id
                 )
             else:
                 warnings.append("Could not send RM notification - RM details not found")
@@ -480,7 +481,8 @@ class VendorApprovalService:
             owner_name=request_data.owner_name,
             salon_name=request_data.business_name,
             registration_token=registration_token,
-            registration_fee=config["registration_fee"]
+            registration_fee=config["registration_fee"],
+            salon_id=salon_id
         )
         
         if email_sent:
@@ -497,7 +499,8 @@ class VendorApprovalService:
         owner_email: str,
         points_awarded: int,
         new_total_score: Optional[int],
-        registration_fee: float
+        registration_fee: float,
+        salon_id: Optional[str] = None
     ) -> None:
         """Send notification email to RM about salon approval"""
         try:
@@ -510,7 +513,8 @@ class VendorApprovalService:
                 owner_email=owner_email,
                 points_awarded=points_awarded,
                 new_total_score=new_total_score or 0,
-                registration_fee=registration_fee
+                registration_fee=registration_fee,
+                salon_id=salon_id
             )
             
             if email_sent:
@@ -666,7 +670,8 @@ class VendorApprovalService:
                 rm_name=rm_name,
                 salon_name=request_data["business_name"],
                 owner_name=request_data["owner_name"],
-                rejection_reason=admin_notes
+                rejection_reason=admin_notes,
+                request_id=request_id
             )
             
             if not email_sent:
