@@ -227,7 +227,9 @@ class UserService:
     
     async def _create_rm_profile(self, user_id: str, request: CreateUserRequest) -> Dict[str, Any]:
         """
-        Create RM profile matching actual production schema.
+        Create RM profile with RM-specific data only.
+        User data (name, email, phone) is stored in profiles table.
+        Auto-generates employee_id in format RM0001, RM0002, etc.
         
         Returns:
             Dict: Created RM profile data
@@ -235,14 +237,20 @@ class UserService:
         Raises:
             Exception: If RM profile creation fails
         """
+        from datetime import datetime
+        
+        # Generate next employee_id
+        employee_id = await self._generate_next_employee_id()
+        
         rm_profile_data = {
             "id": user_id,
-            "full_name": request.full_name,
-            "phone": request.phone if request.phone else "0000000000",  # Default phone if not provided
-            "email": request.email,
             "assigned_territories": [],
             "performance_score": 0,
-            "is_active": True
+            "employee_id": employee_id,
+            "total_salons_added": 0,
+            "total_approved_salons": 0,
+            "joining_date": datetime.utcnow().date().isoformat(),  # Set to current date
+            "manager_notes": None
         }
         
         # Use direct HTTP request with service_role key to bypass RLS
@@ -270,6 +278,38 @@ class UserService:
         
         logger.info(f"✅ RM profile created for {request.email}")
         return created_rm_profile[0] if isinstance(created_rm_profile, list) else created_rm_profile
+    
+    async def _generate_next_employee_id(self) -> str:
+        """
+        Generate next sequential employee_id in format RM0001, RM0002, etc.
+        
+        Returns:
+            str: Next employee ID (e.g., "RM0001", "RM0002")
+        """
+        db = get_db()
+        
+        # Get all existing employee_ids and find the highest number
+        response = db.table("rm_profiles").select("employee_id").not_.is_("employee_id", "null").execute()
+        
+        max_number = 0
+        if response.data:
+            for row in response.data:
+                emp_id = row.get("employee_id")
+                if emp_id and emp_id.startswith("RM"):
+                    try:
+                        # Extract number part (e.g., "RM0001" -> 1)
+                        number = int(emp_id[2:])
+                        max_number = max(max_number, number)
+                    except (ValueError, IndexError):
+                        # Skip invalid formats
+                        continue
+        
+        # Generate next ID
+        next_number = max_number + 1
+        next_employee_id = f"RM{next_number:04d}"  # Format with 4 digits: RM0001
+        
+        logger.info(f"Generated employee_id: {next_employee_id}")
+        return next_employee_id
     
     async def _delete_auth_user(self, user_id: str) -> None:
         """Delete auth user from Supabase Auth"""

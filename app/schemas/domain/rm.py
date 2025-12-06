@@ -13,22 +13,27 @@ from .user import TimestampMixin, ProfileResponse
 # =====================================================
 
 class RMProfileBase(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=255)
-    phone: str = Field(..., max_length=20)
-    email: EmailStr
+    """RM-specific fields only. User data comes from profiles table."""
     assigned_territories: Optional[List[str]] = None
+    employee_id: Optional[str] = None
+    total_salons_added: Optional[int] = 0
+    total_approved_salons: Optional[int] = 0
+    joining_date: Optional[str] = None
+    manager_notes: Optional[str] = None
 
 class RMProfileCreate(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
-    phone: str = Field(..., max_length=20)
+    """Create RM profile - user data should already exist in profiles table"""
     assigned_territories: Optional[List[str]] = None
+    employee_id: Optional[str] = None
 
 class RMProfileResponse(RMProfileBase, TimestampMixin):
+    """RM profile response with user profile joined"""
     id: str
     performance_score: int
-    is_active: bool
-    profile: Optional[ProfileResponse] = None
+    profiles: Optional[ProfileResponse] = Field(None, description="User profile data (name, email, phone, etc)")
+    
+    class Config:
+        from_attributes = True
 
 class RMScoreHistoryResponse(BaseModel):
     id: str

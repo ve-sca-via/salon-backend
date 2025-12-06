@@ -275,21 +275,13 @@ class AdminService:
             return request
         
         try:
-            # Fetch RM profile
-            rm_response = self.db.table("rm_profiles").select("*").eq("id", rm_id).execute()
+            # Fetch RM profile with user profile in single query
+            rm_response = self.db.table("rm_profiles").select(
+                "*, profiles(id, full_name, email, phone, is_active, avatar_url)"
+            ).eq("id", rm_id).execute()
             
             if rm_response.data and len(rm_response.data) > 0:
-                rm_data = rm_response.data[0]
-                
-                # Fetch user profile
-                profile_response = self.db.table("profiles").select("*").eq("id", rm_id).execute()
-                profile_data = profile_response.data[0] if profile_response.data else None
-                
-                # Combine data - use 'profiles' (plural) to match frontend expectation
-                request['rm_profile'] = {
-                    **rm_data,
-                    'profiles': profile_data
-                }
+                request['rm_profile'] = rm_response.data[0]
             else:
                 request['rm_profile'] = None
                 

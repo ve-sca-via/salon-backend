@@ -55,11 +55,12 @@ class RMService:
             rm_id: RM profile ID
             
         Returns:
-            RM profile data with user details
+            RM profile data with user details joined from profiles table
         """
-        # Note: rm_profiles.id and profiles.id both reference auth.users.id
-        # Since there's no direct FK between them, we fetch separately
-        response = self.db.table("rm_profiles").select("*").eq("id", rm_id).single().execute()
+        # Join with profiles table to get user data (name, email, phone, etc)
+        response = self.db.table("rm_profiles").select(
+            "*, profiles(id, full_name, email, phone, is_active, avatar_url, user_role, created_at, updated_at, phone_verified)"
+        ).eq("id", rm_id).single().execute()
         
         if not response.data:
             raise ValueError(f"RM profile {rm_id} not found")
@@ -68,7 +69,8 @@ class RMService:
     
     async def get_rm_stats(self, rm_id: str) -> VendorRequestStats:
         """
-        Get comprehensive stats for RM's vendor requests.
+        Get comprehensive stats for RM's vendor requests using efficient database aggregations.
+        Uses COUNT queries with indexes instead of loading all records into memory.
         
         Args:
             rm_id: RM profile ID
@@ -76,27 +78,37 @@ class RMService:
         Returns:
             VendorRequestStats with all metrics
         """
-        # Get RM profile for performance score
-        rm_profile = await self.get_rm_profile(rm_id)
-        
-        # Get all requests created by this RM (via rm_id)
-        requests_response = self.db.table("vendor_join_requests").select(
-            "status"
+        # Get counts directly from database using Supabase aggregation
+        # These queries use indexes (idx_vendor_join_requests_rm_status) for O(1) performance
+        total_response = self.db.table("vendor_join_requests").select(
+            "id", count="exact"
         ).eq("rm_id", rm_id).execute()
         
-        requests = requests_response.data or []
+        pending_response = self.db.table("vendor_join_requests").select(
+            "id", count="exact"
+        ).eq("rm_id", rm_id).eq("status", "pending").execute()
         
-        # Count by status
-        pending = sum(1 for r in requests if r["status"] == "pending")
-        approved = sum(1 for r in requests if r["status"] == "approved")
-        rejected = sum(1 for r in requests if r["status"] == "rejected")
+        approved_response = self.db.table("vendor_join_requests").select(
+            "id", count="exact"
+        ).eq("rm_id", rm_id).eq("status", "approved").execute()
+        
+        rejected_response = self.db.table("vendor_join_requests").select(
+            "id", count="exact"
+        ).eq("rm_id", rm_id).eq("status", "rejected").execute()
+        
+        # Get performance score from rm_profiles
+        rm_profile_response = self.db.table("rm_profiles").select(
+            "performance_score"
+        ).eq("id", rm_id).single().execute()
+        
+        performance_score = rm_profile_response.data.get("performance_score", 0) if rm_profile_response.data else 0
         
         return VendorRequestStats(
-            total_requests=len(requests),
-            pending_requests=pending,
-            approved_requests=approved,
-            rejected_requests=rejected,
-            total_score=rm_profile.get("performance_score", 0)
+            total_requests=total_response.count or 0,
+            pending_requests=pending_response.count or 0,
+            approved_requests=approved_response.count or 0,
+            rejected_requests=rejected_response.count or 0,
+            total_score=performance_score
         )
     
     async def list_rm_profiles(
@@ -119,7 +131,7 @@ class RMService:
             List of RM profiles with user details
         """
         query = self.db.table("rm_profiles").select(
-            "*, profiles(id, full_name, email, phone, is_active)"
+            "*, profiles(id, full_name, email, phone, is_active, avatar_url, user_role, created_at, updated_at, phone_verified)"
         )
         
         # Apply ordering
@@ -134,6 +146,79 @@ class RMService:
         response = query.execute()
         
         return response.data or []
+    
+    async def update_rm_profile(
+        self,
+        rm_id: str,
+        updates: RMProfileUpdate
+    ) -> Dict[str, Any]:
+        """
+        Update RM profile with both profile fields and RM-specific fields.
+        
+        Args:
+            rm_id: RM profile ID
+            updates: RMProfileUpdate with fields to update
+            
+        Returns:
+            Updated RM profile data
+        """
+        try:
+            # First, check if RM exists
+            rm_check = self.db.table("rm_profiles").select("id").eq("id", rm_id).single().execute()
+            if not rm_check.data:
+                raise ValueError(f"RM profile {rm_id} not found")
+            
+            # Update profile table fields (name, email, phone, is_active)
+            profile_updates = {}
+            if updates.full_name is not None:
+                profile_updates["full_name"] = updates.full_name
+            if updates.email is not None:
+                profile_updates["email"] = updates.email
+            if updates.phone is not None:
+                profile_updates["phone"] = updates.phone
+            if updates.is_active is not None:
+                profile_updates["is_active"] = updates.is_active
+            
+            if profile_updates:
+                profile_updates["updated_at"] = datetime.utcnow().isoformat()
+                profile_response = self.db.table("profiles").update(
+                    profile_updates
+                ).eq("id", rm_id).execute()
+                
+                if not profile_response.data:
+                    logger.warning(f"Profile update returned no data for RM {rm_id}")
+            
+            # Update rm_profiles table fields (employee_id, territories, joining_date, manager_notes)
+            rm_updates = {}
+            if updates.employee_id is not None:
+                rm_updates["employee_id"] = updates.employee_id
+            if updates.assigned_territories is not None:
+                rm_updates["assigned_territories"] = updates.assigned_territories
+            if updates.joining_date is not None:
+                rm_updates["joining_date"] = updates.joining_date
+            if updates.manager_notes is not None:
+                rm_updates["manager_notes"] = updates.manager_notes
+            
+            if rm_updates:
+                rm_updates["updated_at"] = datetime.utcnow().isoformat()
+                rm_response = self.db.table("rm_profiles").update(
+                    rm_updates
+                ).eq("id", rm_id).execute()
+                
+                if not rm_response.data:
+                    logger.warning(f"RM profile update returned no data for RM {rm_id}")
+            
+            # Fetch and return updated profile with joined data
+            updated_profile = await self.get_rm_profile(rm_id)
+            
+            logger.info(f"Successfully updated RM profile {rm_id}")
+            return updated_profile
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating RM profile {rm_id}: {str(e)}")
+            raise ValueError(f"Failed to update RM profile: {str(e)}")
     
     async def update_rm_score(
         self,
@@ -295,19 +380,23 @@ class RMService:
         updates: "RMProfileUpdate"
     ) -> Dict[str, Any]:
         """
-        Update RM profile fields (excluding protected fields).
+        Update RM profile fields. User data (name, phone, email) goes to profiles table,
+        RM-specific data goes to rm_profiles table.
         
         Args:
             rm_id: RM profile ID
             updates: Fields to update
             
         Returns:
-            Updated RM profile
+            Updated RM profile with user data
         """
         # Protected fields that cannot be updated directly
         protected_fields = {
-            "id", "performance_score", "created_at"
+            "id", "performance_score", "created_at", "employee_id"
         }
+        
+        # Fields that belong to profiles table
+        profile_fields = {"full_name", "phone", "email", "is_active"}
         
         # Convert Pydantic model to dict and filter out protected fields
         try:
@@ -316,21 +405,38 @@ class RMService:
             # Fall back to expecting a plain dict
             update_payload = dict(updates) if updates else {}
 
-        safe_updates = {k: v for k, v in update_payload.items() if k not in protected_fields}
+        # Separate updates for profiles and rm_profiles tables
+        profile_updates = {k: v for k, v in update_payload.items() if k in profile_fields}
+        rm_updates = {k: v for k, v in update_payload.items() 
+                     if k not in profile_fields and k not in protected_fields}
         
-        if not safe_updates:
+        # Update profiles table if there are profile fields to update
+        if profile_updates:
+            profile_response = self.db.table("profiles").update(
+                profile_updates
+            ).eq("id", rm_id).execute()
+            
+            if not profile_response.data:
+                raise ValueError("Profile not found or update failed")
+            
+            logger.info(f"✏️ Profile {rm_id} updated: {list(profile_updates.keys())}")
+        
+        # Update rm_profiles table if there are RM-specific fields to update
+        if rm_updates:
+            rm_response = self.db.table("rm_profiles").update(
+                rm_updates
+            ).eq("id", rm_id).execute()
+            
+            if not rm_response.data:
+                raise ValueError("RM profile not found or update failed")
+            
+            logger.info(f"✏️ RM profile {rm_id} updated: {list(rm_updates.keys())}")
+        
+        if not profile_updates and not rm_updates:
             raise ValueError("No valid fields to update")
         
-        response = self.db.table("rm_profiles").update(
-            safe_updates
-        ).eq("id", rm_id).execute()
-        
-        if not response.data:
-            raise ValueError("RM profile not found or update failed")
-        
-        logger.info(f"✏️ RM profile {rm_id} updated: {list(safe_updates.keys())}")
-        
-        return response.data[0]
+        # Return combined data
+        return await self.get_rm_profile(rm_id)
     
     async def get_leaderboard(
         self,
@@ -367,16 +473,29 @@ class RMService:
             email: RM email address
             
         Returns:
-            RM profile data
+            RM profile data with user profile
         """
-        response = self.db.table("rm_profiles").select(
-            "*, profiles(id, full_name, email, phone)"
-        ).eq("email", email).single().execute()
+        # Query profiles table for email, then join with rm_profiles
+        profile_response = self.db.table("profiles").select(
+            "id, full_name, email, phone, is_active, user_role"
+        ).eq("email", email).eq("user_role", "relationship_manager").single().execute()
         
-        if not response.data:
+        if not profile_response.data:
             raise ValueError(f"RM with email {email} not found")
         
-        return response.data
+        # Get RM-specific data
+        rm_response = self.db.table("rm_profiles").select(
+            "*"
+        ).eq("id", profile_response.data["id"]).single().execute()
+        
+        if not rm_response.data:
+            raise ValueError(f"RM profile data not found for {email}")
+        
+        # Combine the data
+        return {
+            **rm_response.data,
+            "profiles": profile_response.data
+        }
     
     # =====================================================
     # VENDOR REQUEST CRUD
@@ -403,8 +522,8 @@ class RMService:
             HTTPException: If RM is inactive or creation fails
         """
         try:
-            # Verify RM exists and is active
-            rm_response = self.db.table("rm_profiles").select("is_active").eq("id", rm_id).execute()
+            # Verify RM exists and is active (check profiles table for is_active)
+            rm_response = self.db.table("rm_profiles").select("id, profiles(is_active)").eq("id", rm_id).execute()
             
             if not rm_response.data or len(rm_response.data) == 0:
                 raise HTTPException(
@@ -412,7 +531,8 @@ class RMService:
                     detail=f"RM profile not found for user {rm_id}. Please contact admin to create your RM profile."
                 )
             
-            if not rm_response.data[0].get("is_active"):
+            # Check is_active from nested profiles object
+            if not rm_response.data[0].get("profiles", {}).get("is_active"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="RM account is inactive"
@@ -743,18 +863,6 @@ class RMService:
     # =====================================================
     # HELPER METHODS
     # =====================================================
-    
-    async def _increment_rm_salons_count(self, rm_id: str) -> None:
-        """Increment RM's total salons added count."""
-        try:
-            rm_profile = self.db.table("rm_profiles").select("total_salons_added").eq("id", rm_id).single().execute()
-            current_count = rm_profile.data.get("total_salons_added", 0) if rm_profile.data else 0
-            
-            self.db.table("rm_profiles").update({
-                "total_salons_added": current_count + 1
-            }).eq("id", rm_id).execute()
-        except Exception as e:
-            logger.warning(f"Failed to increment RM salons count: {str(e)}")
     
     async def _cleanup_vendor_request_images(self, request: Dict[str, Any]) -> None:
         """Delete vendor request images from storage."""

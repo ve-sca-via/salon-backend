@@ -154,28 +154,16 @@ class SalonService:
             vendor_response = self.db.table("profiles").select("id, full_name").in_("id", vendor_ids).execute()
             vendor_profiles = {p["id"]: p for p in (vendor_response.data or [])}
         
-        # Fetch RM profiles
-        # rm_profiles.id is the RM profile ID, which is also a foreign key to profiles.id
+        # Fetch RM profiles with user data in single query
         rm_profiles = {}
         if rm_ids:
-            # First get RM profile data
-            rm_response = self.db.table("rm_profiles").select("id, employee_id").in_("id", rm_ids).execute()
-            rm_data = rm_response.data or []
+            rm_response = self.db.table("rm_profiles").select(
+                "id, employee_id, profiles(id, full_name, email)"
+            ).in_("id", rm_ids).execute()
             
-            # The rm_profiles.id itself is a foreign key to profiles.id
-            # So we can directly fetch the profile using the rm_id
-            if rm_ids:
-                profile_response = self.db.table("profiles").select("id, full_name").in_("id", rm_ids).execute()
-                profile_map = {p["id"]: p for p in (profile_response.data or [])}
-                
-                # Map RM ID to profile data
-                for rm in rm_data:
-                    if rm["id"] in profile_map:
-                        rm_profiles[rm["id"]] = {
-                            "id": rm["id"],
-                            "employee_id": rm.get("employee_id"),
-                            "profiles": profile_map[rm["id"]]
-                        }
+            # Map RM ID to profile data
+            for rm in (rm_response.data or []):
+                rm_profiles[rm["id"]] = rm
         
         # Enrich each salon
         for salon in salons:

@@ -34,3 +34,6 @@ class ProfileResponse(ProfileBase, TimestampMixin):
     phone_verified_at: Optional[datetime] = None
     phone_verification_method: Optional[str] = None
     deleted_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
