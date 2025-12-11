@@ -524,24 +524,31 @@ class CustomerService:
             # Calculate totals
             total_amount = cart_response["total_amount"]
             
-            # Get system config for booking fee percentage
+            # Get system config for convenience fee percentage (dynamically set by admin)
             # Use actual column names `config_key` / `config_value` (not `key`/`value`)
             config_response = self.db.table("system_config")\
                 .select("config_key, config_value")\
-                .eq("config_key", "booking_fee_percentage")\
+                .eq("config_key", "convenience_fee_percentage")\
                 .single()\
                 .execute()
 
-            booking_fee_percentage = 10.0  # Default 10%
+            convenience_fee_percentage = None
             if config_response.data:
                 # When using single(), response.data is a dict
-                raw_value = config_response.data.get("config_value", 10.0)
+                raw_value = config_response.data.get("config_value")
                 try:
-                    booking_fee_percentage = float(raw_value)
+                    convenience_fee_percentage = float(raw_value)
+                    logger.info(f"Using convenience_fee_percentage from config: {convenience_fee_percentage}%")
                 except Exception:
-                    logger.warning(f"Invalid booking_fee_percentage config value: {raw_value}; using default")
+                    logger.error(f"Invalid convenience_fee_percentage config value: {raw_value}")
             
-            booking_fee = total_amount * (booking_fee_percentage / 100)
+            if convenience_fee_percentage is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment configuration not available. Please contact support."
+                )
+            
+            booking_fee = total_amount * (convenience_fee_percentage / 100)
             gst_amount = booking_fee * 0.18  # 18% GST on booking fee
             
             # Verify Razorpay payment signature if payment details provided
@@ -577,11 +584,6 @@ class CustomerService:
                 booking_time=checkout_data["time_slots"][0],  # Primary time slot
                 time_slots=checkout_data["time_slots"],
                 services=services,
-                total_amount=total_amount,
-                booking_fee=booking_fee,
-                gst_amount=gst_amount,
-                amount_paid=booking_fee + gst_amount,  # Convenience fee paid online
-                remaining_amount=total_amount,  # Service price paid at salon
                 payment_status="paid" if checkout_data.get("razorpay_payment_id") else "pending",
                 payment_method=checkout_data.get("payment_method", "razorpay"),
                 razorpay_order_id=checkout_data.get("razorpay_order_id"),
@@ -640,8 +642,7 @@ class CustomerService:
                 .select(
                     "*, "
                     "salons(business_name, city, address, phone), "
-                    "profiles(full_name, phone), "
-                    "services(name, price, discounted_price, duration_minutes)"
+                    "profiles(full_name, phone)"
                 )\
                 .eq("customer_id", customer_id)\
                 .order("booking_date", desc=True)\
@@ -649,10 +650,20 @@ class CustomerService:
             
             bookings = response.data or []
             
-            # Transform data to flatten nested objects and parse metadata
+            # Transform data to flatten nested objects and parse services JSONB
             transformed_bookings = []
             for booking in bookings:
+                # Parse services JSONB array BEFORE transforming (since transform removes it)
+                services_array = booking.get("services", [])
+                if not services_array or not isinstance(services_array, list):
+                    services_array = []
+                
+                # Transform booking data
                 transformed_booking = self._transform_booking_data(booking)
+                
+                # Add services array to transformed booking
+                transformed_booking["services"] = services_array
+                
                 transformed_bookings.append(transformed_booking)
             
             logger.info(f"Retrieved {len(transformed_bookings)} bookings for customer {customer_id}")
@@ -1231,7 +1242,7 @@ class CustomerService:
     
     def _transform_booking_data(self, booking: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Transform booking data to flatten nested objects and parse metadata.
+        Transform booking data to flatten nested objects.
         
         Args:
             booking: Raw booking data from database
@@ -1241,10 +1252,10 @@ class CustomerService:
         """
         salon_info = booking.pop('salons', {}) or {}
         profile_info = booking.pop('profiles', {}) or {}
-        service_info = booking.pop('services', {}) or {}
-        effective_price = self._get_effective_service_price(service_info) if service_info else 0.0
-        payment_status = self._derive_booking_payment_status(booking)
-        services_list = [service_info] if service_info else []
+        
+        # Remove services from booking dict (will be added separately by caller)
+        # This avoids conflict between JSONB array and old service table join
+        booking.pop('services', None)
 
         return {
             **booking,
@@ -1254,31 +1265,5 @@ class CustomerService:
             'salon_phone': salon_info.get('phone'),
             'customer_name': profile_info.get('full_name'),
             'customer_phone': profile_info.get('phone'),
-            'services': services_list,
-            'service_details': {
-                **service_info,
-                'effective_price': effective_price
-            } if service_info else None,
-            'unit_price': effective_price,
-            'all_booking_times': booking.get('booking_time'),
-            'payment_status': payment_status,
-            'payment_method': 'online' if booking.get('convenience_fee_paid') else 'pay_at_salon'
+            'all_booking_times': booking.get('booking_time')
         }
-
-    def _get_effective_service_price(self, service_details: Dict[str, Any]) -> float:
-        """Return the service price (discounted_price removed from schema)."""
-        price_value = service_details.get('price') or 0
-        try:
-            return float(price_value)
-        except (TypeError, ValueError):
-            return 0.0
-
-    def _derive_booking_payment_status(self, booking: Dict[str, Any]) -> str:
-        """Map booking payment flags to a readable status string."""
-        convenience_fee_paid = booking.get('convenience_fee_paid')
-        service_paid = booking.get('service_paid')
-        if convenience_fee_paid and service_paid:
-            return 'completed'
-        if convenience_fee_paid:
-            return 'online_paid'
-        return 'pending'

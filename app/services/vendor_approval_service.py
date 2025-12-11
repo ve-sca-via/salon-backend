@@ -370,7 +370,10 @@ class VendorApprovalService:
         services_data = documents.get("services", [])
         
         if not services_data or not isinstance(services_data, list):
+            logger.info(f"⚠️ No services data found in documents for salon {salon_id}")
             return 0
+        
+        logger.info(f"📋 Found {len(services_data)} services to create for salon {salon_id}")
         
         try:
             services_to_insert = []
@@ -391,7 +394,7 @@ class VendorApprovalService:
                     "duration_minutes": int(service.get("duration_minutes", 30)),
                     "category_id": category_id,
                     "is_active": True,
-                    "available_for_booking": True
+                    "is_featured": False
                 }
                 
                 services_to_insert.append(service_entry)
@@ -408,6 +411,9 @@ class VendorApprovalService:
                 else:
                     logger.warning("⚠️ Services insert returned no data")
                     return 0
+            else:
+                logger.warning(f"⚠️ No valid services to insert (all missing category_id)")
+                return 0
             
         except Exception as e:
             logger.error(f"❌ Failed to create services: {str(e)}")

@@ -323,16 +323,20 @@ class PaymentService:
                 quantity = item.get("quantity", 1)
                 total_service_price += unit_price * quantity
             
-            # Get booking fee percentage from config
-            booking_fee_percentage = 10.0  # Default 10%
+            # Get convenience fee percentage from config (dynamically set by admin)
+            convenience_fee_percentage = None
             try:
-                booking_fee_config = await self.config_service.get_config("booking_fee_percentage")
-                booking_fee_percentage = float(booking_fee_config.get("config_value", 10.0))
-            except (ValueError, Exception) as e:
-                logger.warning(f"Failed to get booking_fee_percentage from config, using default: {e}")
-                booking_fee_percentage = 10.0
+                fee_config = await self.config_service.get_config("convenience_fee_percentage")
+                convenience_fee_percentage = float(fee_config.get("config_value"))
+                logger.info(f"Using convenience_fee_percentage from config: {convenience_fee_percentage}%")
+            except (ValueError, TypeError, Exception) as e:
+                logger.error(f"Failed to get convenience_fee_percentage from config: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment configuration not available. Please contact support."
+                )
             
-            booking_fee = total_service_price * (booking_fee_percentage / 100)
+            booking_fee = total_service_price * (convenience_fee_percentage / 100)
             gst_amount = booking_fee * 0.18  # 18% GST
             total_payment = booking_fee + gst_amount
             

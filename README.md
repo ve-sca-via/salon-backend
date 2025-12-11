@@ -1,53 +1,237 @@
 # Salon Management Backend
 
-> ⚠️ **IMPORTANT**: A comprehensive frontend-backend audit has been completed. See [`INDEX.md`](./INDEX.md) for the complete audit documentation.
+**FastAPI 0.115.0** | **Python 3.11.9** | **138 API Endpoints** | **PostgreSQL 17 + PostGIS**
 
-## 🚀 Quick Start by Environment
-
-| Environment | Purpose | Command | Documentation |
-|------------|---------|---------|---------------|
-| **Local Dev** | Daily development | `.\run-local.ps1` | [GETTING_STARTED.md](./GETTING_STARTED.md) |
-| **Staging** | Online testing | `.\run-staging.ps1` | [STAGING_DEPLOYMENT_GUIDE.md](./STAGING_DEPLOYMENT_GUIDE.md) |
-| **Production** | Live system | `.\run-production.ps1` | [DEPLOYMENT.md](./DEPLOYMENT.md) |
-
-**New to staging?** Run `.\setup-staging.ps1` for guided setup.
-
-## 📋 Recent Audit (November 18, 2025)
-
-A full system audit identified:
-- **7 critical bugs** preventing production deployment
-- **15+ missing UI pages** for existing backend features
-- **60% of RM features** have no frontend implementation
-
-**Action Required**: 
-1. Read [`AUDIT_SUMMARY.md`](./AUDIT_SUMMARY.md) for high-level findings
-2. Follow [`CRITICAL_FIXES_CHECKLIST.md`](./CRITICAL_FIXES_CHECKLIST.md) to fix critical bugs
-3. See [`INDEX.md`](./INDEX.md) for complete documentation index
+Production-ready backend for a multi-role salon management platform with authentication, payments, booking system, and location services.
 
 ---
 
-A production-ready FastAPI backend for a salon management platform, built with modern Python practices and comprehensive security measures.
+## 🚀 Quick Start
 
-## 🚀 Features
+```powershell
+# Clone and setup
+git clone https://github.com/ve-sca-via/salon-backend.git
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
-- **User Management**: Multi-role authentication (Admin, Relationship Manager, Vendor, Customer)
-- **Salon Management**: Complete CRUD operations for salons with verification workflow
-- **Service Management**: Dynamic service catalog with categories and pricing
-- **Booking System**: Real-time slot calculation and booking management
-- **Payment Integration**: Razorpay integration with split payment model
-- **Email Notifications**: SMTP-based email service with retry logic
-- **Geocoding**: Location services for salon discovery
-- **Admin Dashboard**: Comprehensive admin panel for platform management
-- **Health Monitoring**: Built-in health checks and logging middleware
+# Run local development server
+.\run-local.ps1
 
-## 🛠️ Technology Stack
+# Access
+# API: http://localhost:8000
+# Docs: http://localhost:8000/docs
+```
 
-- **Framework**: FastAPI with async/await support
-- **Database**: Supabase (PostgreSQL) with PostGIS
-- **Authentication**: JWT tokens with role-based access control
-- **Payments**: Razorpay integration
-- **Email**: SMTP with retry logic and exponential backoff
-- **Geocoding**: Google Maps API integration
+**New to the project?** Read [Getting Started Guide](docs/getting-started/GETTING_STARTED.md)
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[Getting Started](docs/getting-started/GETTING_STARTED.md)** | Setup, run, test the backend |
+| **[API Endpoints](docs/reference/API_ENDPOINTS.md)** | All 138 endpoints documented |
+| **[Developer Reference](docs/reference/DEVELOPER_REFERENCE.md)** | Commands, patterns, debugging |
+| **[Architecture Map](docs/architecture/ARCHITECTURE_MAP.md)** | System overview |
+| **[Documentation Index](docs/reference/INDEX.md)** | Complete doc listing |
+
+---
+
+## ✨ Features
+
+### Core Functionality
+- **Multi-role Authentication** - Admin, Relationship Manager, Vendor, Customer
+- **JWT Auth** - 30min access tokens + 7 day refresh tokens
+- **Rate Limiting** - 60/min global, 5/min login, 3/min signup
+- **Token Blacklist** - Logout invalidates tokens
+- **Background Tasks** - Auto-cleanup expired tokens (every 6 hours)
+
+### Business Features
+- **Salon Management** - CRUD operations with verification workflow
+- **Service Catalog** - Dynamic services with categories and pricing
+- **Booking System** - Real-time slot calculation and management
+- **Payment Integration** - Razorpay with split payments
+- **Review System** - Customer reviews with ratings
+- **RM Scoring** - Performance tracking for relationship managers
+- **Career Module** - Job applications with document uploads
+
+### Technical Features
+- **Email Service** - SMTP (Gmail) with retry logic
+- **Geocoding** - Address to lat/lng conversion
+- **Location Search** - PostGIS-powered nearby salon search
+- **File Upload** - Supabase Storage for images/documents
+- **Activity Logging** - Track all admin/RM actions
+- **Real-time Updates** - WebSocket support (experimental)
+
+---
+
+## 🛠️ Tech Stack
+
+**Backend:**
+- FastAPI 0.115.0 (async/await)
+- Python 3.11.9
+- Uvicorn 0.32.1
+
+**Database:**
+- Supabase PostgreSQL 17
+- PostGIS extension (location queries)
+- 25+ tables
+
+**Authentication:**
+- JWT (python-jose 3.3.0)
+- bcrypt 4.1.1
+- SlowAPI 0.1.9 (rate limiting)
+
+**Integrations:**
+- Razorpay 1.4.1 (payments)
+- SMTP/Gmail (emails 0.6)
+- Geopy 2.4.0 (geocoding)
+
+**Deployment:**
+- Render.com
+- Git-based CI/CD
+
+---
+
+## 📊 System Statistics
+
+- **Total Endpoints:** 138
+- **API Modules:** Auth, Admin, Customers, Vendors, RM, Salons, Bookings, Payments, Careers, Upload, Location, Realtime
+- **Services:** 16 service classes
+- **Database Tables:** 25+
+- **Test Coverage:** Unit + integration tests
+- **Rate Limits:** 60/min global, 5/min login, 3/min signup
+
+---
+
+## 🎯 User Roles
+
+| Role | Permissions |
+|------|-------------|
+| **Admin** | Full system access - users, salons, config, analytics |
+| **Relationship Manager** | Submit vendor requests, manage approved salons |
+| **Vendor** | Manage own salon, services, staff, bookings |
+| **Customer** | Browse salons, book services, write reviews |
+
+---
+
+## 🔧 Development
+
+### Run Tests
+```powershell
+pytest                  # All tests
+pytest --cov            # With coverage
+pytest -k "auth"        # Tests matching "auth"
+```
+
+### Database Migrations
+```powershell
+supabase db push        # Apply migrations
+supabase db reset       # Reset (wipes data!)
+```
+
+### Code Quality
+```powershell
+black app/              # Format code
+flake8 app/             # Lint
+mypy app/               # Type check
+```
+
+---
+
+## 🌍 Environments
+
+| Environment | Command | Database | Purpose |
+|-------------|---------|----------|---------|
+| **Local** | `.\run-local.ps1` | Local/Remote | Daily development |
+| **Staging** | `.\run-staging.ps1` | Staging DB | Online testing |
+| **Production** | `.\run-production.ps1` | Production DB | Live system |
+
+---
+
+## 📁 Project Structure
+
+```
+backend/
+├── app/
+│   ├── api/          # 138 API endpoints
+│   ├── core/         # Config, database, auth
+│   ├── services/     # Business logic (16 services)
+│   └── schemas/      # Pydantic models
+├── supabase/
+│   └── migrations/   # SQL migrations
+├── tests/            # Unit & integration tests
+├── docs/             # Documentation
+├── main.py           # FastAPI app entry point
+├── requirements.txt  # Dependencies
+├── pytest.ini        # Test config
+└── render.yaml       # Deployment config
+```
+
+---
+
+## 🔐 Security
+
+- **JWT Tokens** - HS256 signed with secret key
+- **Password Hashing** - bcrypt with salt
+- **Service Role** - Bypasses RLS for admin operations
+- **Rate Limiting** - Prevents brute force attacks
+- **Token Blacklist** - Logout invalidates tokens
+- **CORS** - Configured for specific origins only
+- **HTTPS** - Enforced in production
+- **Input Validation** - Pydantic models
+
+---
+
+## 🚀 Deployment
+
+**Platform:** Render.com
+
+**Staging (Auto):**
+```bash
+git push origin staging  # Auto-deploys to staging environment
+```
+
+**Production (Manual):**
+1. Merge to `main` branch
+2. Deploy manually from Render dashboard
+
+See [Deployment Guide](docs/deployment/DEPLOYMENT_FLOW.md) for details.
+
+---
+
+## 🆘 Support
+
+- **Documentation:** [docs/](docs/) folder
+- **API Docs:** http://localhost:8000/docs (Swagger UI)
+- **Issues:** GitHub Issues
+- **Team Lead:** For production credentials
+
+---
+
+## 📝 License
+
+Proprietary - All rights reserved
+
+---
+
+## 🔄 Recent Updates
+
+**December 11, 2025:**
+- Documentation overhaul - brutally analyzed and updated
+- Accurate endpoint count: 138 (verified from code)
+- Removed redundant documentation
+- Created comprehensive API reference
+- Streamlined getting started guide
+
+See [DOCUMENTATION_UPDATE_LOG.md](docs/DOCUMENTATION_UPDATE_LOG.md) for details.
+
+---
+
+**Ready to build?** → [Getting Started Guide](docs/getting-started/GETTING_STARTED.md)
 - **Testing**: pytest with comprehensive test coverage
 - **Documentation**: OpenAPI/Swagger UI
 

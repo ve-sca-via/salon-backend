@@ -925,7 +925,7 @@ class EmailService:
                         Remember to pay the service amount (₹{service_price:.2f}) at the salon after your service.
                     </p>
                     
-                    <p>See you soon!<br><strong>SalonHub Team</strong></p>
+                    <p>See you soon!<br><strong>Lubist Team</strong></p>
                 </div>
             </body>
             </html>
@@ -1024,7 +1024,7 @@ class EmailService:
                     </p>
                     
                     <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                        This is an automated notification from SalonHub.
+                        This is an automated notification from Lubist.
                     </p>
                 </div>
             </body>

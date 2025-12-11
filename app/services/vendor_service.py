@@ -527,10 +527,9 @@ class VendorService:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Build query - Note: customer details are denormalized in bookings table
-            # (customer_name, customer_phone, customer_email columns)
+            # Build query - services are stored as JSONB array, no join needed
             query = self.db.table("bookings").select(
-                "*, services(*)"
+                "*"
             ).eq("salon_id", salon_id)
             
             if status_filter:

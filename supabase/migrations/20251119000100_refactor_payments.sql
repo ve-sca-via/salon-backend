@@ -150,15 +150,10 @@ WHERE NOT EXISTS (
 -- STEP 3: Update bookings table structure
 -- ============================================================================
 
--- Remove redundant payment tracking columns from bookings
--- Keep them for now but deprecate them (remove in future migration)
--- This allows gradual transition without breaking existing code
-
--- Add comments to mark deprecated columns (only for columns that actually exist)
-COMMENT ON COLUMN bookings.convenience_fee IS 'DEPRECATED: Use payments table with payment_type=convenience_fee. This column kept for backward compatibility only.';
-COMMENT ON COLUMN bookings.total_amount IS 'DEPRECATED: Calculate from service_price + SUM(payments.amount). This column kept for backward compatibility only.';
-COMMENT ON COLUMN bookings.convenience_fee_paid IS 'DEPRECATED: Check payments table WHERE payment_type=convenience_fee AND status=success. This column kept for backward compatibility only.';
-COMMENT ON COLUMN bookings.service_price_paid IS 'DEPRECATED: Check payments table WHERE payment_type=service_payment AND status=success. This column kept for backward compatibility only.';
+-- Payment tracking is now handled in the dedicated payments table
+-- The bookings table retains amount columns for quick reference
+-- Note: convenience_fee_paid and service_price_paid columns will be
+-- removed in future migration (20251209000000_cleanup_unused_columns.sql)
 
 -- ============================================================================
 -- STEP 4: Create helper views for easy querying

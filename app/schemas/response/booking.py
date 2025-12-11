@@ -18,25 +18,16 @@ class BookingResponse(BaseModel):
     booking_number: str
     customer_id: str
     salon_id: str
-    service_id: Optional[str] = None  # DEPRECATED: Nullable for multi-service bookings
     booking_date: date
     booking_time: time
-    time_slots: Optional[List[str]] = []  # NEW: Multiple time slots support
-    services: Optional[List[dict]] = []  # NEW: Multi-service bookings
-    notes: Optional[str] = None  # Renamed from customer_notes
+    time_slots: Optional[List[str]] = []  # Multiple time slots support
+    services: Optional[List[dict]] = []  # Multi-service bookings
+    notes: Optional[str] = None
     duration_minutes: int = 60
-    status: str  # Changed from BookingStatus enum to string
+    status: str
     service_price: float
     convenience_fee: float
     total_amount: float
-    gst_rate: Optional[float] = 18.0
-    cgst: Optional[float] = 0.0
-    sgst: Optional[float] = 0.0
-    igst: Optional[float] = 0.0
-    convenience_fee_paid: bool = False
-    convenience_fee_paid_at: Optional[datetime] = None
-    service_price_paid: bool = False  # Renamed from service_paid
-    service_price_paid_at: Optional[datetime] = None
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
     customer_email: Optional[str] = None

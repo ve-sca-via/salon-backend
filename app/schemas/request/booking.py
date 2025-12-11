@@ -25,11 +25,6 @@ class BookingCreate(BaseModel):
     booking_time: str  # Primary booking time (for backward compatibility)
     time_slots: Optional[List[str]] = Field(None, max_length=3, min_length=1)  # Up to 3 time slots
     services: List[ServiceItem]  # List of service items
-    total_amount: float  # Total service amount before fees
-    booking_fee: Optional[float] = 0  # Booking fee (percentage of total)
-    gst_amount: Optional[float] = 0  # GST on booking fee
-    amount_paid: Optional[float] = 0  # Amount paid online
-    remaining_amount: Optional[float] = 0  # Amount to pay at salon
     payment_status: Optional[str] = 'pending'  # Payment status
     payment_method: Optional[str] = None  # Payment method
     razorpay_order_id: Optional[str] = None  # Razorpay order ID
@@ -77,8 +72,6 @@ class Totals(BaseModel):
     service_price: float
     convenience_fee: float
     total_amount: float
-    convenience_fee_paid: bool
-    service_paid: bool
     class Config:
         from_attributes = True
 

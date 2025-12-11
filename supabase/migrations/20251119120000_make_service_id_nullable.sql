@@ -12,7 +12,7 @@ ALTER TABLE public.bookings
 ALTER COLUMN service_id DROP NOT NULL;
 
 -- Add comment explaining the change
-COMMENT ON COLUMN public.bookings.service_id IS 'DEPRECATED: Legacy single service ID. Use services JSONB column for multi-service bookings. Kept nullable for backward compatibility.';
+COMMENT ON COLUMN public.bookings.service_id IS 'Legacy single service ID. Use services JSONB column for multi-service bookings. Will be removed in migration 20251209000000_cleanup_unused_columns.sql';
 
 -- Update the foreign key to remain but allow NULL
 -- (FK constraint already exists, just documenting the change)

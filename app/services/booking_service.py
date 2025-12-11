@@ -148,6 +148,164 @@ class BookingService:
                 detail="Failed to fetch booking"
             )
     
+    async def get_admin_bookings(
+        self,
+        page: int = 1,
+        limit: int = 20,
+        status_filter: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get all bookings for admin with pagination and filters.
+        
+        Args:
+            page: Page number (1-indexed)
+            limit: Results per page
+            status_filter: Filter by booking status
+            date_from: Filter bookings from this date
+            date_to: Filter bookings to this date
+            
+        Returns:
+            Dict with bookings list, pagination info, and total count
+            
+        Raises:
+            HTTPException: If query fails
+        """
+        try:
+            # Calculate offset
+            offset = (page - 1) * limit
+            
+            # Build query with joins - Remove count="exact" to avoid timeout on large datasets
+            # We'll count separately if needed
+            query = self.db.table("bookings").select(
+                "*, "
+                "salons(id, business_name, city, address), "
+                "profiles(id, full_name, email, phone)"
+            )
+            
+            # Apply filters
+            if status_filter:
+                query = query.eq("status", status_filter)
+            
+            if date_from:
+                query = query.gte("booking_date", date_from)
+            
+            if date_to:
+                query = query.lte("booking_date", date_to)
+            
+            # Execute query with pagination - order and limit
+            response = query.order("booking_date", desc=True).order(
+                "created_at", desc=True
+            ).range(offset, offset + limit - 1).execute()
+            
+            bookings = response.data or []
+            # Use length of returned data as count (exact count can be slow)
+            total_count = len(bookings)
+            
+            # DEBUG: Log first booking to see structure
+            if bookings:
+                logger.info(f"First booking structure: {bookings[0].keys()}")
+                logger.info(f"Has 'salons' key: {'salons' in bookings[0]}")
+                logger.info(f"Has 'profiles' key: {'profiles' in bookings[0]}")
+                if 'salons' in bookings[0]:
+                    logger.info(f"Salons data: {bookings[0]['salons']}")
+                if 'profiles' in bookings[0]:
+                    logger.info(f"Profiles data: {bookings[0]['profiles']}")
+            
+            # Calculate pagination info
+            total_pages = max(1, page) if bookings else 0
+            
+            logger.info(f"Admin fetched {len(bookings)} bookings (page {page})")
+            
+            return {
+                "data": bookings,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "total_pages": total_pages,
+                    "has_next": len(bookings) == limit,  # Has next if we got full page
+                    "has_prev": page > 1
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Failed to fetch admin bookings: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch bookings"
+            )
+    
+    async def update_booking_status_admin(
+        self,
+        booking_id: str,
+        new_status: str
+    ) -> Dict[str, Any]:
+        """
+        Update booking status (admin function).
+        
+        Args:
+            booking_id: Booking ID to update
+            new_status: New status value
+            
+        Returns:
+            Success response with updated booking
+            
+        Raises:
+            HTTPException: If booking not found or update fails
+        """
+        try:
+            # Validate status
+            valid_statuses = ["pending", "confirmed", "completed", "cancelled", "no_show"]
+            if new_status not in valid_statuses:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid status. Must be one of: {valid_statuses}"
+                )
+            
+            # Check booking exists
+            check_response = self.db.table("bookings").select("id, status").eq(
+                "id", booking_id
+            ).single().execute()
+            
+            if not check_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Booking not found"
+                )
+            
+            # Update status
+            update_data = {"status": new_status}
+            
+            if new_status == "confirmed":
+                update_data["confirmed_at"] = datetime.utcnow().isoformat()
+            elif new_status == "completed":
+                update_data["completed_at"] = datetime.utcnow().isoformat()
+            elif new_status == "cancelled":
+                update_data["cancelled_at"] = datetime.utcnow().isoformat()
+            
+            response = self.db.table("bookings").update(update_data).eq(
+                "id", booking_id
+            ).execute()
+            
+            logger.info(f"Admin updated booking {booking_id} status to {new_status}")
+            
+            return {
+                "success": True,
+                "message": f"Booking status updated to {new_status}",
+                "data": response.data[0] if response.data else None
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to update booking status: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update booking status"
+            )
+    
     # =====================================================
     # BOOKING CREATION
     # =====================================================
@@ -236,11 +394,23 @@ class BookingService:
                 total_service_price += line_total
                 total_duration += line_duration
 
+            # Get convenience fee percentage from system config
+            try:
+                fee_config_response = self.db.table("system_config")\
+                    .select("config_value")\
+                    .eq("config_key", "convenience_fee_percentage")\
+                    .eq("is_active", True)\
+                    .single()\
+                    .execute()
+                
+                convenience_fee_percentage = float(fee_config_response.data["config_value"]) if fee_config_response.data else 6.0
+            except Exception:
+                convenience_fee_percentage = 6.0  # Default fallback
+            
             # Calculate convenience fee and totals
             totals = self._calculate_booking_totals_multi_service(
                 total_service_price,
-                booking.booking_fee,
-                booking.gst_amount
+                convenience_fee_percentage
             )
 
             # Parse and format booking time
@@ -252,13 +422,15 @@ class BookingService:
             # Prepare services jsonb data
             services_jsonb = []
             for svc in processed_services:
-                services_jsonb.append({
+                service_data = {
                     "service_id": svc["service_id"],
+                    "service_name": svc["service_details"].get("name", "Service"),
                     "quantity": svc["quantity"],
                     "unit_price": svc["unit_price"],
                     "line_total": svc["line_total"],
                     "duration_minutes": svc["duration_minutes"]
-                })
+                }
+                services_jsonb.append(service_data)
             
             # Prepare time slots (up to 3)
             time_slots = booking.time_slots if booking.time_slots else [booking.booking_time]
@@ -280,10 +452,6 @@ class BookingService:
                 "service_price": total_service_price,
                 "convenience_fee": totals["convenience_fee"],
                 "total_amount": totals["total_amount"],
-                "convenience_fee_paid": totals["convenience_fee_paid"],
-                "convenience_fee_paid_at": datetime.utcnow().isoformat() if totals["convenience_fee_paid"] else None,
-                "service_price_paid": totals.get("service_paid", False),
-                "service_price_paid_at": None,  # Will be set when vendor confirms payment at salon
                 "notes": booking.notes,
                 "customer_name": customer_data["full_name"],
                 "customer_phone": customer_data.get("phone", ""),
@@ -684,33 +852,25 @@ class BookingService:
     def _calculate_booking_totals_multi_service(
         self,
         total_service_price: float,
-        booking_fee: Optional[float] = 0,
-        gst_amount: Optional[float] = 0
+        convenience_fee_percentage: float = 6.0
     ) -> Dict[str, Any]:
         """
-        Calculate pricing and payment flags for multi-service booking.
+        Calculate pricing for multi-service booking.
 
         Args:
             total_service_price: Sum of all service line totals
-            booking_fee: Convenience fee amount
-            gst_amount: GST amount
+            convenience_fee_percentage: Convenience fee percentage (default 6%)
 
         Returns:
-            Dict with calculated totals and payment flags
+            Dict with calculated totals
         """
-        convenience_fee = float(booking_fee or 0) + float(gst_amount or 0)
+        convenience_fee = (total_service_price * convenience_fee_percentage) / 100
         total_amount = total_service_price + convenience_fee
-
-        # Payment flags - convenience fee paid online, service paid at salon
-        convenience_fee_paid = True  # Assume paid if booking is created
-        service_paid = False  # Always paid at salon
 
         return {
             "service_price": total_service_price,
             "convenience_fee": convenience_fee,
-            "total_amount": total_amount,
-            "convenience_fee_paid": convenience_fee_paid,
-            "service_paid": service_paid
+            "total_amount": total_amount
         }
 
     async def _get_service_details(self, service_id: str) -> Dict[str, Any]:

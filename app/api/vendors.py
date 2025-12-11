@@ -335,19 +335,21 @@ async def get_salon_bookings(
 @router.put("/bookings/{booking_id}/status", response_model=SuccessResponse, operation_id="vendor_update_booking_status")
 async def update_booking_status(
     booking_id: str,
-    new_status: str,
+    status: str = Body(..., embed=True),
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
 ):
     """
     Update booking status (confirm, complete, no-show).
     
-    Valid statuses: confirmed, completed, no_show
+    Valid statuses: confirmed, completed, no_show, cancelled
+    
+    Request body: {"status": "completed"}
     """
     return await vendor_service.update_booking_status(
         vendor_id=current_user.user_id,
         booking_id=booking_id,
-        new_status=new_status
+        new_status=status
     )
 
 
