@@ -1267,3 +1267,16 @@ class CustomerService:
             'customer_phone': profile_info.get('phone'),
             'all_booking_times': booking.get('booking_time')
         }
+    
+    def _get_effective_service_price(self, service_details: Dict[str, Any]) -> float:
+        """
+        Get the effective price for a service.
+        Currently returns the base price, but can be extended for discounts/promotions.
+        
+        Args:
+            service_details: Service data from database
+            
+        Returns:
+            Effective price as float
+        """
+        return float(service_details.get('price', 0.0))
