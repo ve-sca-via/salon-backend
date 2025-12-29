@@ -38,3 +38,20 @@ class StaffUpdate(BaseModel):
 
 class StatusToggle(BaseModel):
     is_active: bool
+
+
+# Service Category Schemas
+class ServiceCategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    icon_url: Optional[str] = None
+    display_order: int = Field(default=0, ge=0)
+    is_active: bool = Field(default=True)
+
+
+class ServiceCategoryUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    icon_url: Optional[str] = None
+    display_order: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = None

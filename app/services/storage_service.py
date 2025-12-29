@@ -18,7 +18,7 @@ class StorageService:
     Provides validation, upload, and signed URL generation.
     """
     
-    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx'}
+    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.svg', '.doc', '.docx'}
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_MIME_TYPES = {
         'application/pdf',
@@ -26,6 +26,7 @@ class StorageService:
         'image/jpg', 
         'image/png',
         'image/webp',
+        'image/svg+xml',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     }
