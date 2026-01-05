@@ -877,10 +877,9 @@ class CustomerService:
             response = self.db.table("salons")\
                 .select("*")\
                 .eq("id", salon_id)\
-                .single()\
                 .execute()
             
-            if not response.data:
+            if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Salon not found"
@@ -890,7 +889,7 @@ class CustomerService:
             
             return {
                 "success": True,
-                "salon": response.data
+                "salon": response.data[0]
             }
         
         except HTTPException:

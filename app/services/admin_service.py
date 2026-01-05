@@ -237,23 +237,31 @@ class AdminService:
             Exception: If database query fails
         """
         try:
-            # Attempt to use Supabase's relationship join syntax
+            from fastapi import HTTPException, status
+            
+            # Fetch vendor request
             response = self.db.table("vendor_join_requests").select(
                 "*, rm_profiles(*, profiles(*))"
-            ).eq("id", request_id).single().execute()
+            ).eq("id", request_id).execute()
             
-            if not response.data:
-                raise ValueError(f"Vendor request not found: {request_id}")
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Vendor request {request_id} not found"
+                )
             
             logger.info(f"Retrieved vendor request: {request_id}")
             
-            return response.data
+            return response.data[0]
             
-        except ValueError:
+        except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Failed to fetch vendor request {request_id}: {str(e)}")
-            raise Exception(f"Failed to fetch vendor request: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch vendor request"
+            )
     
     async def _enrich_vendor_request_with_rm_profile(
         self,

@@ -9,7 +9,7 @@ import uuid
 from fastapi import HTTPException, status, UploadFile
 from app.core.database import get_db
 from app.services.storage_service import StorageService
-from app.services.email import EmailService
+from app.services.email import get_email_service
 from app.services.activity_log_service import ActivityLogger
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,8 @@ class CareerService:
         """Initialize career service with storage and email services"""
         self.db = db_client
         self.storage = StorageService(db_client=db_client)
-        self.email = EmailService()
+        # Use factory function to get appropriate email service (Mock in tests, Real in production)
+        self.email = get_email_service()
     
     async def submit_application(
         self,

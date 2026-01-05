@@ -60,12 +60,15 @@ class RMService:
         # Join with profiles table to get user data (name, email, phone, etc)
         response = self.db.table("rm_profiles").select(
             "*, profiles(id, full_name, email, phone, is_active, avatar_url, user_role, created_at, updated_at, phone_verified)"
-        ).eq("id", rm_id).single().execute()
+        ).eq("id", rm_id).execute()
         
-        if not response.data:
-            raise ValueError(f"RM profile {rm_id} not found")
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"RM profile {rm_id} not found"
+            )
         
-        return response.data
+        return response.data[0]
     
     async def get_rm_stats(self, rm_id: str) -> VendorRequestStats:
         """
@@ -99,9 +102,11 @@ class RMService:
         # Get performance score from rm_profiles
         rm_profile_response = self.db.table("rm_profiles").select(
             "performance_score"
-        ).eq("id", rm_id).single().execute()
+        ).eq("id", rm_id).execute()
         
-        performance_score = rm_profile_response.data.get("performance_score", 0) if rm_profile_response.data else 0
+        performance_score = 0
+        if rm_profile_response.data and len(rm_profile_response.data) > 0:
+            performance_score = rm_profile_response.data[0].get("performance_score", 0)
         
         return VendorRequestStats(
             total_requests=total_response.count or 0,
@@ -613,9 +618,9 @@ class RMService:
             # Verify ownership and draft status
             existing = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
-            ).eq("rm_id", rm_id).single().execute()
+            ).eq("rm_id", rm_id).execute()
             
-            if not existing.data:
+            if not existing.data or len(existing.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Vendor request not found or access denied"
@@ -706,15 +711,15 @@ class RMService:
             # Verify ownership and draft status
             existing_response = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
-            ).eq("rm_id", rm_id).single().execute()
+            ).eq("rm_id", rm_id).execute()
             
-            if not existing_response.data:
+            if not existing_response.data or len(existing_response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Vendor request not found or access denied"
                 )
             
-            existing_request = existing_response.data
+            existing_request = existing_response.data[0]
             
             # Only allow deletion of drafts
             if existing_request.get("status") != "draft":
@@ -768,15 +773,15 @@ class RMService:
         try:
             response = self.db.table("vendor_join_requests").select("*").eq(
                 "id", request_id
-            ).eq("rm_id", rm_id).single().execute()
+            ).eq("rm_id", rm_id).execute()
             
-            if not response.data:
+            if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Vendor request not found or access denied"
                 )
             
-            return response.data
+            return response.data[0]
         
         except HTTPException:
             raise

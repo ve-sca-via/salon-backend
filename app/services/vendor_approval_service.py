@@ -534,16 +534,21 @@ class VendorApprovalService:
     
     async def _get_rm_details(self, rm_id: str) -> Dict[str, str]:
         """Get RM email and name from database"""
+        from fastapi import HTTPException, status
+        
         rm_response = self.db.table("rm_profiles").select(
             "profiles(email, full_name)"
-        ).eq("id", rm_id).single().execute()
+        ).eq("id", rm_id).execute()
         
-        if not rm_response.data or not rm_response.data.get("profiles"):
-            raise ValueError(f"RM profile not found for {rm_id}")
+        if not rm_response.data or len(rm_response.data) == 0 or not rm_response.data[0].get("profiles"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"RM profile not found for {rm_id}"
+            )
         
         return {
-            "email": rm_response.data["profiles"]["email"],
-            "name": rm_response.data["profiles"]["full_name"] or "RM"
+            "email": rm_response.data[0]["profiles"]["email"],
+            "name": rm_response.data[0]["profiles"]["full_name"] or "RM"
         }
     
     async def _update_rm_score(

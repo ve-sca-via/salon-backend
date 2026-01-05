@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
+# JINJA2 TEMPLATE ENVIRONMENT (SINGLETON)
+# =====================================================
+# Created once at module load time and shared across all EmailService instances
+# This prevents creating new Jinja2 environments (500KB-1MB each) on every instantiation
+
+template_dir = Path(__file__).parent.parent / "templates" / "email"
+_jinja2_env = Environment(
+    loader=FileSystemLoader(str(template_dir)),
+    autoescape=select_autoescape(['html', 'xml'])
+)
+
+logger.info("📧 Initialized shared Jinja2 template environment (singleton)")
+
+
+# =====================================================
 # MOCK EMAIL SERVICE (FOR TESTING)
 # =====================================================
 
@@ -131,12 +146,9 @@ class EmailService:
     """Email service for sending templated emails"""
     
     def __init__(self, email_logger: Optional[EmailLogger] = None):
-        # Setup Jinja2 template environment
-        template_dir = Path(__file__).parent.parent / "templates" / "email"
-        self.env = Environment(
-            loader=FileSystemLoader(str(template_dir)),
-            autoescape=select_autoescape(['html', 'xml'])
-        )
+        # Use shared Jinja2 template environment (singleton)
+        # This prevents creating new environments on every instantiation
+        self.env = _jinja2_env
         # Email logger for tracking sent emails
         self.email_logger = email_logger
         

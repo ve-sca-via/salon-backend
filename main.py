@@ -200,25 +200,37 @@ async def shutdown_event():
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
     """Handle custom application exceptions"""
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
             message=exc.detail,
             error_code=exc.error_code
         ).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle FastAPI HTTP exceptions"""
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
             message=exc.detail,
             error_code=f"HTTP_{exc.status_code}"
         ).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -230,10 +242,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         message = error["msg"]
         errors.append(ErrorDetail(field=field, message=message))
 
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content=ValidationErrorResponse(errors=errors).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 @app.exception_handler(ValidationError)
@@ -245,10 +263,16 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
         message = error["msg"]
         errors.append(ErrorDetail(field=field, message=message))
 
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content=ValidationErrorResponse(errors=errors).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 @app.exception_handler(Exception)

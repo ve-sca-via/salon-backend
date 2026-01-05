@@ -4,6 +4,7 @@ Handles salon CRUD operations, activation, verification, and queries
 """
 import logging
 from typing import Dict, Any, Optional, List, Union
+from fastapi import HTTPException, status
 from app.schemas.request.payment import PaymentDetails
 from app.schemas.request.vendor import SalonUpdate
 from app.schemas.admin import ServiceCreate, ServiceUpdate, StaffCreate, StaffUpdate
@@ -76,12 +77,27 @@ class SalonService:
         
         select_query = ", ".join(select_parts)
         
-        response = self.db.table("salons").select(select_query).eq("id", salon_id).single().execute()
-        
-        if not response.data:
-            raise ValueError(f"Salon {salon_id} not found")
-        
-        return response.data
+        try:
+            response = self.db.table("salons").select(select_query).eq("id", salon_id).execute()
+            
+            # Check if we got results
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Salon {salon_id} not found"
+                )
+            
+            # Return first result
+            return response.data[0]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon {salon_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon details"
+            )
     
     async def list_salons(self, params: SalonSearchParams) -> List[Dict[str, Any]]:
         """

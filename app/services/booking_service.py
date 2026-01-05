@@ -837,17 +837,27 @@ class BookingService:
     
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
         """Get salon details."""
-        response = self.db.table("salons").select("id, business_name").eq(
-            "id", salon_id
-        ).single().execute()
-        
-        if not response.data:
+        try:
+            response = self.db.table("salons").select("id, business_name").eq(
+                "id", salon_id
+            ).execute()
+            
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            return response.data[0]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon {salon_id}: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon details"
             )
-        
-        return response.data
     
     def _calculate_booking_totals_multi_service(
         self,

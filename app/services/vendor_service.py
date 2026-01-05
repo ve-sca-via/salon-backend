@@ -51,15 +51,25 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        response = self.db.table("salons").select("*").eq("vendor_id", vendor_id).single().execute()
-        
-        if not response.data:
+        try:
+            response = self.db.table("salons").select("*").eq("vendor_id", vendor_id).execute()
+            
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            return response.data[0]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon for vendor {vendor_id}: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon"
             )
-        
-        return response.data
     
     async def update_vendor_salon(
         self,
@@ -114,15 +124,25 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        response = self.db.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
-        
-        if not response.data:
+        try:
+            response = self.db.table("salons").select("id").eq("vendor_id", vendor_id).execute()
+            
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found. Please create a salon first."
+                )
+            
+            return response.data[0]["id"]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon ID for vendor {vendor_id}: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found. Please create a salon first."
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon ID"
             )
-        
-        return response.data["id"]
     
     # =====================================================
     # SERVICE OPERATIONS
