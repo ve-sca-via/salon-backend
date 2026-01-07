@@ -11,9 +11,6 @@ from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client
-supabase = get_db()
-
 
 class StorageService:
     """
@@ -21,7 +18,7 @@ class StorageService:
     Provides validation, upload, and signed URL generation.
     """
     
-    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx'}
+    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.svg', '.doc', '.docx'}
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_MIME_TYPES = {
         'application/pdf',
@@ -29,13 +26,14 @@ class StorageService:
         'image/jpg', 
         'image/png',
         'image/webp',
+        'image/svg+xml',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     }
     
-    def __init__(self):
+    def __init__(self, db_client):
         """Initialize storage service"""
-        self.client = supabase
+        self.client = db_client
     
     def validate_file(self, file: UploadFile, allowed_types: Optional[set] = None) -> bool:
         """

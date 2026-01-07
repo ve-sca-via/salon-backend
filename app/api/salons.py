@@ -11,9 +11,25 @@ These endpoints leverage:
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Form
 from typing import Optional, List
 from decimal import Decimal
+from supabase import Client
 
 from app.core.config import settings
+from app.core.database import get_db_client
+from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService
+from app.schemas import (
+    PublicSalonsResponse,
+    SalonDetailResponse,
+    SalonServicesResponse,
+    SalonStaffListResponse,
+    AvailableSlotsResponse,
+    NearbySalonsResponse,
+    SearchSalonsResponse,
+    SalonResponse,
+    SuccessResponse,
+    PublicConfigResponse,
+    CommissionConfigResponse
+)
 
 router = APIRouter(prefix="/salons", tags=["salons"])
 
@@ -22,20 +38,20 @@ router = APIRouter(prefix="/salons", tags=["salons"])
 # DEPENDENCY INJECTION
 # ========================================
 
-def get_salon_service() -> SalonService:
+def get_salon_service(db: Client = Depends(get_db_client)) -> SalonService:
     """
     Dependency injection for SalonService.
     
     Allows for easy mocking in tests and follows SOLID principles.
     """
-    return SalonService()
+    return SalonService(db_client=db)
 
 
 # ========================================
 # GET ENDPOINTS
 # ========================================
 
-@router.get("/public")
+@router.get("/public", response_model=PublicSalonsResponse)
 async def get_public_salons(
     city: Optional[str] = Query(None, description="Filter by city name"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
@@ -66,24 +82,21 @@ async def get_public_salons(
     - offset: Current offset
     - limit: Current limit
     """
-    try:
-        salons = await salon_service.get_public_salons(
-            limit=limit,
-            offset=offset,
-            city=city
-        )
-        
-        return {
-            "salons": salons,
-            "count": len(salons),
-            "offset": offset,
-            "limit": limit
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch public salons: {str(e)}")
+    salons = await salon_service.get_public_salons(
+        limit=limit,
+        offset=offset,
+        city=city
+    )
+    
+    return {
+        "salons": salons,
+        "count": len(salons),
+        "offset": offset,
+        "limit": limit
+    }
 
 
-@router.get("/")
+@router.get("/", response_model=PublicSalonsResponse, operation_id="public_get_salons")
 async def get_salons(
     status: Optional[str] = Query(None, description="Filter by status: 'approved' or 'pending'"),
     city: Optional[str] = Query(None, description="Filter by city"),
@@ -104,28 +117,23 @@ async def get_salons(
     Public users see only approved salons.
     Admins can see pending salons.
     """
-    try:
-        if status == "approved" or not status:
-            salons = await salon_service.get_approved_salons(limit, offset)
-        elif status == "pending":
-            # This should be protected by auth middleware for admin-only access
-            salons = await salon_service.get_pending_verification_salons(limit)
-        else:
-            raise HTTPException(status_code=400, detail="Invalid status. Use 'approved' or 'pending'")
-        
-        return {
-            "salons": salons,
-            "count": len(salons),
-            "offset": offset,
-            "limit": limit
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch salons: {str(e)}")
+    if status == "approved" or not status:
+        salons = await salon_service.get_approved_salons(limit, offset)
+    elif status == "pending":
+        # This should be protected by auth middleware for admin-only access
+        salons = await salon_service.get_pending_verification_salons(limit)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid status. Use 'approved' or 'pending'")
+    
+    return {
+        "salons": salons,
+        "count": len(salons),
+        "offset": offset,
+        "limit": limit
+    }
 
 
-@router.get("/{salon_id}")
+@router.get("/{salon_id}", response_model=SalonDetailResponse)
 async def get_salon(
     salon_id: str,
     include_services: bool = Query(False, description="Include salon services"),
@@ -163,34 +171,33 @@ async def get_salon(
     - services: Array (if include_services=true)
     - staff: Array (if include_staff=true)
     """
-    try:
-        # Use service layer to get salon with optional relations
-        salon = await salon_service.get_salon(
-            salon_id=salon_id,
-            include_services=include_services,
-            include_staff=include_staff
+    # Use service layer to get salon with optional relations
+    salon_data = await salon_service.get_salon(
+        salon_id=salon_id,
+        include_services=include_services,
+        include_staff=include_staff
+    )
+    
+    # Service layer will raise ValueError if not found
+    # Check if salon is publicly visible
+    if not (salon_data.get('is_active') and salon_data.get('is_verified') and salon_data.get('registration_fee_paid')):
+        raise HTTPException(
+            status_code=404, 
+            detail="Salon not available. It may be inactive, unverified, or payment pending."
         )
-        
-        # Service layer will raise ValueError if not found
-        # Check if salon is publicly visible
-        if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
-            raise HTTPException(
-                status_code=404, 
-                detail="Salon not available. It may be inactive, unverified, or payment pending."
-            )
-        
-        return {"salon": salon}
-        
-    except ValueError as e:
-        # Salon not found
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch salon: {str(e)}")
+    
+    # Extract services and staff from the salon data if present
+    services = salon_data.pop('services', None) if include_services else None
+    staff = salon_data.pop('salon_staff', None) if include_staff else None
+    
+    return {
+        "salon": salon_data,
+        "services": services,
+        "staff": staff
+    }
 
 
-@router.get("/{salon_id}/services")
+@router.get("/{salon_id}/services", response_model=SalonServicesResponse)
 async def get_salon_services(
     salon_id: str,
     salon_service: SalonService = Depends(get_salon_service)
@@ -210,24 +217,16 @@ async def get_salon_services(
     - services: Array of service objects with category info
     - count: Total number of services
     """
-    try:
-        # Get services through service layer
-        services = await salon_service.get_salon_services(salon_id)
-        
-        return {
-            "services": services,
-            "count": len(services)
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch services: {str(e)}")
+    # Get services through service layer
+    services = await salon_service.get_salon_services(salon_id)
+    
+    return {
+        "services": services,
+        "count": len(services)
+    }
 
 
-@router.get("/{salon_id}/staff")
+@router.get("/{salon_id}/staff", response_model=SalonStaffListResponse)
 async def get_salon_staff(
     salon_id: str,
     salon_service: SalonService = Depends(get_salon_service)
@@ -243,29 +242,22 @@ async def get_salon_staff(
     - staff: Array of staff member objects
     - count: Total number of staff
     """
-    try:
-        # Get staff through service layer
-        staff = await salon_service.get_salon_staff(salon_id)
-        
-        return {
-            "staff": staff,
-            "count": len(staff)
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch staff: {str(e)}")
+    # Get staff through service layer
+    staff = await salon_service.get_salon_staff(salon_id)
+    
+    return {
+        "staff": staff,
+        "count": len(staff)
+    }
 
 
-@router.get("/{salon_id}/available-slots")
+@router.get("/{salon_id}/available-slots", response_model=AvailableSlotsResponse)
 async def get_available_slots(
     salon_id: str,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     service_ids: Optional[str] = Query(None, description="Comma-separated service IDs"),
-    salon_service: SalonService = Depends(get_salon_service)
+    salon_service: SalonService = Depends(get_salon_service),
+    db = Depends(get_db_client)
 ):
     """
     Get available time slots for booking.
@@ -285,42 +277,99 @@ async def get_available_slots(
     - slots: Array of available time slots
     - date: Echo of requested date
     """
+    # Verify salon exists and is public
+    salon = await salon_service.get_salon(salon_id)
+    
+    if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
+        raise HTTPException(status_code=404, detail="Salon not available")
+    
+    # Parse service IDs if provided
+    service_id_list = service_ids.split(',') if service_ids else []
+    
+    # Calculate total duration if services provided
+    total_duration = 0
+    if service_id_list:
+        from app.services.vendor_service import VendorService
+        vendor_service = VendorService(db_client=db)
+        for service_id in service_id_list:
+            service = await vendor_service.get_service(service_id.strip())
+            if service and service.get('is_active'):
+                total_duration += service.get('duration_minutes', 60)  # Default 60 minutes
+    else:
+        total_duration = 60  # Default duration if no services specified
+    
+    # Get existing bookings for this date
     try:
-        # Verify salon exists and is public
-        salon = await salon_service.get_salon(salon_id)
+        bookings_result = await db.table('bookings').select('booking_time, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
+        existing_bookings = bookings_result.data
+    except Exception as e:
+        logger.warning(f"Could not fetch existing bookings: {e}")
+        existing_bookings = []
+    
+    # Parse business hours
+    opening_time = salon.get('opening_time')
+    closing_time = salon.get('closing_time')
+    
+    if not opening_time or not closing_time:
+        # Default business hours if not set
+        opening_time = "09:00:00"
+        closing_time = "18:00:00"
+    
+    # Generate available slots (1-hour intervals by default)
+    from datetime import datetime, timedelta
+    slots = []
+    
+    try:
+        opening = datetime.strptime(opening_time, "%H:%M:%S").time()
+        closing = datetime.strptime(closing_time, "%H:%M:%S").time()
         
-        if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
-            raise HTTPException(status_code=404, detail="Salon not available")
+        current = datetime.combine(datetime.today(), opening)
+        closing_datetime = datetime.combine(datetime.today(), closing)
         
-        # Parse service IDs if provided
-        service_id_list = service_ids.split(',') if service_ids else []
-        
-        # TODO: Implement slot calculation logic
-        # For now, return sample slots
+        while current + timedelta(minutes=total_duration) <= closing_datetime:
+            slot_time = current.time()
+            slot_str = slot_time.strftime("%I:%M %p")
+            
+            # Check if this slot conflicts with existing bookings
+            conflict = False
+            slot_end = current + timedelta(minutes=total_duration)
+            
+            for booking in existing_bookings:
+                booking_time = datetime.strptime(booking['booking_time'], "%H:%M:%S").time()
+                booking_start = datetime.combine(datetime.today(), booking_time)
+                booking_end = booking_start + timedelta(minutes=booking['duration_minutes'])
+                
+                # Check for overlap
+                if (current < booking_end and slot_end > booking_start):
+                    conflict = True
+                    break
+            
+            if not conflict:
+                slots.append(slot_str)
+            
+            # Move to next slot (1 hour intervals)
+            current += timedelta(hours=1)
+            
+    except Exception as e:
+        logger.error(f"Error calculating slots: {e}")
+        # Fallback to sample slots
         slots = [
             "09:00 AM", "10:00 AM", "11:00 AM", 
             "02:00 PM", "03:00 PM", "04:00 PM"
         ]
-        
-        return {
-            "slots": slots,
-            "date": date,
-            "salon_id": salon_id
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    
+    return {
+        "salon_id": salon_id,
+        "date": date,
+        "available_slots": slots
+    }
 
 
 # ========================================
 # NEARBY & SEARCH
 # ========================================
 
-@router.get("/search/nearby")
+@router.get("/search/nearby", response_model=NearbySalonsResponse, operation_id="public_get_nearby_salons")
 async def get_nearby_salons(
     lat: float = Query(..., description="User's latitude"),
     lon: float = Query(..., description="User's longitude"),
@@ -349,44 +398,42 @@ async def get_nearby_salons(
     - count: Number of results
     - query: Echo of search parameters
     """
-    try:
-        from app.services.salon_service import NearbySearchParams, SalonSearchParams
-        
-        # Build search params
-        filters = None
-        if q:
-            filters = SalonSearchParams(search_term=q)
-        
-        params = NearbySearchParams(
-            latitude=lat,
-            longitude=lon,
-            radius_km=radius,
-            max_results=limit,
-            filters=filters
-        )
-        
-        salons = await salon_service.get_nearby_salons(params)
-        
-        return {
-            "salons": salons,
-            "count": len(salons),
-            "query": {
-                "latitude": lat,
-                "longitude": lon,
-                "radius_km": radius,
-                "search_term": q
-            }
+    from app.services.salon_service import NearbySearchParams, SalonSearchParams
+    
+    # Build search params
+    filters = None
+    if q:
+        filters = SalonSearchParams(search_term=q)
+    
+    params = NearbySearchParams(
+        latitude=lat,
+        longitude=lon,
+        radius_km=radius,
+        max_results=limit,
+        filters=filters
+    )
+    
+    salons = await salon_service.get_nearby_salons(params)
+    
+    return {
+        "salons": salons,
+        "count": len(salons),
+        "query": {
+            "lat": lat,
+            "lon": lon,
+            "radius": radius,
+            "limit": limit,
+            "q": q
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch nearby salons: {str(e)}")
+    }
 
 
-@router.get("/search/query")
+@router.get("/search/query", response_model=SearchSalonsResponse, operation_id="public_search_salons")
 async def search_salons(
     q: Optional[str] = Query(None, description="Search term for salon name"),
     city: Optional[str] = Query(None, description="Filter by city"),
     state: Optional[str] = Query(None, description="Filter by state"),
-    service_type: Optional[str] = Query(None, description="Filter by business type"),
+    service_type: Optional[str] = Query(None, description="Filter by service type"),
     limit: int = Query(50, ge=1, le=100, description="Maximum results"),
     salon_service: SalonService = Depends(get_salon_service)
 ):
@@ -415,27 +462,21 @@ async def search_salons(
     - count: Number of results
     - query: Echo of search term
     """
-    try:
-        salons = await salon_service.search_salons_by_query(
-            query_text=q,
-            city=city,
-            state=state,
-            service_type=service_type,
-            limit=limit
-        )
-        
-        return {
-            "salons": salons,
-            "count": len(salons),
-            "query": {
-                "search_term": q,
-                "city": city,
-                "state": state,
-                "service_type": service_type
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+    salons = await salon_service.search_salons_by_query(
+        query_text=q,
+        city=city,
+        state=state,
+        service_type=service_type,
+        limit=limit
+    )
+    
+    return {
+        "salons": salons,
+        "query": q or "",
+        "count": len(salons),
+        "offset": 0,  # Not implemented in service
+        "limit": limit
+    }
 
 
 
@@ -443,8 +484,9 @@ async def search_salons(
 # CREATE & UPDATE (Admin Only - RLS Enforced)
 # ========================================
 
-@router.post("/")
+@router.post("/", response_model=SalonResponse)
 async def create_salon(
+    current_user: TokenData = Depends(require_admin),
     name: str = Form(...),
     description: Optional[str] = Form(None),
     phone: str = Form(...),
@@ -460,59 +502,53 @@ async def create_salon(
     status: str = Form("pending")
 ):
     """
-    Create new salon
+    Create new salon - Admin only
     
-    RLS ensures only admins/HMR agents can create salons
+    Authorization handled in Python via require_admin dependency
     If cover_image provided, uploads to db Storage
     """
-    try:
-        # Prepare salon data
-        salon_data = {
-            "name": name,
-            "description": description,
-            "phone": phone,
-            "email": email,
-            "address_line1": address_line1,
-            "city": city,
-            "state": state,
-            "pincode": pincode,
-            "latitude": str(latitude) if latitude else None,
-            "longitude": str(longitude) if longitude else None,
-            "owner_id": owner_id,
-            "status": status
-        }
-        
-        # Create salon
-        salon = db.create_salon(salon_data)
-        
-        if not salon:
-            raise HTTPException(status_code=500, detail="Failed to create salon")
-        
-        # Upload cover image if provided
-        if cover_image:
-            try:
-                image_data = await cover_image.read()
-                cover_url = db.upload_salon_image(
-                    salon_id=salon["id"],
-                    image_data=image_data,
-                    filename=f"cover.{cover_image.filename.split('.')[-1]}"
-                )
-                
-                # Update salon with cover image URL
-                salon = db.update_salon(salon["id"], {"cover_image": cover_url})
-            except Exception as img_error:
-                print(f"Warning: Failed to upload cover image: {img_error}")
-                # Don't fail the entire request if image upload fails
-        
-        return salon
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Prepare salon data
+    salon_data = {
+        "name": name,
+        "description": description,
+        "phone": phone,
+        "email": email,
+        "address_line1": address_line1,
+        "city": city,
+        "state": state,
+        "pincode": pincode,
+        "latitude": str(latitude) if latitude else None,
+        "longitude": str(longitude) if longitude else None,
+        "owner_id": owner_id,
+        "status": status
+    }
+    
+    # Create salon
+    salon = db.create_salon(salon_data)
+    
+    if not salon:
+        raise HTTPException(status_code=500, detail="Failed to create salon")
+    
+    # Upload cover image if provided
+    if cover_image:
+        try:
+            image_data = await cover_image.read()
+            cover_url = db.upload_salon_image(
+                salon_id=salon["id"],
+                image_data=image_data,
+                filename=f"cover.{cover_image.filename.split('.')[-1]}"
+            )
+            
+            # Update salon with cover image URL
+            salon = db.update_salon(salon["id"], {"cover_image": cover_url})
+        except Exception as img_error:
+            print(f"Warning: Failed to upload cover image: {img_error}")
+            # Don't fail the entire request if image upload fails
+    
+    return salon
 
 
-@router.patch("/{salon_id}")
+@router.patch("/{salon_id}", response_model=SalonResponse)
 async def update_salon(
     salon_id: int,
     name: Optional[str] = None,
@@ -525,60 +561,51 @@ async def update_salon(
     
     RLS ensures only salon owner or admin can update
     """
-    try:
-        updates = {}
-        if name is not None:
-            updates["name"] = name
-        if description is not None:
-            updates["description"] = description
-        if phone is not None:
-            updates["phone"] = phone
-        
-        salon = db.update_salon(salon_id, updates)
-        
-        if not salon:
-            raise HTTPException(status_code=404, detail="Salon not found")
-        
-        return salon
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    updates = {}
+    if name is not None:
+        updates["name"] = name
+    if description is not None:
+        updates["description"] = description
+    if phone is not None:
+        updates["phone"] = phone
+    
+    salon = db.update_salon(salon_id, updates)
+    
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    
+    return salon
 
 
-@router.post("/{salon_id}/approve")
+@router.post("/{salon_id}/approve", response_model=SuccessResponse)
 async def approve_salon(
     salon_id: int,
+    admin: TokenData = Depends(require_admin),
     reviewed_by: str = Form(...),
     rejection_reason: Optional[str] = Form(None)
 ):
     """
-    Approve or reject salon
+    Approve or reject salon - Admin only
     
-    RLS ensures only admins can approve/reject
+    Authorization handled in Python via require_admin dependency
     """
-    try:
-        success = db.approve_salon(
-            salon_id=salon_id,
-            reviewed_by=reviewed_by,
-            rejection_reason=rejection_reason
-        )
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to approve salon")
-        
-        return {"success": True, "message": "Salon approved" if not rejection_reason else "Salon rejected"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    success = db.approve_salon(
+        salon_id=salon_id,
+        reviewed_by=reviewed_by,
+        rejection_reason=rejection_reason
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to approve salon")
+    
+    return {"success": True, "message": "Salon approved" if not rejection_reason else "Salon rejected"}
 
 
 # ========================================
 # IMAGE OPERATIONS
 # ========================================
 
-@router.post("/{salon_id}/images")
+@router.post("/{salon_id}/images", response_model=SuccessResponse, operation_id="salons_upload_salon_image")
 async def upload_salon_image(
     salon_id: int,
     image: UploadFile = File(...),
@@ -589,28 +616,29 @@ async def upload_salon_image(
     
     RLS ensures only salon owner or admin can upload
     """
-    try:
-        image_data = await image.read()
-        
-        # Upload to db Storage
-        url = db.upload_salon_image(
-            salon_id=salon_id,
-            image_data=image_data,
-            filename=f"{image_type}_{image.filename}",
-            content_type=image.content_type
-        )
-        
-        return {"url": url, "message": "Image uploaded successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    image_data = await image.read()
+    
+    # Upload to db Storage
+    url = db.upload_salon_image(
+        salon_id=salon_id,
+        image_data=image_data,
+        filename=f"{image_type}_{image.filename}",
+        content_type=image.content_type
+    )
+    
+    return {
+        "success": True,
+        "message": "Image uploaded successfully",
+        "data": {"url": url}
+    }
 
 
 # ========================================
 # PUBLIC SYSTEM CONFIG
 # ========================================
 
-@router.get("/config/public")
-async def get_public_configs():
+@router.get("/config/public", response_model=PublicConfigResponse)
+async def get_public_configs(db: Client = Depends(get_db_client)):
     """
     Get public system configurations (non-sensitive values)
     
@@ -624,7 +652,7 @@ async def get_public_configs():
     from app.services.config_service import ConfigService
     
     try:
-        config_service = ConfigService()
+        config_service = ConfigService(db_client=db)
         
         # Define which configs are safe to expose publicly
         public_config_keys = [
@@ -673,7 +701,7 @@ async def get_public_configs():
         }
 
 
-@router.get("/config/booking-fee-percentage")
+@router.get("/config/booking-fee-percentage", response_model=CommissionConfigResponse)
 async def get_booking_fee_percentage(
     salon_service: SalonService = Depends(get_salon_service)
 ):
@@ -686,6 +714,6 @@ async def get_booking_fee_percentage(
     DEPRECATED: Use /salons/config/public instead
     """
     commission = await salon_service.get_platform_commission_config()
-    return {"booking_fee_percentage": commission}
+    return {"commission_percentage": commission}
 
 

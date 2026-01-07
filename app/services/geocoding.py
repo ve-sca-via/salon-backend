@@ -82,14 +82,22 @@ def get_geocoding_service():
 
 class GeocodingService:
     def __init__(self):
+        # Initialize rate limiting attributes (needed for both providers)
+        self._last_request_time = 0
+        self._rate_limit_delay = 1.0
+        
         # Log the API key status
         api_key = settings.GOOGLE_MAPS_API_KEY
         logger.info(f"🗺️ Geocoding initialization:")
         logger.info(f"   Google Maps API key present: {bool(api_key)}")
         logger.info(f"   Google Maps API key length: {len(api_key) if api_key else 0}")
         
-        # Try Google Maps first if API key is provided AND not empty
-        if api_key and api_key.strip() and len(api_key) > 10:
+        # Reject placeholder values
+        placeholder_values = ["your-google-maps-api-key", "YOUR_API_KEY", "xxx", ""]
+        is_placeholder = any(api_key == placeholder for placeholder in placeholder_values) if api_key else True
+        
+        # Try Google Maps first if API key is provided AND not a placeholder
+        if api_key and api_key.strip() and len(api_key) > 30 and not is_placeholder:
             try:
                 self.geocoder = GoogleV3(api_key=api_key)
                 self.provider = "google"
@@ -99,9 +107,9 @@ class GeocodingService:
                 logger.info("🔄 Falling back to Nominatim (OpenStreetMap)")
                 self._init_nominatim()
         else:
-            if api_key:
-                logger.warning(f"⚠️ Google Maps API key is invalid (too short or empty): '{api_key[:20]}...'")
-            logger.info("✅ Using Nominatim (OpenStreetMap) - FREE geocoding")
+            if api_key and not is_placeholder:
+                logger.warning(f"⚠️ Google Maps API key is invalid (too short): '{api_key[:20]}...'")
+            logger.info("✅ Using Nominatim (OpenStreetMap) - FREE geocoding, no API key needed")
             self._init_nominatim()
     
     def _init_nominatim(self):
@@ -117,9 +125,6 @@ class GeocodingService:
             domain='nominatim.openstreetmap.org'
         )
         self.provider = "nominatim"
-        self._last_request_time = 0
-        # Nominatim rate limit: 1 request per second
-        self._rate_limit_delay = 1.0
         logger.info("✅ Nominatim initialized successfully (FREE, no API key needed)")
 
     async def _rate_limit(self):
@@ -185,10 +190,10 @@ class GeocodingService:
                 return (location.latitude, location.longitude)
             return None
         except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"[Geocoding Error - {self.provider}] {e}")
+            logger.error(f"[Geocoding Error - {self.provider}] {e}")
             return None
         except Exception as e:
-            print(f"[Unexpected Geocoding Error] {e}")
+            logger.error(f"[Unexpected Geocoding Error] {e}")
             return None
 
     async def reverse_geocode(self, lat: float, lon: float) -> Optional[Dict[str, any]]:
@@ -233,19 +238,19 @@ class GeocodingService:
                 return response
             return None
         except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"[Reverse Geocoding Error - {self.provider}] {e}")
+            logger.error(f"[Reverse Geocoding Error - {self.provider}] {e}")
             return None
         except Exception as e:
-            print(f"[Unexpected Reverse Geocoding Error] {e}")
+            logger.error(f"[Unexpected Reverse Geocoding Error] {e}")
             return None
 
 
 # =====================================================
-# GLOBAL INSTANCE (Uses Factory Pattern)
+# GLOBAL INSTANCE (Singleton created at module import)
 # =====================================================
 
 # Get geocoding service using factory function
 # In test mode (ENVIRONMENT=test), this will be MockGeocodingService
-# In production, this will be real GeocodingService
+# In production/dev, this will be real GeocodingService
 geocoding_service = get_geocoding_service()
 

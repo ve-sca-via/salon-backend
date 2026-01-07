@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
     WORKERS: int = Field(default=4)
+    ALLOWED_HOSTS: List[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
     
     # =====================================================
     # SUPABASE CONFIGURATION
@@ -39,10 +40,19 @@ class Settings(BaseSettings):
     # =====================================================
     # JWT & AUTHENTICATION
     # =====================================================
-    JWT_SECRET_KEY: str = Field(default="your-super-secret-jwt-key-change-this")
+    JWT_SECRET_KEY: str  # No default - MUST be set in environment
     JWT_ALGORITHM: str = Field(default="HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
+    
+    @field_validator('JWT_SECRET_KEY')
+    @classmethod
+    def validate_jwt_secret(cls, v):
+        if not v or v == "your-super-secret-jwt-key-change-this":
+            raise ValueError("JWT_SECRET_KEY must be set to a secure random value (min 32 characters)")
+        if len(v) < 32:
+            raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
+        return v
     
     # =====================================================
     # PAYMENT GATEWAY (RAZORPAY)
@@ -61,6 +71,7 @@ class Settings(BaseSettings):
     EMAIL_ENABLED: bool = Field(default=False)  # Toggle email sending (False = log only)
     EMAIL_FROM: str = Field(default="noreply@salonplatform.com")
     EMAIL_FROM_NAME: str = Field(default="Salon Management Platform")
+    ADMIN_EMAIL: str = Field(default="admin@salonplatform.com")  # Admin notification email
     
     # Resend API (legacy)
     RESEND_API_KEY: str = Field(default="")
@@ -76,10 +87,10 @@ class Settings(BaseSettings):
     # =====================================================
     # FRONTEND URLS
     # =====================================================
-    FRONTEND_URL: str = Field(default="http://localhost:5173")
+    FRONTEND_URL: str = Field(default="http://localhost:3000")
     ADMIN_PANEL_URL: str = Field(default="http://localhost:5174")
-    VENDOR_PORTAL_URL: str = Field(default="http://localhost:5173/vendor")
-    RM_PORTAL_URL: str = Field(default="http://localhost:5173/rm")
+    VENDOR_PORTAL_URL: str = Field(default="http://localhost:3000/vendor")
+    RM_PORTAL_URL: str = Field(default="http://localhost:3000/rm")
     
     # =====================================================
     # CORS SETTINGS

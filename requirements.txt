@@ -27,12 +27,14 @@ python-multipart==0.0.6
 
 # Payment Gateway
 razorpay==1.4.1
+setuptools==65.5.1
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 email-validator==2.1.0
 bcrypt==4.1.1
+slowapi==0.1.9  # Rate limiting
 
 # Utilities
 python-dateutil==2.8.2

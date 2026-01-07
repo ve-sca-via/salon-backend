@@ -1,0 +1,772 @@
+-- -- =====================================================
+-- -- SEED DATA FOR LOCAL DEVELOPMENT
+-- -- =====================================================
+-- -- This migration seeds essential data for testing:
+-- -- - Admin user, RM agent, and customer accounts (auth + profiles)
+-- -- - Service categories with proper display order
+-- -- =====================================================
+
+-- DO $$
+-- DECLARE
+--     admin_uuid UUID := gen_random_uuid();
+--     agent_uuid UUID := gen_random_uuid();
+--     customer_uuid UUID := gen_random_uuid();
+--     vendor1_uuid UUID := gen_random_uuid();
+--     vendor2_uuid UUID := gen_random_uuid();
+--     vendor3_uuid UUID := gen_random_uuid();
+    
+--     join_req1_uuid UUID := gen_random_uuid();
+--     join_req2_uuid UUID := gen_random_uuid();
+--     join_req3_uuid UUID := gen_random_uuid();
+    
+--     salon1_uuid UUID := gen_random_uuid();
+--     salon2_uuid UUID := gen_random_uuid();
+--     salon3_uuid UUID := gen_random_uuid();
+    
+--     cat_haircut_id UUID;
+--     cat_facial_id UUID;
+--     cat_massage_id UUID;
+--     cat_manicure_id UUID;
+--     cat_coloring_id UUID;
+-- BEGIN
+--     -- =====================================================
+--     -- STEP 0: Create service categories first
+--     -- =====================================================
+--     INSERT INTO public.service_categories (name, description, icon_url, display_order, is_active, created_at, updated_at)
+--     VALUES
+--         ('Haircut', 'Professional haircut services for men and women', '💇', 1, true, now(), now()),
+--         ('Hair Coloring', 'Full hair coloring and highlights', '🎨', 2, true, now(), now()),
+--         ('Facial', 'Deep cleansing and rejuvenating facial treatments', '🧖', 3, true, now(), now()),
+--         ('Manicure', 'Complete manicure and nail shaping', '💅', 4, true, now(), now()),
+--         ('Pedicure', 'Foot spa and pedicure service', '🦶', 5, true, now(), now()),
+--         ('Massage', 'Relaxation and therapeutic body massage', '💆', 6, true, now(), now()),
+--         ('Waxing', 'Body and facial waxing services', '✨', 7, true, now(), now()),
+--         ('Threading', 'Eyebrow and face threading services', '🧵', 8, true, now(), now()),
+--         ('Makeup', 'Professional makeup for events and parties', '💄', 9, true, now(), now()),
+--         ('Hair Spa', 'Nutrition and care treatment for hair', '🌿', 10, true, now(), now()),
+--         ('Beard Grooming', 'Beard trimming and styling', '🧔', 11, true, now(), now()),
+--         ('Bridal Package', 'Full bridal grooming and makeup package', '👰', 12, true, now(), now()),
+--         ('Kids Haircut', 'Haircut service for kids', '👶', 13, true, now(), now())
+--     ON CONFLICT (name) DO UPDATE SET
+--         description = EXCLUDED.description,
+--         icon_url = EXCLUDED.icon_url,
+--         display_order = EXCLUDED.display_order,
+--         is_active = EXCLUDED.is_active,
+--         updated_at = now();
+
+--     -- =====================================================
+--     -- STEP 1: Create auth.users first (required for FK)
+--     -- =====================================================
+    
+--     -- Admin User in auth
+--     INSERT INTO auth.users (
+--         instance_id,
+--         id,
+--         aud,
+--         role,
+--         email,
+--         encrypted_password,
+--         email_confirmed_at,
+--         raw_app_meta_data,
+--         raw_user_meta_data,
+--         created_at,
+--         updated_at,
+--         confirmation_token,
+--         recovery_token,
+--         email_change_token_new,
+--         email_change
+--     )
+--     VALUES (
+--         '00000000-0000-0000-0000-000000000000',
+--         admin_uuid,
+--         'authenticated',
+--         'authenticated',
+--         'admin@salonhub.com',
+--         crypt('12345678', gen_salt('bf')),
+--         now(),
+--         '{"provider":"email","providers":["email"]}',
+--         '{}',
+--         now(),
+--         now(),
+--         '',
+--         '',
+--         '',
+--         ''
+--     ) ON CONFLICT (id) DO UPDATE SET
+--         email_confirmed_at = now(),
+--         encrypted_password = crypt('12345678', gen_salt('bf'));
+
+--     -- RM Agent in auth
+--     INSERT INTO auth.users (
+--         instance_id,
+--         id,
+--         aud,
+--         role,
+--         email,
+--         encrypted_password,
+--         email_confirmed_at,
+--         raw_app_meta_data,
+--         raw_user_meta_data,
+--         created_at,
+--         updated_at,
+--         confirmation_token,
+--         recovery_token,
+--         email_change_token_new,
+--         email_change
+--     )
+--     VALUES (
+--         '00000000-0000-0000-0000-000000000000',
+--         agent_uuid,
+--         'authenticated',
+--         'authenticated',
+--         'agent@salonhub.com',
+--         crypt('12345678', gen_salt('bf')),
+--         now(),
+--         '{"provider":"email","providers":["email"]}',
+--         '{}',
+--         now(),
+--         now(),
+--         '',
+--         '',
+--         '',
+--         ''
+--     ) ON CONFLICT (id) DO UPDATE SET
+--         email_confirmed_at = now(),
+--         encrypted_password = crypt('12345678', gen_salt('bf'));
+
+--     -- Customer in auth
+--     INSERT INTO auth.users (
+--         instance_id,
+--         id,
+--         aud,
+--         role,
+--         email,
+--         encrypted_password,
+--         email_confirmed_at,
+--         raw_app_meta_data,
+--         raw_user_meta_data,
+--         created_at,
+--         updated_at,
+--         confirmation_token,
+--         recovery_token,
+--         email_change_token_new,
+--         email_change
+--     )
+--     VALUES (
+--         '00000000-0000-0000-0000-000000000000',
+--         customer_uuid,
+--         'authenticated',
+--         'authenticated',
+--         'customer@salonhub.com',
+--         crypt('12345678', gen_salt('bf')),
+--         now(),
+--         '{"provider":"email","providers":["email"]}',
+--         '{}',
+--         now(),
+--         now(),
+--         '',
+--         '',
+--         '',
+--         ''
+--     ) ON CONFLICT (id) DO UPDATE SET
+--         email_confirmed_at = now(),
+--         encrypted_password = crypt('12345678', gen_salt('bf'));
+
+--     -- Vendor 1 (Approved & Active)
+--     INSERT INTO auth.users (
+--         instance_id,
+--         id,
+--         aud,
+--         role,
+--         email,
+--         encrypted_password,
+--         email_confirmed_at,
+--         raw_app_meta_data,
+--         raw_user_meta_data,
+--         created_at,
+--         updated_at,
+--         confirmation_token,
+--         recovery_token,
+--         email_change_token_new,
+--         email_change
+--     )
+--     VALUES (
+--         '00000000-0000-0000-0000-000000000000',
+--         vendor1_uuid,
+--         'authenticated',
+--         'authenticated',
+--         'vendor1@salonhub.com',
+--         crypt('12345678', gen_salt('bf')),
+--         now(),
+--         '{"provider":"email","providers":["email"]}',
+--         '{}',
+--         now(),
+--         now(),
+--         '',
+--         '',
+--         '',
+--         ''
+--     ) ON CONFLICT (id) DO UPDATE SET
+--         email_confirmed_at = now(),
+--         encrypted_password = crypt('12345678', gen_salt('bf'));
+
+--     -- Vendor 2 (Approved & Active)
+--     INSERT INTO auth.users (
+--         instance_id,
+--         id,
+--         aud,
+--         role,
+--         email,
+--         encrypted_password,
+--         email_confirmed_at,
+--         raw_app_meta_data,
+--         raw_user_meta_data,
+--         created_at,
+--         updated_at,
+--         confirmation_token,
+--         recovery_token,
+--         email_change_token_new,
+--         email_change
+--     )
+--     VALUES (
+--         '00000000-0000-0000-0000-000000000000',
+--         vendor2_uuid,
+--         'authenticated',
+--         'authenticated',
+--         'vendor2@salonhub.com',
+--         crypt('12345678', gen_salt('bf')),
+--         now(),
+--         '{"provider":"email","providers":["email"]}',
+--         '{}',
+--         now(),
+--         now(),
+--         '',
+--         '',
+--         '',
+--         ''
+--     ) ON CONFLICT (id) DO UPDATE SET
+--         email_confirmed_at = now(),
+--         encrypted_password = crypt('12345678', gen_salt('bf'));
+
+--     -- Vendor 3 (Pending Approval - No Auth Yet)
+
+--     -- =====================================================
+--     -- STEP 2: Create profiles (references auth.users)
+--     -- =====================================================
+    
+--     -- Admin Profile
+--     INSERT INTO public.profiles (id, email, full_name, phone, user_role, is_active, created_at, updated_at)
+--     VALUES (
+--         admin_uuid,
+--         'admin@salonhub.com',
+--         'Admin User',
+--         '+919876543210',
+--         'admin',
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (email) DO NOTHING;
+
+--     -- Relationship Manager Profile
+--     INSERT INTO public.profiles (id, email, full_name, phone, user_role, is_active, created_at, updated_at)
+--     VALUES (
+--         agent_uuid,
+--         'agent@salonhub.com',
+--         'RM Agent',
+--         '+919876543211',
+--         'relationship_manager',
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (email) DO NOTHING;
+
+--     -- Create RM profile entry
+--     INSERT INTO public.rm_profiles (
+--         id,
+--         full_name,
+--         email,
+--         phone,
+--         assigned_territories,
+--         performance_score,
+--         is_active,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         agent_uuid,
+--         'RM Agent',
+--         'agent@salonhub.com',
+--         '+919876543211',
+--         ARRAY['North Delhi', 'South Delhi'],
+--         85,
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- Customer Profile
+--     INSERT INTO public.profiles (id, email, full_name, phone, user_role, is_active, created_at, updated_at)
+--     VALUES (
+--         customer_uuid,
+--         'customer@salonhub.com',
+--         'Test Customer',
+--         '+919876543212',
+--         'customer',
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (email) DO NOTHING;
+
+--     -- Vendor 1 Profile
+--     INSERT INTO public.profiles (id, email, full_name, phone, user_role, is_active, created_at, updated_at)
+--     VALUES (
+--         vendor1_uuid,
+--         'vendor1@salonhub.com',
+--         'Rajesh Kumar',
+--         '+919876543213',
+--         'vendor',
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (email) DO NOTHING;
+
+--     -- Vendor 2 Profile
+--     INSERT INTO public.profiles (id, email, full_name, phone, user_role, is_active, created_at, updated_at)
+--     VALUES (
+--         vendor2_uuid,
+--         'vendor2@salonhub.com',
+--         'Priya Sharma',
+--         '+919876543214',
+--         'vendor',
+--         true,
+--         now(),
+--         now()
+--     ) ON CONFLICT (email) DO NOTHING;
+
+--     -- =====================================================
+--     -- STEP 3: Create vendor_join_requests
+--     -- =====================================================
+
+--     -- Join Request 1 (APPROVED - with vendor account)
+--     INSERT INTO public.vendor_join_requests (
+--         id,
+--         rm_id,
+--         business_name,
+--         business_type,
+--         owner_name,
+--         owner_email,
+--         owner_phone,
+--         business_address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         gst_number,
+--         pan_number,
+--         status,
+--         submitted_at,
+--         reviewed_at,
+--         reviewed_by,
+--         admin_notes,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         join_req1_uuid,
+--         agent_uuid,
+--         'Glamour Studio',
+--         'unisex_salon',
+--         'Rajesh Kumar',
+--         'vendor1@salonhub.com',
+--         '+919876543213',
+--         '123 MG Road, Connaught Place',
+--         'New Delhi',
+--         'Delhi',
+--         '110001',
+--         28.6139,
+--         77.2090,
+--         '07AAAAA1234A1Z5',
+--         'AAAAA1234A',
+--         'approved',
+--         now() - interval '5 days',
+--         now() - interval '3 days',
+--         admin_uuid,
+--         'Excellent documentation. Approved for onboarding.',
+--         now() - interval '5 days',
+--         now() - interval '3 days'
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- Join Request 2 (APPROVED - with vendor account)
+--     INSERT INTO public.vendor_join_requests (
+--         id,
+--         rm_id,
+--         business_name,
+--         business_type,
+--         owner_name,
+--         owner_email,
+--         owner_phone,
+--         business_address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         gst_number,
+--         pan_number,
+--         status,
+--         submitted_at,
+--         reviewed_at,
+--         reviewed_by,
+--         admin_notes,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         join_req2_uuid,
+--         agent_uuid,
+--         'Beauty Bliss Spa',
+--         'spa',
+--         'Priya Sharma',
+--         'vendor2@salonhub.com',
+--         '+919876543214',
+--         '456 Nehru Place, South Delhi',
+--         'New Delhi',
+--         'Delhi',
+--         '110019',
+--         28.5494,
+--         77.2501,
+--         '07BBBBB5678B1Z5',
+--         'BBBBB5678B',
+--         'approved',
+--         now() - interval '4 days',
+--         now() - interval '2 days',
+--         admin_uuid,
+--         'Great facility. Approved.',
+--         now() - interval '4 days',
+--         now() - interval '2 days'
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- Join Request 3 (PENDING - awaiting admin approval)
+--     INSERT INTO public.vendor_join_requests (
+--         id,
+--         rm_id,
+--         business_name,
+--         business_type,
+--         owner_name,
+--         owner_email,
+--         owner_phone,
+--         business_address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         gst_number,
+--         status,
+--         submitted_at,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         join_req3_uuid,
+--         agent_uuid,
+--         'Men''s Grooming Hub',
+--         'barber_shop',
+--         'Amit Singh',
+--         'vendor3@example.com',
+--         '+919876543215',
+--         '789 Saket, South Delhi',
+--         'New Delhi',
+--         'Delhi',
+--         '110017',
+--         28.5244,
+--         77.2066,
+--         '07CCCCC9012C1Z5',
+--         'pending',
+--         now() - interval '1 day',
+--         now() - interval '1 day',
+--         now() - interval '1 day'
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- =====================================================
+--     -- STEP 4: Create salons (for approved vendors)
+--     -- =====================================================
+
+--     -- Salon 1 (Active, Payment Done, Accepting Bookings)
+--     INSERT INTO public.salons (
+--         id,
+--         vendor_id,
+--         assigned_rm,
+--         join_request_id,
+--         business_name,
+--         description,
+--         phone,
+--         email,
+--         address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         location,
+--         gst_number,
+--         pan_number,
+--         logo_url,
+--         cover_images,
+--         opening_time,
+--         closing_time,
+--         working_days,
+--         is_active,
+--         is_verified,
+--         verified_at,
+--         verified_by,
+--         average_rating,
+--         total_reviews,
+--         registration_fee_paid,
+--         accepting_bookings,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         salon1_uuid,
+--         vendor1_uuid,
+--         agent_uuid,
+--         join_req1_uuid,
+--         'Glamour Studio',
+--         'Premium unisex salon offering haircuts, styling, spa, and grooming services in the heart of Delhi.',
+--         '+919876543213',
+--         'vendor1@salonhub.com',
+--         '123 MG Road, Connaught Place',
+--         'New Delhi',
+--         'Delhi',
+--         '110001',
+--         28.6139,
+--         77.2090,
+--         ST_SetSRID(ST_MakePoint(77.2090, 28.6139), 4326)::geography,
+--         '07AAAAA1234A1Z5',
+--         'AAAAA1234A',
+--         'https://images.unsplash.com/photo-1560066984-138dadb4c035?w=300&h=300&fit=crop',
+--         ARRAY['https://images.unsplash.com/photo-1562322140-8baeececf3df?w=800&h=600&fit=crop'],
+--         '09:00:00'::time,
+--         '21:00:00'::time,
+--         ARRAY['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+--         true,
+--         true,
+--         now() - interval '3 days',
+--         admin_uuid,
+--         4.5,
+--         25,
+--         true,
+--         true,
+--         now() - interval '5 days',
+--         now()
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- Salon 2 (Active, Payment Done, Accepting Bookings)
+--     INSERT INTO public.salons (
+--         id,
+--         vendor_id,
+--         assigned_rm,
+--         join_request_id,
+--         business_name,
+--         description,
+--         phone,
+--         email,
+--         address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         location,
+--         gst_number,
+--         pan_number,
+--         logo_url,
+--         opening_time,
+--         closing_time,
+--         working_days,
+--         is_active,
+--         is_verified,
+--         verified_at,
+--         verified_by,
+--         average_rating,
+--         total_reviews,
+--         registration_fee_paid,
+--         accepting_bookings,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         salon2_uuid,
+--         vendor2_uuid,
+--         agent_uuid,
+--         join_req2_uuid,
+--         'Beauty Bliss Spa',
+--         'Luxury spa and wellness center offering massage, facials, and beauty treatments.',
+--         '+919876543214',
+--         'vendor2@salonhub.com',
+--         '456 Nehru Place, South Delhi',
+--         'New Delhi',
+--         'Delhi',
+--         '110019',
+--         28.5494,
+--         77.2501,
+--         ST_SetSRID(ST_MakePoint(77.2501, 28.5494), 4326)::geography,
+--         '07BBBBB5678B1Z5',
+--         'BBBBB5678B',
+--         'https://images.unsplash.com/photo-1519415387722-a1c3bbef716c?w=300&h=300&fit=crop',
+--         '10:00:00'::time,
+--         '20:00:00'::time,
+--         ARRAY['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+--         true,
+--         true,
+--         now() - interval '2 days',
+--         admin_uuid,
+--         4.8,
+--         42,
+--         true,
+--         true,
+--         now() - interval '4 days',
+--         now()
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- Salon 3 (Pending Payment - NOT accepting bookings yet)
+--     INSERT INTO public.salons (
+--         id,
+--         vendor_id,
+--         assigned_rm,
+--         join_request_id,
+--         business_name,
+--         phone,
+--         email,
+--         address,
+--         city,
+--         state,
+--         pincode,
+--         latitude,
+--         longitude,
+--         location,
+--         is_active,
+--         is_verified,
+--         verified_at,
+--         verified_by,
+--         average_rating,
+--         total_reviews,
+--         registration_fee_paid,
+--         accepting_bookings,
+--         created_at,
+--         updated_at
+--     )
+--     VALUES (
+--         salon3_uuid,
+--         vendor1_uuid,
+--         agent_uuid,
+--         join_req1_uuid,
+--         'Glamour Studio Branch 2',
+--         '+919876543216',
+--         'branch2@glamourstudio.com',
+--         '789 Rajouri Garden',
+--         'New Delhi',
+--         'Delhi',
+--         '110027',
+--         28.6417,
+--         77.1223,
+--         ST_SetSRID(ST_MakePoint(77.1223, 28.6417), 4326)::geography,
+--         false,
+--         true,
+--         now() - interval '1 day',
+--         admin_uuid,
+--         0.0,
+--         0,
+--         false,
+--         false,
+--         now() - interval '1 day',
+--         now()
+--     ) ON CONFLICT (id) DO NOTHING;
+
+--     -- =====================================================
+--     -- STEP 5: Create services for salons
+--     -- =====================================================
+
+--     -- Get category IDs
+--     SELECT id INTO cat_haircut_id FROM service_categories WHERE name = 'Haircut' LIMIT 1;
+--     SELECT id INTO cat_facial_id FROM service_categories WHERE name = 'Facial' LIMIT 1;
+--     SELECT id INTO cat_massage_id FROM service_categories WHERE name = 'Massage' LIMIT 1;
+--     SELECT id INTO cat_manicure_id FROM service_categories WHERE name = 'Manicure' LIMIT 1;
+--     SELECT id INTO cat_coloring_id FROM service_categories WHERE name = 'Hair Coloring' LIMIT 1;
+
+--     -- Services for Salon 1 (Glamour Studio)
+--     INSERT INTO public.services (salon_id, name, description, duration_minutes, price, category_id, is_active, created_at, updated_at)
+--     VALUES
+--         (salon1_uuid, 'Men''s Haircut', 'Professional haircut with styling', 30, 350.00, cat_haircut_id, true, now(), now()),
+--         (salon1_uuid, 'Women''s Haircut', 'Haircut with blow dry', 45, 600.00, cat_haircut_id, true, now(), now()),
+--         (salon1_uuid, 'Hair Coloring Full', 'Complete hair coloring', 120, 2500.00, cat_coloring_id, true, now(), now()),
+--         (salon1_uuid, 'Highlights', 'Partial highlights', 90, 1800.00, cat_coloring_id, true, now(), now()),
+--         (salon1_uuid, 'Deep Cleansing Facial', 'Rejuvenating facial treatment', 60, 1200.00, cat_facial_id, true, now(), now())
+--     ON CONFLICT DO NOTHING;
+
+--     -- Services for Salon 2 (Beauty Bliss Spa)
+--     INSERT INTO public.services (salon_id, name, description, duration_minutes, price, category_id, is_active, created_at, updated_at)
+--     VALUES
+--         (salon2_uuid, 'Swedish Massage', 'Full body relaxation massage', 60, 1500.00, cat_massage_id, true, now(), now()),
+--         (salon2_uuid, 'Deep Tissue Massage', 'Therapeutic massage for muscle relief', 90, 2200.00, cat_massage_id, true, now(), now()),
+--         (salon2_uuid, 'Gold Facial', 'Luxury gold infused facial', 75, 2800.00, cat_facial_id, true, now(), now()),
+--         (salon2_uuid, 'Classic Manicure', 'Nail shaping and polish', 30, 500.00, cat_manicure_id, true, now(), now()),
+--         (salon2_uuid, 'Spa Manicure', 'Luxurious spa manicure with massage', 45, 800.00, cat_manicure_id, true, now(), now())
+--     ON CONFLICT DO NOTHING;
+
+--     -- Services for Salon 3 (Inactive - payment pending)
+--     INSERT INTO public.services (salon_id, name, description, duration_minutes, price, category_id, is_active, created_at, updated_at)
+--     VALUES
+--         (salon3_uuid, 'Quick Haircut', 'Fast and professional haircut', 20, 300.00, cat_haircut_id, false, now(), now())
+--     ON CONFLICT DO NOTHING;
+
+--     -- =====================================================
+--     -- STEP 6: Create salon staff
+--     -- =====================================================
+
+--     INSERT INTO public.salon_staff (salon_id, name, email, phone, role, specialization, is_active, created_at, updated_at)
+--     VALUES
+--         (salon1_uuid, 'Rahul Verma', 'rahul@glamourstudio.com', '+919876543220', 'Senior Stylist', ARRAY['Hair Cutting', 'Hair Styling'], true, now(), now()),
+--         (salon1_uuid, 'Neha Gupta', 'neha@glamourstudio.com', '+919876543221', 'Color Specialist', ARRAY['Hair Coloring', 'Highlights'], true, now(), now()),
+--         (salon2_uuid, 'Anita Desai', 'anita@beautybliss.com', '+919876543222', 'Spa Therapist', ARRAY['Massage', 'Facials'], true, now(), now()),
+--         (salon2_uuid, 'Kavita Mehta', 'kavita@beautybliss.com', '+919876543223', 'Beauty Expert', ARRAY['Manicure', 'Pedicure', 'Facials'], true, now(), now())
+--     ON CONFLICT (id) DO NOTHING;
+
+-- END $$;
+
+-- -- =====================================================
+-- -- SEED DATA SUMMARY
+-- -- =====================================================
+-- -- This migration creates a complete testing environment:
+-- --
+-- -- USERS (All with password: 12345678)
+-- -- - admin@salonhub.com (Admin)
+-- -- - agent@salonhub.com (RM Agent)
+-- -- - customer@salonhub.com (Customer)
+-- -- - vendor1@salonhub.com (Vendor - Glamour Studio)
+-- -- - vendor2@salonhub.com (Vendor - Beauty Bliss Spa)
+-- --
+-- -- VENDOR WORKFLOW:
+-- -- - 2 Approved vendors with active salons (payment done, accepting bookings)
+-- -- - 1 Pending join request (awaiting admin approval)
+-- -- - 1 Inactive salon (payment pending)
+-- --
+-- -- SALONS:
+-- -- - Glamour Studio (Active, 5 services, 2 staff)
+-- -- - Beauty Bliss Spa (Active, 5 services, 2 staff)
+-- -- - Glamour Studio Branch 2 (Inactive - payment pending)
+-- --
+-- -- SERVICES:
+-- -- - 10+ services across categories (haircut, coloring, facial, massage, manicure)
+-- -- - All services have proper pricing and duration
+-- --
+-- -- READY TO TEST:
+-- -- ✅ Customer can browse salons
+-- -- ✅ Customer can add services to cart
+-- -- ✅ Customer can checkout with Razorpay
+-- -- ✅ Vendor can manage salon (toggle accepting_bookings)
+-- -- ✅ Vendor can view bookings
+-- -- ✅ Admin can approve/reject join requests
+-- -- ✅ RM can view assigned vendors

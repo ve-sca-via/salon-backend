@@ -3,18 +3,15 @@ Customer Service - Business Logic Layer
 Handles all customer-facing operations: cart, bookings, salons, favorites, reviews
 Separated from HTTP layer for better testability and reusability
 """
-import json
 import logging
 from typing import Dict, Any, Optional, List
+from app.schemas.request.customer import CartItemCreate, ReviewCreate, ReviewUpdate
 from datetime import datetime
 from fastapi import HTTPException, status
 
 from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 class CustomerService:
@@ -23,9 +20,9 @@ class CustomerService:
     Handles cart, bookings, salon browsing, favorites, and reviews.
     """
     
-    def __init__(self):
-        """Initialize service - uses centralized db client"""
-        pass
+    def __init__(self, db_client):
+        """Initialize service with database client"""
+        self.db = db_client
     
     # =====================================================
     # CART OPERATIONS
@@ -33,7 +30,7 @@ class CustomerService:
     
     async def get_cart(self, customer_id: str) -> Dict[str, Any]:
         """
-        Get all cart items for a customer.
+        Get all cart items for a customer from normalized cart_items table.
         
         Args:
             customer_id: Customer user ID
@@ -45,29 +42,71 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = db.table("cart_items")\
-                .select("*")\
-                .eq("customer_id", customer_id)\
-                .order("created_at", desc=False)\
+            # Query cart_items with service and salon details
+            response = self.db.table("cart_items")\
+                .select(
+                    "id, service_id, salon_id, quantity, metadata, created_at, "
+                    "services(id, name, price, duration_minutes, image_url, is_active), "
+                    "salons(id, business_name, city, state)"
+                )\
+                .eq("user_id", customer_id)\
                 .execute()
             
-            cart_items = response.data or []
+            if not response.data:
+                # Return empty cart if no cart items exist
+                return {
+                    "success": True,
+                    "items": [],
+                    "salon_id": None,
+                    "salon_name": None,
+                    "salon_details": None,
+                    "total_amount": 0.0,
+                    "item_count": 0
+                }
             
-            # Calculate totals
-            total_amount = sum(item['price'] * item['quantity'] for item in cart_items)
-            item_count = sum(item['quantity'] for item in cart_items)
+            # Process cart items
+            items_with_details: List[Dict[str, Any]] = []
+            total_amount = 0.0
+            item_count = 0
+            salon_id = None
+            salon_name = None
             
-            # Get salon info (assuming all items from same salon)
-            salon_id = cart_items[0]['salon_id'] if cart_items else None
-            salon_name = cart_items[0]['salon_name'] if cart_items else None
+            for item in response.data:
+                service_details = item.get("services", {})
+                salon_details = item.get("salons", {})
+                
+                # Set salon info from first item
+                if salon_id is None:
+                    salon_id = item.get("salon_id")
+                    salon_name = salon_details.get("business_name")
+                
+                unit_price = self._get_effective_service_price(service_details)
+                quantity = item.get("quantity", 1)
+                line_total = unit_price * quantity
+                total_amount += line_total
+                item_count += quantity
+                
+                items_with_details.append({
+                    "id": item.get("id"),
+                    "service_id": item.get("service_id"),
+                    "salon_id": item.get("salon_id"),
+                    "quantity": quantity,
+                    "metadata": item.get("metadata", {}),
+                    "service_details": service_details,
+                    "salon_details": salon_details,
+                    "unit_price": unit_price,
+                    "line_total": line_total,
+                    "created_at": item.get("created_at")
+                })
             
             logger.info(f"Retrieved cart for customer {customer_id}: {item_count} items")
             
             return {
                 "success": True,
-                "items": cart_items,
+                "items": items_with_details,
                 "salon_id": salon_id,
                 "salon_name": salon_name,
+                "salon_details": None,
                 "total_amount": total_amount,
                 "item_count": item_count
             }
@@ -82,7 +121,7 @@ class CustomerService:
     async def add_to_cart(
         self,
         customer_id: str,
-        cart_item: Dict[str, Any]
+        cart_item: CartItemCreate
     ) -> Dict[str, Any]:
         """
         Add item to cart or increment quantity if already exists.
@@ -99,34 +138,93 @@ class CustomerService:
             HTTPException: If validation fails or different salon
         """
         try:
-            # Check if user has items from different salon
-            existing_cart = db.table("cart_items")\
+            service_id = cart_item.service_id
+            if not service_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="service_id is required"
+                )
+
+            # Get service details to validate and get salon_id
+            service_response = self.db.table("services")\
+                .select("id, name, price, duration_minutes, salon_id, is_active, image_url")\
+                .eq("id", service_id)\
+                .single()\
+                .execute()
+
+            if not service_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Service not available"
+                )
+
+            service_details = service_response.data
+            if not service_details.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Service is inactive"
+                )
+
+            service_salon_id = service_details['salon_id']
+            
+            # Check if salon is accepting bookings
+            salon_response = self.db.table("salons")\
+                .select("id, business_name, accepting_bookings, is_active")\
+                .eq("id", service_salon_id)\
+                .single()\
+                .execute()
+            
+            if not salon_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            salon = salon_response.data
+            if not salon.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is currently inactive"
+                )
+            
+            if not salon.get("accepting_bookings", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This salon is not accepting bookings at this time"
+                )
+            
+            # Check if user has cart items from a different salon
+            existing_cart = self.db.table("cart_items")\
                 .select("salon_id")\
-                .eq("customer_id", customer_id)\
+                .eq("user_id", customer_id)\
                 .limit(1)\
                 .execute()
             
-            if existing_cart.data and existing_cart.data[0]['salon_id'] != cart_item['salon_id']:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Cannot add services from different salons. Please clear cart first."
-                )
+            if existing_cart.data:
+                existing_salon_id = existing_cart.data[0].get("salon_id")
+                if existing_salon_id != service_salon_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot add services from different salons. Please clear cart first."
+                    )
             
-            # Check if item already exists
-            existing_item = db.table("cart_items")\
-                .select("*")\
-                .eq("customer_id", customer_id)\
-                .eq("service_id", cart_item['service_id'])\
+            # Check if item already exists in cart
+            check_response = self.db.table("cart_items")\
+                .select("id, quantity")\
+                .eq("user_id", customer_id)\
+                .eq("service_id", service_id)\
                 .execute()
             
-            if existing_item.data:
-                # Increment quantity
-                item = existing_item.data[0]
-                new_quantity = item['quantity'] + cart_item.get('quantity', 1)
+            quantity = cart_item.quantity
+            
+            if check_response.data:
+                # Item exists - update quantity
+                existing_item = check_response.data[0]
+                new_quantity = existing_item.get("quantity", 1) + quantity
                 
-                response = db.table("cart_items")\
+                response = self.db.table("cart_items")\
                     .update({"quantity": new_quantity})\
-                    .eq("id", item['id'])\
+                    .eq("id", existing_item["id"])\
                     .execute()
                 
                 logger.info(f"Updated cart item quantity for customer {customer_id}")
@@ -137,14 +235,17 @@ class CustomerService:
                     "cart_item": response.data[0] if response.data else None
                 }
             else:
-                # Add new item
-                cart_data = {
-                    "customer_id": customer_id,
-                    **cart_item
+                # Item doesn't exist - insert new
+                cart_item_data = {
+                    "user_id": customer_id,
+                    "salon_id": service_salon_id,
+                    "service_id": service_id,
+                    "quantity": quantity,
+                    "metadata": cart_item.metadata or {}
                 }
                 
-                response = db.table("cart_items")\
-                    .insert(cart_data)\
+                response = self.db.table("cart_items")\
+                    .insert(cart_item_data)\
                     .execute()
                 
                 logger.info(f"Added new item to cart for customer {customer_id}")
@@ -166,56 +267,70 @@ class CustomerService:
     
     async def update_cart_item(
         self,
-        item_id: str,
         customer_id: str,
+        item_id: str,
         quantity: int
     ) -> Dict[str, Any]:
         """
-        Update cart item quantity.
-        
+        Update cart item quantity in normalized cart_items table.
+
         Args:
-            item_id: Cart item ID
-            customer_id: Customer user ID (for ownership verification)
-            quantity: New quantity
-            
+            customer_id: Customer user ID
+            item_id: Cart item ID to update
+            quantity: New quantity (must be > 0)
+
         Returns:
-            Dict with success flag and updated item
-            
+            Updated cart item data
+
         Raises:
-            HTTPException: If item not found or not owned by customer
+            HTTPException: If cart/item not found or update fails
         """
         try:
-            # Verify ownership
-            existing = db.table("cart_items")\
-                .select("*")\
+            # Validate quantity
+            if quantity <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Quantity must be greater than 0"
+                )
+
+            # Verify cart item exists and belongs to user
+            check_response = self.db.table("cart_items")\
+                .select("id")\
                 .eq("id", item_id)\
-                .eq("customer_id", customer_id)\
+                .eq("user_id", customer_id)\
                 .execute()
-            
-            if not existing.data:
+
+            if not check_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Cart item not found"
                 )
-            
+
             # Update quantity
-            response = db.table("cart_items")\
+            response = self.db.table("cart_items")\
                 .update({"quantity": quantity})\
                 .eq("id", item_id)\
+                .eq("user_id", customer_id)\
                 .execute()
-            
-            logger.info(f"Updated cart item {item_id} for customer {customer_id}")
-            
+
+            if not response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update cart item"
+                )
+
+            logger.info(f"Updated cart item {item_id} quantity to {quantity} for customer {customer_id}")
+
             return {
                 "success": True,
-                "message": "Cart item updated",
-                "cart_item": response.data[0] if response.data else None
+                "message": "Cart item updated successfully",
+                "cart_item": response.data[0]
             }
-        
+
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to update cart item {item_id}: {str(e)}")
+            logger.error(f"Failed to update cart item {item_id} for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update cart item: {str(e)}"
@@ -227,38 +342,39 @@ class CustomerService:
         customer_id: str
     ) -> Dict[str, Any]:
         """
-        Remove item from cart.
-        
+        Remove item from cart using normalized cart_items table.
+
         Args:
-            item_id: Cart item ID
+            item_id: Cart item ID to remove
             customer_id: Customer user ID (for ownership verification)
-            
+
         Returns:
             Dict with success flag
-            
+
         Raises:
             HTTPException: If item not found
         """
         try:
-            response = db.table("cart_items")\
+            # Delete cart item (user_id ensures ownership)
+            response = self.db.table("cart_items")\
                 .delete()\
                 .eq("id", item_id)\
-                .eq("customer_id", customer_id)\
+                .eq("user_id", customer_id)\
                 .execute()
-            
+
             if not response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Cart item not found"
                 )
-            
+
             logger.info(f"Removed cart item {item_id} for customer {customer_id}")
-            
+
             return {
                 "success": True,
                 "message": "Item removed from cart"
             }
-        
+
         except HTTPException:
             raise
         except Exception as e:
@@ -270,38 +386,238 @@ class CustomerService:
     
     async def clear_cart(self, customer_id: str) -> Dict[str, Any]:
         """
-        Clear all items from cart.
-        
+        Clear all items from cart using normalized cart_items table.
+
         Args:
             customer_id: Customer user ID
-            
+
         Returns:
             Dict with success flag and deleted count
-            
+
         Raises:
             HTTPException: If operation fails
         """
         try:
-            response = db.table("cart_items")\
-                .delete()\
-                .eq("customer_id", customer_id)\
+            # Count items before deletion
+            count_response = self.db.table("cart_items")\
+                .select("id", count="exact")\
+                .eq("user_id", customer_id)\
                 .execute()
-            
-            deleted_count = len(response.data) if response.data else 0
-            
+
+            # Delete all cart items for user
+            delete_response = self.db.table("cart_items")\
+                .delete()\
+                .eq("user_id", customer_id)\
+                .execute()
+
+            deleted_count = count_response.count if count_response.count else 0
+
             logger.info(f"Cleared cart for customer {customer_id}: {deleted_count} items")
-            
+
             return {
                 "success": True,
                 "message": "Cart cleared",
                 "deleted_count": deleted_count
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to clear cart for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to clear cart: {str(e)}"
+            )
+    
+    async def checkout_cart(
+        self,
+        customer_id: str,
+        checkout_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Create booking from cart items with payment verification.
+        
+        This is the final step (Step 9-14) of the cart checkout flow:
+        - Receives payment details from Razorpay
+        - Verifies payment signature for security
+        - Creates booking with all cart services
+        - Creates booking_payment record in database
+        - Clears cart after successful booking
+        
+        Payment Verification:
+        - If razorpay_payment_id provided: Verifies signature with Razorpay API
+        - If signature invalid: Rejects checkout (prevents fraud)
+        - If signature valid: Proceeds to create booking
+        
+        Args:
+            customer_id: Customer user ID
+            checkout_data: Dict with:
+                - booking_date: Date for appointment (YYYY-MM-DD)
+                - time_slots: List of time slots (max 3) e.g. ["2:30 PM", "2:45 PM"]
+                - razorpay_order_id: Order ID from payment/cart/create-order
+                - razorpay_payment_id: Payment ID from Razorpay after payment
+                - razorpay_signature: Signature from Razorpay for verification
+                - payment_method: Payment method (default: 'razorpay')
+                - notes: Optional booking notes
+            
+        Returns:
+            Dict with:
+                - success: True if booking created
+                - message: Success message
+                - booking: Complete booking data
+                - booking_id: UUID of created booking
+                - booking_number: Human-readable booking number
+            
+        Raises:
+            HTTPException 400: Cart empty, salon inactive, or payment verification failed
+            HTTPException 404: Salon not found
+            HTTPException 500: Booking creation failed
+        """
+        try:
+            # Get cart items
+            cart_response = await self.get_cart(customer_id)
+            
+            if not cart_response.get("items") or len(cart_response["items"]) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cart is empty"
+                )
+            
+            cart_items = cart_response["items"]
+            salon_id = cart_response["salon_id"]
+            
+            # Check if salon is accepting bookings
+            salon_response = self.db.table("salons")\
+                .select("id, business_name, accepting_bookings, is_active")\
+                .eq("id", salon_id)\
+                .single()\
+                .execute()
+            
+            if not salon_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            salon = salon_response.data
+            
+            if not salon.get("is_active"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is currently inactive"
+                )
+            
+            if not salon.get("accepting_bookings", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Salon is not accepting bookings at this time"
+                )
+            
+            # Prepare services for booking
+            from app.schemas.request.booking import ServiceItem
+            services = [
+                ServiceItem(
+                    service_id=item["service_id"],
+                    quantity=item["quantity"]
+                )
+                for item in cart_items
+            ]
+            
+            # Calculate totals
+            total_amount = cart_response["total_amount"]
+            
+            # Get system config for convenience fee percentage (dynamically set by admin)
+            # Use actual column names `config_key` / `config_value` (not `key`/`value`)
+            config_response = self.db.table("system_config")\
+                .select("config_key, config_value")\
+                .eq("config_key", "convenience_fee_percentage")\
+                .single()\
+                .execute()
+
+            convenience_fee_percentage = None
+            if config_response.data:
+                # When using single(), response.data is a dict
+                raw_value = config_response.data.get("config_value")
+                try:
+                    convenience_fee_percentage = float(raw_value)
+                    logger.info(f"Using convenience_fee_percentage from config: {convenience_fee_percentage}%")
+                except Exception:
+                    logger.error(f"Invalid convenience_fee_percentage config value: {raw_value}")
+            
+            if convenience_fee_percentage is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment configuration not available. Please contact support."
+                )
+            
+            booking_fee = total_amount * (convenience_fee_percentage / 100)
+            gst_amount = booking_fee * 0.18  # 18% GST on booking fee
+            
+            # Verify Razorpay payment signature if payment details provided
+            if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
+                from app.services.payment import RazorpayService
+                razorpay_service = RazorpayService()
+                
+                # Verify signature to ensure payment authenticity
+                try:
+                    razorpay_service.verify_payment_signature(
+                        razorpay_order_id=checkout_data["razorpay_order_id"],
+                        razorpay_payment_id=checkout_data["razorpay_payment_id"],
+                        razorpay_signature=checkout_data["razorpay_signature"]
+                    )
+                    logger.info(f"Payment signature verified for customer {customer_id}")
+                except Exception as e:
+                    logger.error(f"Payment signature verification failed: {str(e)}")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Payment verification failed. Please contact support."
+                    )
+            
+            # Create booking using BookingService
+            from app.services.booking_service import BookingService
+            from app.schemas import BookingCreate
+            
+            booking_service = BookingService(self.db)
+            
+            # Prepare booking data
+            booking_data = BookingCreate(
+                salon_id=salon_id,
+                booking_date=checkout_data["booking_date"],
+                booking_time=checkout_data["time_slots"][0],  # Primary time slot
+                time_slots=checkout_data["time_slots"],
+                services=services,
+                payment_status="paid" if checkout_data.get("razorpay_payment_id") else "pending",
+                payment_method=checkout_data.get("payment_method", "razorpay"),
+                razorpay_order_id=checkout_data.get("razorpay_order_id"),
+                razorpay_payment_id=checkout_data.get("razorpay_payment_id"),
+                razorpay_signature=checkout_data.get("razorpay_signature"),
+                notes=checkout_data.get("notes")
+            )
+            
+            # Create booking
+            booking = await booking_service.create_booking(
+                booking=booking_data,
+                current_user_id=customer_id
+            )
+            
+            # Clear cart after successful booking
+            await self.clear_cart(customer_id)
+            
+            logger.info(f"Checkout completed for customer {customer_id}, booking created: {booking.get('id')}")
+            
+            return {
+                "success": True,
+                "message": "Booking created successfully",
+                "booking": booking,
+                "booking_id": booking.get("id"),
+                "booking_number": booking.get("booking_number")
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to checkout cart for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to complete checkout: {str(e)}"
             )
     
     # =====================================================
@@ -322,18 +638,32 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = db.table("bookings")\
-                .select("*, salons(business_name, city, address, phone), profiles(full_name, phone)")\
+            response = self.db.table("bookings")\
+                .select(
+                    "*, "
+                    "salons(business_name, city, address, phone), "
+                    "profiles(full_name, phone)"
+                )\
                 .eq("customer_id", customer_id)\
                 .order("booking_date", desc=True)\
                 .execute()
             
             bookings = response.data or []
             
-            # Transform data to flatten nested objects and parse metadata
+            # Transform data to flatten nested objects and parse services JSONB
             transformed_bookings = []
             for booking in bookings:
+                # Parse services JSONB array BEFORE transforming (since transform removes it)
+                services_array = booking.get("services", [])
+                if not services_array or not isinstance(services_array, list):
+                    services_array = []
+                
+                # Transform booking data
                 transformed_booking = self._transform_booking_data(booking)
+                
+                # Add services array to transformed booking
+                transformed_booking["services"] = services_array
+                
                 transformed_bookings.append(transformed_booking)
             
             logger.info(f"Retrieved {len(transformed_bookings)} bookings for customer {customer_id}")
@@ -371,7 +701,7 @@ class CustomerService:
         """
         try:
             # Verify ownership and get booking details
-            existing = db.table("bookings")\
+            existing = self.db.table("bookings")\
                 .select("*")\
                 .eq("id", booking_id)\
                 .eq("customer_id", customer_id)\
@@ -393,7 +723,7 @@ class CustomerService:
                 )
             
             # Update booking status
-            response = db.table("bookings")\
+            response = self.db.table("bookings")\
                 .update({"status": "cancelled"})\
                 .eq("id", booking_id)\
                 .execute()
@@ -438,7 +768,7 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            query = db.table("salons").select("*")
+            query = self.db.table("salons").select("*")
             
             # Apply filters
             if city:
@@ -491,7 +821,7 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            salon_query = db.table("salons").select("*")
+            salon_query = self.db.table("salons").select("*")
             
             # Text search
             if query:
@@ -502,7 +832,7 @@ class CustomerService:
             # Location filter
             if location:
                 salon_query = salon_query.or_(
-                    f"city.ilike.%{location}%,state.ilike.%{location}%,address_line1.ilike.%{location}%"
+                    f"city.ilike.%{location}%,state.ilike.%{location}%,address.ilike.%{location}%"
                 )
             
             # Only active salons
@@ -544,13 +874,12 @@ class CustomerService:
             HTTPException: If salon not found
         """
         try:
-            response = db.table("salons")\
+            response = self.db.table("salons")\
                 .select("*")\
                 .eq("id", salon_id)\
-                .single()\
                 .execute()
             
-            if not response.data:
+            if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Salon not found"
@@ -560,7 +889,7 @@ class CustomerService:
             
             return {
                 "success": True,
-                "salon": response.data
+                "salon": response.data[0]
             }
         
         except HTTPException:
@@ -591,7 +920,7 @@ class CustomerService:
         """
         try:
             # Get favorite salon IDs
-            favorites_response = db.table("favorites")\
+            favorites_response = self.db.table("favorites")\
                 .select("salon_id")\
                 .eq("user_id", customer_id)\
                 .execute()
@@ -602,7 +931,7 @@ class CustomerService:
             # Get salon details
             salon_ids = [fav["salon_id"] for fav in favorites_response.data]
             
-            salons_response = db.table("salons")\
+            salons_response = self.db.table("salons")\
                 .select("*")\
                 .in_("id", salon_ids)\
                 .eq("status", "active")\
@@ -645,7 +974,7 @@ class CustomerService:
         """
         try:
             # Check if already favorited
-            existing = db.table("favorites")\
+            existing = self.db.table("favorites")\
                 .select("id")\
                 .eq("user_id", customer_id)\
                 .eq("salon_id", salon_id)\
@@ -660,7 +989,7 @@ class CustomerService:
                 }
             
             # Add to favorites
-            response = db.table("favorites")\
+            response = self.db.table("favorites")\
                 .insert({
                     "user_id": customer_id,
                     "salon_id": salon_id,
@@ -779,7 +1108,7 @@ class CustomerService:
     async def create_review(
         self,
         customer_id: str,
-        review_data: Dict[str, Any]
+        review_data: ReviewCreate
     ) -> Dict[str, Any]:
         """
         Create a new review.
@@ -797,10 +1126,10 @@ class CustomerService:
         try:
             review = {
                 "user_id": customer_id,
-                "salon_id": review_data['salon_id'],
-                "booking_id": review_data.get('booking_id'),
-                "rating": review_data['rating'],
-                "comment": review_data['comment'],
+                "salon_id": review_data.salon_id,
+                "booking_id": getattr(review_data, 'booking_id', None),
+                "rating": review_data.rating,
+                "comment": review_data.comment,
                 "status": "pending",  # Reviews need approval
                 "created_at": datetime.utcnow().isoformat()
             }
@@ -836,7 +1165,7 @@ class CustomerService:
         self,
         review_id: int,
         customer_id: str,
-        review_data: Dict[str, Any]
+        review_data: ReviewUpdate
     ) -> Dict[str, Any]:
         """
         Update a review (requires re-approval).
@@ -870,11 +1199,11 @@ class CustomerService:
             # Prepare update data
             update_data = {"updated_at": datetime.utcnow().isoformat()}
             
-            if review_data.get('rating') is not None:
-                update_data["rating"] = review_data['rating']
+            if getattr(review_data, 'rating', None) is not None:
+                update_data["rating"] = review_data.rating
             
-            if review_data.get('comment') is not None:
-                update_data["comment"] = review_data['comment']
+            if getattr(review_data, 'comment', None) is not None:
+                update_data["comment"] = review_data.comment
                 update_data["status"] = "pending"  # Re-approval needed after edit
             
             # Update review
@@ -912,7 +1241,7 @@ class CustomerService:
     
     def _transform_booking_data(self, booking: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Transform booking data to flatten nested objects and parse metadata.
+        Transform booking data to flatten nested objects.
         
         Args:
             booking: Raw booking data from database
@@ -923,15 +1252,10 @@ class CustomerService:
         salon_info = booking.pop('salons', {}) or {}
         profile_info = booking.pop('profiles', {}) or {}
         
-        # Parse special_requests JSON to get services and other metadata
-        special_requests = booking.get('special_requests', '')
-        booking_metadata = {}
-        if special_requests:
-            try:
-                booking_metadata = json.loads(special_requests) if isinstance(special_requests, str) else special_requests
-            except:
-                pass
-        
+        # Remove services from booking dict (will be added separately by caller)
+        # This avoids conflict between JSONB array and old service table join
+        booking.pop('services', None)
+
         return {
             **booking,
             'salon_name': salon_info.get('business_name'),
@@ -940,8 +1264,18 @@ class CustomerService:
             'salon_phone': salon_info.get('phone'),
             'customer_name': profile_info.get('full_name'),
             'customer_phone': profile_info.get('phone'),
-            'services': booking_metadata.get('services', []),
-            'all_booking_times': booking_metadata.get('all_booking_times', booking.get('booking_time')),
-            'payment_status': booking_metadata.get('payment_status', 'unknown'),
-            'payment_method': booking_metadata.get('payment_method'),
+            'all_booking_times': booking.get('booking_time')
         }
+    
+    def _get_effective_service_price(self, service_details: Dict[str, Any]) -> float:
+        """
+        Get the effective price for a service.
+        Currently returns the base price, but can be extended for discounts/promotions.
+        
+        Args:
+            service_details: Service data from database
+            
+        Returns:
+            Effective price as float
+        """
+        return float(service_details.get('price', 0.0))

@@ -9,14 +9,11 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import get_db_client
 import logging
 import uuid
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 # Security scheme
 security = HTTPBearer()
@@ -30,7 +27,7 @@ class TokenData(BaseModel):
     """Token payload data"""
     user_id: str
     email: str
-    role: str
+    user_role: str
     jti: Optional[str] = None  # JWT ID for revocation (optional for backward compatibility)
     exp: Optional[datetime] = None
 
@@ -39,7 +36,7 @@ class TokenPayload(BaseModel):
     """JWT token payload"""
     sub: str  # user_id
     email: str
-    role: str
+    user_role: str
     jti: str  # JWT ID for token revocation
     exp: int
 
@@ -109,7 +106,7 @@ def create_refresh_token(data: dict) -> str:
     return encoded_jwt
 
 
-def verify_token(token: str) -> TokenPayload:
+def verify_token(token: str, db) -> TokenPayload:
     """
     Verify and decode JWT token, checking against blacklist
     
@@ -122,7 +119,6 @@ def verify_token(token: str) -> TokenPayload:
     Raises:
         HTTPException: If token is invalid, expired, or blacklisted
     """
-    logger.info(f"🔍 verify_token called")
     try:
         payload = jwt.decode(
             token,
@@ -132,7 +128,7 @@ def verify_token(token: str) -> TokenPayload:
         
         user_id: str = payload.get("sub")
         email: str = payload.get("email")
-        role: str = payload.get("role")
+        user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
         
         if user_id is None:
@@ -142,21 +138,26 @@ def verify_token(token: str) -> TokenPayload:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
+        if not jti:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: missing jti",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
         # Check if token is blacklisted (revoked)
         if jti:
-            logger.info(f"Checking if token is blacklisted: {jti}")
+            # Avoid logging blacklist contents or secrets
             blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
-            logger.info(f"Blacklist check result: {blacklist_check.data}")
             if blacklist_check.data:
-                logger.warning(f"⚠️ BLOCKED: Attempt to use blacklisted token: {jti}")
+                logger.warning(f"Blocked attempt to use blacklisted token")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token has been revoked",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            logger.info(f"✓ Token not blacklisted: {jti}")
         
-        return TokenPayload(sub=user_id, email=email, role=role, jti=jti, exp=payload.get("exp"))
+        return TokenPayload(sub=user_id, email=email, user_role=user_role, jti=jti, exp=payload.get("exp"))
     
     except JWTError as e:
         logger.error(f"JWT verification failed: {str(e)}")
@@ -167,7 +168,7 @@ def verify_token(token: str) -> TokenPayload:
         )
 
 
-def verify_refresh_token(token: str) -> dict:
+def verify_refresh_token(token: str, db) -> dict:
     """
     Verify and decode JWT refresh token, checking against blacklist
     
@@ -189,7 +190,7 @@ def verify_refresh_token(token: str) -> dict:
         
         user_id: str = payload.get("sub")
         email: str = payload.get("email")
-        role: str = payload.get("role")
+        user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
         
         if user_id is None:
@@ -213,7 +214,7 @@ def verify_refresh_token(token: str) -> dict:
         return {
             "sub": user_id,
             "email": email,
-            "role": role,
+            "user_role": user_role,
             "jti": jti
         }
     
@@ -230,16 +231,16 @@ def verify_refresh_token(token: str) -> dict:
 # TOKEN REVOCATION FUNCTIONS
 # =====================================================
 
-def revoke_token(token_jti: str, user_id: str, token_type: str, expires_at: datetime, reason: str = "logout") -> bool:
+def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: datetime, reason: str = "logout") -> bool:
     """
     Add token to blacklist to revoke it
     
     Args:
         token_jti: JWT ID (jti claim) of the token to revoke
         user_id: User ID who owns the token
-        token_type: 'access' or 'refresh'
+        token_type: 'access' or 'refresh' (unused, for backward compatibility)
         expires_at: Token expiration timestamp
-        reason: Reason for revocation (logout, security, etc.)
+        reason: Reason for revocation (unused, for backward compatibility)
     
     Returns:
         True if successfully blacklisted
@@ -248,16 +249,13 @@ def revoke_token(token_jti: str, user_id: str, token_type: str, expires_at: date
         HTTPException: If blacklist insertion fails
     """
     try:
-        logger.info(f"Attempting to revoke token: {token_jti} for user {user_id}")
-        logger.debug(f"Using db URL: {settings.SUPABASE_URL}")
-        logger.debug(f"Service role key present: {bool(settings.SUPABASE_SERVICE_ROLE_KEY)}")
+        logger.info(f"Attempting to revoke token for user {user_id}")
         
+        # Note: token_blacklist table only has: id, user_id, token_jti, expires_at, created_at
         result = db.table("token_blacklist").insert({
             "token_jti": token_jti,
             "user_id": user_id,
-            "token_type": token_type,
-            "expires_at": expires_at.isoformat(),
-            "reason": reason
+            "expires_at": expires_at.isoformat()
         }).execute()
         
         if result.data:
@@ -299,7 +297,7 @@ def revoke_all_user_tokens(user_id: str, reason: str = "security") -> int:
         return 0
 
 
-def cleanup_expired_tokens() -> int:
+def cleanup_expired_tokens(db) -> int:
     """
     Remove expired tokens from blacklist (can be run as periodic job)
     
@@ -322,7 +320,8 @@ def cleanup_expired_tokens() -> int:
 # =====================================================
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(security)
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db = Depends(get_db_client)
 ) -> TokenData:
     """
     Dependency to get current authenticated user from JWT token
@@ -337,12 +336,12 @@ async def get_current_user(
         HTTPException: If authentication fails
     """
     token = credentials.credentials
-    token_data = verify_token(token)
+    token_data = verify_token(token, db)
     
     # Verify user exists and is active
     try:
         user_response = db.table("profiles").select(
-            "id, email, role, is_active"
+            "id, email, user_role, is_active"
         ).eq("id", token_data.sub).single().execute()
         
         if not user_response.data:
@@ -363,7 +362,7 @@ async def get_current_user(
         return TokenData(
             user_id=user["id"],
             email=user["email"],
-            role=user["role"],
+            user_role=user["user_role"],
             jti=token_data.jti,
             exp=datetime.utcfromtimestamp(token_data.exp) if token_data.exp else None
         )
@@ -411,9 +410,9 @@ class RoleChecker:
         self.allowed_roles = allowed_roles
     
     async def __call__(self, current_user: TokenData = Depends(get_current_user)):
-        if current_user.role not in self.allowed_roles:
+        if current_user.user_role not in self.allowed_roles:
             logger.warning(
-                f"User {current_user.user_id} with role '{current_user.role}' "
+                f"User {current_user.user_id} with role '{current_user.user_role}' "
                 f"attempted to access resource requiring roles: {self.allowed_roles}"
             )
             raise HTTPException(
@@ -440,7 +439,7 @@ async def require_admin(current_user: TokenData = Depends(get_current_user)) -> 
     Raises:
         HTTPException: If user is not admin
     """
-    if current_user.role != "admin":
+    if current_user.user_role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
@@ -450,18 +449,18 @@ async def require_admin(current_user: TokenData = Depends(get_current_user)) -> 
 
 async def require_rm(current_user: TokenData = Depends(get_current_user)) -> TokenData:
     """
-    Dependency to require RM (Relationship Manager) role
+    Dependency to require RM (Relationship Manager) role or admin
     
     Args:
         current_user: Current authenticated user
     
     Returns:
-        TokenData if user is RM
+        TokenData if user is RM or admin
     
     Raises:
-        HTTPException: If user is not RM
+        HTTPException: If user is not RM or admin
     """
-    if current_user.role != "relationship_manager":
+    if current_user.user_role not in ["relationship_manager", "admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Relationship Manager access required"
@@ -482,7 +481,7 @@ async def require_vendor(current_user: TokenData = Depends(get_current_user)) ->
     Raises:
         HTTPException: If user is not vendor
     """
-    if current_user.role != "vendor":
+    if current_user.user_role != "vendor":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Vendor access required"
@@ -503,7 +502,7 @@ async def require_customer(current_user: TokenData = Depends(get_current_user)) 
     Raises:
         HTTPException: If user is not customer
     """
-    if current_user.role != "customer":
+    if current_user.user_role != "customer":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Customer access required"
@@ -592,7 +591,7 @@ def verify_registration_token(token: str) -> dict:
 # UTILITY FUNCTIONS
 # =====================================================
 
-async def get_user_salon_id(user_id: str) -> Optional[str]:
+async def get_user_salon_id(user_id: str, db = Depends(get_db_client)) -> Optional[str]:
     """
     Get salon ID for vendor user
     
@@ -613,7 +612,7 @@ async def get_user_salon_id(user_id: str) -> Optional[str]:
         return None
 
 
-async def verify_salon_access(user: TokenData, salon_id: str) -> bool:
+async def verify_salon_access(user: TokenData, salon_id: str, db = Depends(get_db_client)) -> bool:
     """
     Verify if user has access to specific salon
     
@@ -625,12 +624,12 @@ async def verify_salon_access(user: TokenData, salon_id: str) -> bool:
         True if user has access, False otherwise
     """
     # Admins have access to all salons
-    if user.role == "admin":
+    if user.user_role == "admin":
         return True
     
     # Vendors can only access their own salon
-    if user.role == "vendor":
-        user_salon_id = await get_user_salon_id(user.user_id)
+    if user.user_role == "vendor":
+        user_salon_id = await get_user_salon_id(user.user_id, db)
         return user_salon_id == salon_id
     
     return False

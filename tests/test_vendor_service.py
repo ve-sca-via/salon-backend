@@ -17,16 +17,15 @@ from app.schemas import ServiceCreate, ServiceUpdate
 # =====================================================
 
 @pytest.fixture
-def vendor_service():
+def vendor_service(mock_db):
     """Create VendorService instance for testing"""
-    return VendorService()
+    return VendorService(db_client=mock_db)
 
 
 @pytest.fixture
 def mock_db():
     """Mock Supabase database client"""
-    with patch('app.services.vendor_service.db') as mock:
-        yield mock
+    return MagicMock()
 
 
 @pytest.fixture

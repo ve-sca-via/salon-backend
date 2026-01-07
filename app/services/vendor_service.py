@@ -7,6 +7,11 @@ from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, status
 
 from app.core.database import get_db
+from app.core.auth import (
+    verify_registration_token,
+    create_access_token,
+    create_refresh_token
+)
 from app.schemas import (
     ServiceCreate,
     ServiceUpdate,
@@ -14,11 +19,9 @@ from app.schemas import (
     SalonStaffCreate,
     SalonStaffUpdate
 )
+from app.services.activity_log_service import ActivityLogService
 
 logger = logging.getLogger(__name__)
-
-# Get database client using factory function
-db = get_db()
 
 
 class VendorService:
@@ -27,9 +30,9 @@ class VendorService:
     Handles salon management, services CRUD, staff, and bookings.
     """
     
-    def __init__(self):
-        """Initialize service - uses centralized db client"""
-        pass
+    def __init__(self, db_client):
+        """Initialize service with database client"""
+        self.db = db_client
     
     # =====================================================
     # SALON OPERATIONS
@@ -48,15 +51,25 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        response = db.table("salons").select("*").eq("vendor_id", vendor_id).single().execute()
-        
-        if not response.data:
+        try:
+            response = self.db.table("salons").select("*").eq("vendor_id", vendor_id).execute()
+            
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found"
+                )
+            
+            return response.data[0]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon for vendor {vendor_id}: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon"
             )
-        
-        return response.data
     
     async def update_vendor_salon(
         self,
@@ -83,7 +96,7 @@ class VendorService:
             # Update salon
             update_data = update.model_dump(exclude_unset=True)
             
-            response = db.table("salons").update(update_data).eq("vendor_id", vendor_id).execute()
+            response = self.db.table("salons").update(update_data).eq("vendor_id", vendor_id).execute()
             
             logger.info(f"Vendor {vendor_id} updated salon: {list(update_data.keys())}")
             
@@ -111,15 +124,25 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        response = db.table("salons").select("id").eq("vendor_id", vendor_id).single().execute()
-        
-        if not response.data:
+        try:
+            response = self.db.table("salons").select("id").eq("vendor_id", vendor_id).execute()
+            
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found. Please create a salon first."
+                )
+            
+            return response.data[0]["id"]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon ID for vendor {vendor_id}: {str(e)}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Salon not found. Please create a salon first."
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon ID"
             )
-        
-        return response.data["id"]
     
     # =====================================================
     # SERVICE OPERATIONS
@@ -143,7 +166,7 @@ class VendorService:
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
             # Get services with category details
-            response = db.table("services").select(
+            response = self.db.table("services").select(
                 "*, service_categories(*)"
             ).eq("salon_id", salon_id).order("created_at", desc=True).execute()
             
@@ -188,7 +211,7 @@ class VendorService:
             service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
             
-            response = db.table("services").insert(service_data).execute()
+            response = self.db.table("services").insert(service_data).execute()
             
             created_service = response.data[0] if response.data else None
             
@@ -249,7 +272,7 @@ class VendorService:
                 )
             
             # Update service
-            response = db.table("services").update(update_data).eq("id", service_id).execute()
+            response = self.db.table("services").update(update_data).eq("id", service_id).execute()
             
             updated_service = response.data[0] if response.data else None
             
@@ -295,7 +318,7 @@ class VendorService:
             await self._verify_service_ownership(service_id, salon_id)
             
             # Delete service
-            db.table("services").delete().eq("id", service_id).execute()
+            self.db.table("services").delete().eq("id", service_id).execute()
             
             logger.info(f"Vendor {vendor_id} deleted service {service_id}")
             
@@ -335,7 +358,7 @@ class VendorService:
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
             # Get staff
-            response = db.table("salon_staff").select("*").eq(
+            response = self.db.table("salon_staff").select("*").eq(
                 "salon_id", salon_id
             ).order("created_at", desc=True).execute()
             
@@ -382,7 +405,7 @@ class VendorService:
             # Create staff
             staff_data = staff.model_dump()
             
-            response = db.table("salon_staff").insert(staff_data).execute()
+            response = self.db.table("salon_staff").insert(staff_data).execute()
             
             created_staff = response.data[0] if response.data else None
             
@@ -429,7 +452,7 @@ class VendorService:
             # Update staff
             update_data = update.model_dump(exclude_unset=True)
             
-            response = db.table("salon_staff").update(update_data).eq("id", staff_id).execute()
+            response = self.db.table("salon_staff").update(update_data).eq("id", staff_id).execute()
             
             updated_staff = response.data[0] if response.data else None
             
@@ -472,7 +495,7 @@ class VendorService:
             await self._verify_staff_ownership(staff_id, salon_id)
             
             # Delete staff
-            db.table("salon_staff").delete().eq("id", staff_id).execute()
+            self.db.table("salon_staff").delete().eq("id", staff_id).execute()
             
             logger.info(f"Vendor {vendor_id} deleted staff {staff_id}")
             
@@ -524,9 +547,9 @@ class VendorService:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Build query
-            query = db.table("bookings").select(
-                "*, services(*), salon_staff(*), profiles(*)"
+            # Build query - services are stored as JSONB array, no join needed
+            query = self.db.table("bookings").select(
+                "*"
             ).eq("salon_id", salon_id)
             
             if status_filter:
@@ -596,7 +619,7 @@ class VendorService:
             elif new_status == "completed":
                 update_data["completed_at"] = "now()"
             
-            response = db.table("bookings").update(update_data).eq("id", booking_id).execute()
+            response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
             
             logger.info(f"Vendor {vendor_id} updated booking {booking_id} status to {new_status}")
             
@@ -638,13 +661,13 @@ class VendorService:
             salon_id = salon["id"]
             
             # Get counts
-            total_services = db.table("services").select("id", count="exact").eq("salon_id", salon_id).execute()
-            total_staff = db.table("salon_staff").select("id", count="exact").eq("salon_id", salon_id).execute()
-            total_bookings = db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).execute()
-            pending_bookings = db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").execute()
+            total_services = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).execute()
+            total_staff = self.db.table("salon_staff").select("id", count="exact").eq("salon_id", salon_id).execute()
+            total_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).execute()
+            pending_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").execute()
             
             # Today's bookings
-            today_bookings = db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).gte("booking_date", "today").execute()
+            today_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).gte("booking_date", "today").execute()
             
             return {
                 "salon": salon,
@@ -687,13 +710,13 @@ class VendorService:
             salon_id = salon["id"]
             
             # Get counts
-            services_response = db.table("services").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
-            staff_response = db.table("salon_staff").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
-            bookings_response = db.table("bookings").select("id, total_amount", count="exact").eq("salon_id", salon_id).execute()
-            pending_response = db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").execute()
+            services_response = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
+            staff_response = self.db.table("salon_staff").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
+            bookings_response = self.db.table("bookings").select("id, total_amount", count="exact").eq("salon_id", salon_id).execute()
+            pending_response = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").execute()
             
             # Calculate total revenue from completed bookings
-            completed_bookings = db.table("bookings").select("total_amount").eq("salon_id", salon_id).eq("status", "completed").execute()
+            completed_bookings = self.db.table("bookings").select("total_amount").eq("salon_id", salon_id).eq("status", "completed").execute()
             total_revenue = sum([b.get("total_amount", 0) for b in completed_bookings.data]) if completed_bookings.data else 0
             
             return {
@@ -728,7 +751,7 @@ class VendorService:
         Raises:
             HTTPException: If category not found
         """
-        category_check = db.table("service_categories").select("id").eq(
+        category_check = self.db.table("service_categories").select("id").eq(
             "id", category_id
         ).execute()
         
@@ -749,7 +772,7 @@ class VendorService:
         Raises:
             HTTPException: If service not found or doesn't belong to salon
         """
-        service_check = db.table("services").select("salon_id").eq("id", service_id).single().execute()
+        service_check = self.db.table("services").select("salon_id").eq("id", service_id).single().execute()
         
         if not service_check.data or service_check.data["salon_id"] != salon_id:
             raise HTTPException(
@@ -768,7 +791,7 @@ class VendorService:
         Raises:
             HTTPException: If staff not found or doesn't belong to salon
         """
-        staff_check = db.table("salon_staff").select("salon_id").eq("id", staff_id).single().execute()
+        staff_check = self.db.table("salon_staff").select("salon_id").eq("id", staff_id).single().execute()
         
         if not staff_check.data or staff_check.data["salon_id"] != salon_id:
             raise HTTPException(
@@ -787,7 +810,7 @@ class VendorService:
         Raises:
             HTTPException: If booking not found or doesn't belong to salon
         """
-        booking_check = db.table("bookings").select("salon_id, status").eq("id", booking_id).single().execute()
+        booking_check = self.db.table("bookings").select("salon_id, status").eq("id", booking_id).single().execute()
         
         if not booking_check.data or booking_check.data["salon_id"] != salon_id:
             raise HTTPException(
@@ -820,12 +843,11 @@ class VendorService:
             "id": user_id,
             "email": email,
             "full_name": full_name,
-            "role": "vendor",
-            "is_active": True,
-            "email_verified": True
+            "user_role": "vendor",
+            "is_active": True
         }
         
-        response = db.table("profiles").insert(profile_data).execute()
+        response = self.db.table("profiles").insert(profile_data).execute()
         
         logger.info(f"✅ Vendor profile created for {email}")
         
@@ -851,7 +873,7 @@ class VendorService:
             "is_verified": True
         }
         
-        response = db.table("salons").update(update_data).eq("id", salon_id).execute()
+        response = self.db.table("salons").update(update_data).eq("id", salon_id).execute()
         
         logger.info(f"🔗 Vendor {user_id} linked to salon {salon_id}")
         logger.info(f"✅ Salon automatically verified upon vendor registration")
@@ -863,19 +885,19 @@ class VendorService:
         vendor_id: str
     ) -> Dict[str, Any]:
         """
-        Process vendor payment and activate salon (DEMO MODE).
+        Process vendor payment and activate salon.
         In production, this would integrate with actual payment gateway.
         
         Args:
             vendor_id: Vendor user ID
             
         Returns:
-            Payment and subscription details
+            Payment status details
             
         Raises:
             HTTPException: If salon not found
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime
         
         # Get vendor's salon
         salon = await self.get_vendor_salon(vendor_id)
@@ -884,30 +906,212 @@ class VendorService:
         
         logger.info(f"💳 Processing payment for vendor: {vendor_id}, salon: {business_name}")
         
-        # Prepare payment data
+        # Prepare payment data (match actual schema - no subscription fields in salons table)
         payment_data = {
-            "subscription_status": "active",
-            "subscription_start_date": datetime.utcnow().isoformat(),
-            "subscription_end_date": (datetime.utcnow() + timedelta(days=365)).isoformat(),  # 1 year
-            "payment_amount": 5000.00,
-            "payment_date": datetime.utcnow().isoformat(),
             "registration_fee_paid": True,
-            "registration_paid_at": datetime.utcnow().isoformat(),
-            "is_active": True  # Activate salon after successful payment
+            "is_active": True,  # Activate salon after successful payment
+            "is_verified": True
         }
         
         # Update salon with payment info
-        response = db.table("salons").update(payment_data).eq("id", salon_id).execute()
+        response = self.db.table("salons").update(payment_data).eq("id", salon_id).execute()
         
         logger.info(f"✅ Payment processed successfully for salon: {business_name}")
-        logger.info(f"📅 Subscription active until: {payment_data['subscription_end_date']}")
         
         return {
-            "subscription_status": "active",
-            "subscription_start_date": payment_data["subscription_start_date"],
-            "subscription_end_date": payment_data["subscription_end_date"],
-            "payment_amount": payment_data["payment_amount"],
-            "salon_name": business_name
+            "payment_status": "success",
+            "payment_amount": 5000.00,
+            "salon_name": business_name,
+            "salon_id": salon_id
+        }
+    
+    async def complete_registration(
+        self,
+        token: str,
+        full_name: str,
+        password: str,
+        confirm_password: str
+    ) -> Dict[str, Any]:
+        """
+        Complete vendor registration after admin approval.
+        
+        Args:
+            token: JWT registration token
+            full_name: Vendor's full name
+            password: Password for the account
+            confirm_password: Password confirmation
+            
+        Returns:
+            Registration completion data with tokens
+            
+        Raises:
+            HTTPException: If registration fails
+        """
+        logger.info("🔍 Starting vendor registration completion...")
+        
+        # Verify JWT registration token
+        token_data = verify_registration_token(token)
+        salon_id = token_data["salon_id"]
+        request_id = token_data["request_id"]
+        vendor_email = token_data["email"]
+        
+        logger.info(f"✅ Token verified for {vendor_email}, salon_id: {salon_id}")
+        
+        # Use full_name from registration request (provided by vendor)
+        vendor_full_name = full_name.strip()
+        
+        logger.info(f"📝 Vendor name: {vendor_full_name}")
+        
+        if password != confirm_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Passwords do not match"
+            )
+        
+        logger.info(f"🔐 Creating db auth user for {vendor_email}...")
+        
+        # Create db auth user using admin API
+        auth_user_created = False
+        try:
+            auth_response = self.db.auth.admin.create_user({
+                "email": vendor_email,
+                "password": password,
+                "email_confirm": True,  # Auto-confirm email
+                "user_metadata": {
+                    "role": "vendor",
+                    "full_name": vendor_full_name
+                }
+            })
+            auth_user_created = True
+            logger.info("✅ Auth user created successfully")
+        except Exception as auth_error:
+            logger.error(f"❌ Auth user creation failed: {str(auth_error)}")
+            # Try alternative approach: sign up the user
+            logger.info("🔄 Attempting alternative signup method...")
+            try:
+                auth_response = self.db.auth.sign_up({
+                    "email": vendor_email,
+                    "password": password,
+                    "options": {
+                        "data": {
+                            "role": "vendor",
+                            "full_name": vendor_full_name
+                        }
+                    }
+                })
+                auth_user_created = True
+                logger.info("✅ User signed up successfully")
+            except Exception as signup_error:
+                logger.error(f"❌ User signup also failed: {str(signup_error)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create user account"
+                )
+        
+        # Extract user ID from response
+        if hasattr(auth_response, 'user') and auth_response.user:
+            user_id = auth_response.user.id
+        elif isinstance(auth_response, dict) and 'user' in auth_response:
+            user_id = auth_response['user']['id']
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user account"
+            )
+        
+        logger.info(f"👤 User ID: {user_id}")
+        
+        # Create vendor profile using service
+        try:
+            await self.create_vendor_profile(
+                user_id=user_id,
+                email=vendor_email,
+                full_name=vendor_full_name
+            )
+            logger.info("✅ Vendor profile created successfully")
+        except Exception as profile_error:
+            logger.error(f"❌ Vendor profile creation failed: {str(profile_error)}")
+            # Cleanup: Delete the auth user if profile creation failed
+            if auth_user_created:
+                try:
+                    self.db.auth.admin.delete_user(user_id)
+                    logger.info("🧹 Cleaned up auth user after profile creation failure")
+                except Exception as cleanup_error:
+                    logger.error(f"❌ Failed to cleanup auth user: {str(cleanup_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create vendor profile"
+            )
+        
+        # Link vendor to salon and auto-verify using service
+        try:
+            await self.link_vendor_to_salon(
+                user_id=user_id,
+                salon_id=salon_id
+            )
+            logger.info("✅ Vendor linked to salon successfully")
+        except Exception as link_error:
+            logger.error(f"❌ Vendor-salon linking failed: {str(link_error)}")
+            # Cleanup: Delete the auth user and profile if linking failed
+            if auth_user_created:
+                try:
+                    self.db.auth.admin.delete_user(user_id)
+                    logger.info("🧹 Cleaned up auth user after salon linking failure")
+                except Exception as cleanup_error:
+                    logger.error(f"❌ Failed to cleanup auth user: {str(cleanup_error)}")
+            # Try to delete vendor profile as well
+            try:
+                self.db.table("vendors").delete().eq("user_id", user_id).execute()
+                logger.info("🧹 Cleaned up vendor profile after salon linking failure")
+            except Exception as cleanup_error:
+                logger.error(f"❌ Failed to cleanup vendor profile: {str(cleanup_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to link vendor to salon"
+            )
+        
+        # Generate access and refresh tokens
+        token_data = {
+            "sub": user_id,
+            "email": vendor_email,
+            "user_role": "vendor"
+        }
+        
+        access_token = create_access_token(token_data)
+        refresh_token = create_refresh_token(token_data)
+        
+        logger.info(f"🎉 Vendor registration completed successfully for {vendor_email}")
+        
+        # Log activity for vendor registration completion
+        try:
+            await ActivityLogService.log(
+                user_id=user_id,
+                action="vendor_registration_completed",
+                entity_type="vendor",
+                entity_id=user_id,
+                details={
+                    "email": vendor_email,
+                    "full_name": vendor_full_name,
+                    "salon_id": salon_id,
+                    "request_id": request_id
+                }
+            )
+        except Exception as log_error:
+            logger.warning(f"Failed to log vendor registration activity: {log_error}")
+        
+        return {
+            "success": True,
+            "message": "Registration completed successfully!",
+            "data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "user": {
+                    "id": user_id,
+                    "email": vendor_email,
+                    "full_name": vendor_full_name,
+                    "role": "vendor"
+                }
+            }
         }
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
@@ -917,7 +1121,7 @@ class VendorService:
         Returns:
             List of service categories ordered by display_order
         """
-        response = db.table("service_categories").select(
+        response = self.db.table("service_categories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
         

@@ -9,12 +9,10 @@ import uuid
 from fastapi import HTTPException, status, UploadFile
 from app.core.database import get_db
 from app.services.storage_service import StorageService
-from app.services.email import EmailService
+from app.services.email import get_email_service
+from app.services.activity_log_service import ActivityLogger
 
 logger = logging.getLogger(__name__)
-
-# Initialize Supabase client
-supabase = get_db()
 
 
 class CareerService:
@@ -30,11 +28,12 @@ class CareerService:
     
     STORAGE_BUCKET = 'career-documents'
     
-    def __init__(self):
+    def __init__(self, db_client):
         """Initialize career service with storage and email services"""
-        self.db = supabase
-        self.storage = StorageService()
-        self.email = EmailService()
+        self.db = db_client
+        self.storage = StorageService(db_client=db_client)
+        # Use factory function to get appropriate email service (Mock in tests, Real in production)
+        self.email = get_email_service()
     
     async def submit_application(
         self,
@@ -49,10 +48,10 @@ class CareerService:
         Submit a new career application
         
         Args:
-            personal_info: Name, email, phone, address, etc.
-            job_details: Position, experience, salary expectations, etc.
-            education: Qualifications, university, graduation year
-            additional_info: Cover letter, LinkedIn, portfolio
+            personal_info: Dict with name, email, phone, address, etc.
+            job_details: Dict with position, experience, salary expectations, etc.
+            education: Dict with qualifications, university, graduation year
+            additional_info: Dict with cover letter, LinkedIn, portfolio
             required_documents: Dict with keys: resume, aadhaar_card, pan_card, photo, address_proof
             optional_documents: Dict with keys: educational_certificates (list), experience_letter, salary_slip
         
@@ -63,7 +62,7 @@ class CareerService:
             HTTPException on validation or processing errors
         """
         try:
-            logger.info(f"📝 Processing application from {personal_info.get('email')}")
+            logger.info(f"📝 Processing application from {personal_info.get('email', 'unknown')}")
             
             # Generate application ID
             application_id = str(uuid.uuid4())
@@ -141,13 +140,13 @@ class CareerService:
                 )
                 document_urls['salary_slip_url'] = url
             
-            # Prepare application data
+            # Prepare application data by merging dicts
             application_data = {
                 "id": application_id,
-                **personal_info,
-                **job_details,
-                **education,
-                **additional_info,
+                **{k: v for k, v in personal_info.items() if v is not None},
+                **{k: v for k, v in job_details.items() if v is not None},
+                **{k: v for k, v in education.items() if v is not None},
+                **{k: v for k, v in additional_info.items() if v is not None},
                 **document_urls,
                 "status": "pending"
             }
@@ -167,10 +166,10 @@ class CareerService:
             
             # Send confirmation email to applicant
             try:
-                self.email.send_career_application_confirmation(
-                    to_email=personal_info['email'],
-                    applicant_name=personal_info['full_name'],
-                    position=job_details.get('position', 'Relationship Manager'),
+                await self.email.send_career_application_confirmation(
+                    to_email=personal_info.get('email'),
+                    applicant_name=personal_info.get('full_name'),
+                    position=job_details.get('position'),
                     application_number=application_number
                 )
             except Exception as e:
@@ -178,18 +177,36 @@ class CareerService:
             
             # Send notification to admin
             try:
-                self.email.send_new_career_application_notification(
-                    applicant_name=personal_info['full_name'],
-                    position=job_details.get('position', 'Relationship Manager'),
-                    email=personal_info['email'],
-                    phone=personal_info['phone'],
-                    experience_years=job_details.get('experience_years', 0),
+                await self.email.send_new_career_application_notification(
+                    applicant_name=personal_info.get('full_name'),
+                    position=job_details.get('position'),
+                    email=personal_info.get('email'),
+                    phone=personal_info.get('phone'),
+                    experience_years=job_details.get('experience_years') or 0,
                     application_id=application_id
                 )
             except Exception as e:
                 logger.warning(f"Failed to send admin notification: {str(e)}")
             
             logger.info(f"✅ Application {application_id} submitted successfully")
+            
+            # Log activity for career application submission
+            try:
+                await ActivityLogger.log(
+                    user_id=None,  # No user_id for public applications
+                    action="career_application_submitted",
+                    entity_type="career_application",
+                    entity_id=application_id,
+                    details={
+                        "applicant_name": personal_info.get('full_name'),
+                        "position": job_details.get('position'),
+                        "email": personal_info.get('email'),
+                        "phone": personal_info.get('phone'),
+                        "application_number": application_number
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log career application activity: {str(e)}")
             
             return {
                 "id": application_id,
@@ -282,7 +299,7 @@ class CareerService:
                 detail="Failed to fetch application"
             )
     
-    def update_application_status(
+    async def update_application_status(
         self,
         application_id: str,
         new_status: str,
@@ -317,8 +334,7 @@ class CareerService:
                 )
             
             update_dict = {
-                "status": new_status,
-                "reviewed_at": datetime.now().isoformat()
+                "status": new_status
             }
             
             if admin_notes:
@@ -339,6 +355,24 @@ class CareerService:
                 )
             
             logger.info(f"✅ Application {application_id} updated to {new_status}")
+            
+            # Log activity for status update
+            try:
+                application_data = result.data[0]
+                await ActivityLogger.log(
+                    user_id=None,  # Will be updated when we have user context
+                    action="career_application_status_updated",
+                    entity_type="career_application",
+                    entity_id=application_id,
+                    details={
+                        "applicant_name": application_data.get("full_name"),
+                        "new_status": new_status,
+                        "admin_notes": admin_notes,
+                        "rejection_reason": rejection_reason
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log career application status update: {str(e)}")
             
             return result.data[0]
             
