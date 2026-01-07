@@ -194,3 +194,20 @@ async def confirm_password_reset(
         new_password=request.new_password
     )
 
+
+@router.post("/resend-verification")
+@limiter.limit(RateLimits.AUTH_PASSWORD_RESET)  # Max 3 attempts per hour
+async def resend_verification_email(
+    request: Request,  # Required for rate limiter
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Resend email verification link
+    
+    Sends a new verification email to the user if their email is not yet confirmed
+    Rate limited: 3 attempts per hour to prevent abuse
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.resend_verification_email(current_user.user_id, current_user.email)

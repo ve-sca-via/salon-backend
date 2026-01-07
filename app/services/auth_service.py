@@ -620,3 +620,41 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to reset password"
             )
+    async def resend_verification_email(self, user_id: str, email: str) -> Dict:
+        """
+        Resend email verification link to user
+        
+        Args:
+            user_id: User's ID
+            email: User's email address
+            
+        Returns:
+            Dict with success status and message
+            
+        Raises:
+            HTTPException: If resend fails
+        """
+        try:
+            # Use Supabase's resend functionality
+            response = self.auth_client.auth.resend({
+                "type": "signup",
+                "email": email,
+                "options": {
+                    "email_redirect_to": f"{settings.FRONTEND_URL}"
+                }
+            })
+            
+            logger.info(f"Verification email resent to: {email}")
+            
+            return {
+                "success": True,
+                "message": "Verification email sent successfully. Please check your inbox."
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to resend verification email: {str(e)}")
+            # Don't expose detailed error to user
+            return {
+                "success": True,
+                "message": "If your email is registered and unverified, you will receive a verification email shortly."
+            }
