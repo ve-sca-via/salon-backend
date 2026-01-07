@@ -28,7 +28,8 @@ from app.schemas import (
     SalonResponse,
     SuccessResponse,
     PublicConfigResponse,
-    CommissionConfigResponse
+    CommissionConfigResponse,
+    PopularCitiesResponse
 )
 
 router = APIRouter(prefix="/salons", tags=["salons"])
@@ -93,6 +94,45 @@ async def get_public_salons(
         "count": len(salons),
         "offset": offset,
         "limit": limit
+    }
+
+
+@router.get("/popular-cities", response_model=PopularCitiesResponse)
+async def get_popular_cities(
+    limit: int = Query(8, ge=1, le=20, description="Number of cities to return"),
+    db: Client = Depends(get_db_client)
+):
+    """
+    Get top cities by salon count (aggregated at database level).
+    
+    **Performance:**
+    - Uses database-level aggregation (efficient for large datasets)
+    - Returns only aggregated counts, not full salon data
+    - Case-insensitive city matching (Mumbai = mumbai = MUMBAI)
+    - Automatic whitespace trimming
+    
+    **Use Cases:**
+    - Homepage popular locations section
+    - City filter dropdowns
+    - Analytics dashboards
+    
+    **Only includes salons that are:**
+    - is_active = true
+    - is_verified = true
+    - registration_fee_paid = true
+    
+    **Returns:**
+    - cities: Array of {city: string, salon_count: int}
+    - total: Number of cities returned
+    """
+    # Call database function for efficient aggregation
+    response = db.rpc('get_popular_cities', {'result_limit': limit}).execute()
+    
+    cities = response.data if response.data else []
+    
+    return {
+        "cities": cities,
+        "total": len(cities)
     }
 
 

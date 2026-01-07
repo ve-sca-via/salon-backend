@@ -79,6 +79,9 @@ from .response.admin import (
 from .response.location import (
     GeocodeResponse, NearbySalonsResponse
 )
+from .response.city import (
+    PopularCityResponse, PopularCitiesResponse
+)
 from .response.career import (
     CareerApplicationResponse
 )
