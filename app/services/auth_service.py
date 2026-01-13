@@ -129,6 +129,8 @@ class AuthService:
         password: str,
         full_name: str,
         phone: Optional[str] = None,
+        age: int = None,
+        gender: str = None,
         user_role: str = "customer"
     ) -> Dict:
         """
@@ -139,6 +141,8 @@ class AuthService:
             password: User's password
             full_name: User's full name
             phone: User's phone number (optional)
+            age: User's age (required, 13-120)
+            gender: User's gender (required: male, female, other)
             user_role: User role (defaults to customer)
             
         Returns:
@@ -151,6 +155,34 @@ class AuthService:
             # Sanitize inputs (XSS protection)
             sanitized_full_name = html.escape(full_name.strip())
             sanitized_phone = html.escape(phone.strip()) if phone else None
+            
+            # Validate and sanitize gender (REQUIRED)
+            if not gender:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Gender is required"
+                )
+            
+            gender_lower = gender.lower().strip()
+            if gender_lower not in ['male', 'female', 'other']:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid gender. Must be 'male', 'female', or 'other'."
+                )
+            sanitized_gender = gender_lower
+            
+            # Validate age (REQUIRED)
+            if age is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age is required"
+                )
+            
+            if age < 13 or age > 120:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age must be between 13 and 120"
+                )
             
             # Only allow customer signups
             if user_role not in ["customer"]:
@@ -201,6 +233,8 @@ class AuthService:
                 "email": email,
                 "full_name": sanitized_full_name,
                 "phone": sanitized_phone,
+                "age": age,
+                "gender": sanitized_gender,
                 "user_role": user_role,
                 "is_active": True
             }
@@ -249,6 +283,8 @@ class AuthService:
                 "user_role": user_role,
                 "role": user_role,  # Backward compatibility for frontend
                 "phone": sanitized_phone,
+                "age": age,
+                "gender": sanitized_gender,
                 "is_active": True
             }
             

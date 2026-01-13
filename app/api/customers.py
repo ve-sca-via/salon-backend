@@ -5,8 +5,6 @@ Handles all customer-facing operations:
 - Browse and search salons
 - View salon details
 - Manage bookings
-- Favorites
-- Reviews
 - Cart operations
 """
 
@@ -21,9 +19,8 @@ from app.schemas import (
     CartResponse, CartOperationResponse, SuccessResponse, CartClearResponse,
     CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
     SalonsSearchResponse, SalonDetailsResponse, BookingResponse,
-    FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
-    ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate,
-    BookingCreate, BookingCancellation, FavoriteCreate, ReviewUpdate,
+    CartItemCreate, CartItemUpdate,
+    BookingCreate, BookingCancellation,
     CartCheckoutCreate
 )
 
@@ -238,7 +235,7 @@ async def get_salon_details(
 ):
     """
     Get detailed information about a specific salon
-    Includes services, staff, and reviews
+    Includes services
     Public endpoint - no authentication required
     """
     return await customer_service.get_salon_details(salon_id)
@@ -269,104 +266,5 @@ async def create_booking(
     )
 
 
-# =====================================================
-# FAVORITES
-# =====================================================
 
-@router.get("/favorites", response_model=FavoritesResponse)
-async def get_favorites(
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Get customer's favorite salons
-    Requires authentication
-    """
-    return await customer_service.get_favorites(current_user.user_id)
-
-
-@router.post("/favorites", response_model=FavoriteOperationResponse)
-async def add_favorite(
-    favorite_data: FavoriteCreate,
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Add salon to favorites
-    Requires authentication
-    """
-    return await customer_service.add_favorite(
-        customer_id=current_user.user_id,
-        salon_id=favorite_data.salon_id
-    )
-
-
-@router.delete("/favorites/{salon_id}", response_model=SuccessResponse)
-async def remove_favorite(
-    salon_id: int,
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Remove salon from favorites
-    Requires authentication
-    """
-    return await customer_service.remove_favorite(
-        customer_id=current_user.user_id,
-        salon_id=salon_id
-    )
-
-
-# =====================================================
-# REVIEWS
-# =====================================================
-
-@router.get("/reviews/my-reviews", response_model=CustomerReviewsResponse)
-async def get_my_reviews(
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Get customer's reviews
-    Requires authentication
-    """
-    return await customer_service.get_customer_reviews(current_user.user_id)
-
-
-@router.post("/reviews", response_model=ReviewOperationResponse)
-async def create_review(
-    review_data: ReviewCreate,
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Create a new review
-    Requires authentication
-    """
-    return await customer_service.create_review(
-        customer_id=current_user.user_id,
-        salon_id=review_data.salon_id,
-        booking_id=review_data.booking_id,
-        rating=review_data.rating,
-        comment=review_data.comment
-    )
-
-
-@router.put("/reviews/{review_id}", response_model=ReviewOperationResponse)
-async def update_review(
-    review_id: int,
-    review_data: ReviewUpdate,
-    current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Update a review
-    Requires authentication
-    """
-    return await customer_service.update_review(
-        customer_id=current_user.user_id,
-        review_id=review_id,
-        rating=review_data.rating,
-        comment=review_data.comment
-    )
 

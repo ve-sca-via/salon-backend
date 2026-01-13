@@ -259,7 +259,7 @@ def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: 
         }).execute()
         
         if result.data:
-            logger.info(f"✓ Token successfully revoked: {token_jti}")
+            logger.info(f" Token successfully revoked: {token_jti}")
             return True
         
         logger.warning(f"Token revocation returned no data: {token_jti}")

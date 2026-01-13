@@ -54,7 +54,7 @@ async def get_user_bookings(
 
 @router.get("/salon/{salon_id}", response_model=BookingListResponse, operation_id="booking_get_salon_bookings")
 async def get_salon_bookings(
-    salon_id: int,
+    salon_id: str,
     current_user: TokenData = Depends(get_current_user),
     booking_service: BookingService = Depends(get_booking_service)
 ):

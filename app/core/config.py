@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     # =====================================================
     # EMAIL CONFIGURATION
     # =====================================================
-    EMAIL_ENABLED: bool = Field(default=False)  # Toggle email sending (False = log only)
     EMAIL_FROM: str = Field(default="noreply@salonplatform.com")
     EMAIL_FROM_NAME: str = Field(default="Salon Management Platform")
     ADMIN_EMAIL: str = Field(default="admin@salonplatform.com")  # Admin notification email
@@ -112,46 +111,10 @@ class Settings(BaseSettings):
     OPENCAGE_API_KEY: str = Field(default="")
     
     # =====================================================
-    # FILE STORAGE
-    # =====================================================
-    STORAGE_BUCKET_PROFILES: str = Field(default="profiles")
-    STORAGE_BUCKET_SALONS: str = Field(default="salons")
-    STORAGE_BUCKET_SERVICES: str = Field(default="services")
-    STORAGE_BUCKET_DOCUMENTS: str = Field(default="documents")
-    MAX_FILE_SIZE_MB: int = Field(default=10)
-    
-    # =====================================================
-    # BUSINESS CONFIGURATION
-    # =====================================================
-    DEFAULT_REGISTRATION_FEE: float = Field(default=5000.0)
-    DEFAULT_CONVENIENCE_FEE_PERCENTAGE: float = Field(default=5.0)
-    DEFAULT_RM_SCORE_PER_APPROVAL: int = Field(default=10)
-    DEFAULT_PLATFORM_COMMISSION: float = Field(default=10.0)
-    MAX_BOOKING_ADVANCE_DAYS: int = Field(default=30)
-    CANCELLATION_WINDOW_HOURS: int = Field(default=24)
-    
-    # =====================================================
-    # REDIS (OPTIONAL)
-    # =====================================================
-    REDIS_URL: Optional[str] = Field(default=None)
-    CACHE_TTL_SECONDS: int = Field(default=3600)
-    
-    # =====================================================
     # LOGGING
     # =====================================================
     LOG_LEVEL: str = Field(default="INFO")
     LOG_FILE: str = Field(default="logs/app.log")
-    
-    # =====================================================
-    # RATE LIMITING
-    # =====================================================
-    RATE_LIMIT_PER_MINUTE: int = Field(default=60)
-    RATE_LIMIT_PER_HOUR: int = Field(default=1000)
-    
-    # =====================================================
-    # SENTRY (ERROR TRACKING)
-    # =====================================================
-    SENTRY_DSN: Optional[str] = Field(default=None)
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -159,11 +122,6 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="allow"
     )
-    
-    @property
-    def max_file_size_bytes(self) -> int:
-        """Convert MB to bytes"""
-        return self.MAX_FILE_SIZE_MB * 1024 * 1024
     
     @property
     def is_development(self) -> bool:

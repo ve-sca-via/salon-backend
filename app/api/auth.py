@@ -73,6 +73,8 @@ async def signup(
         password=signup_data.password,
         full_name=signup_data.full_name,
         phone=signup_data.phone,
+        age=signup_data.age,
+        gender=signup_data.gender,
         user_role=signup_data.user_role
     )
     return SignupResponse(**result)

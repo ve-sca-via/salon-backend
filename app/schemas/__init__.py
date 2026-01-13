@@ -33,7 +33,7 @@ from .request.booking import (
 from .request.vendor import (
     CompleteRegistrationRequest, VendorJoinRequestBase, VendorJoinRequestCreate, VendorJoinRequestUpdate,
     VendorApprovalRequest, VendorRejectionRequest, SalonBase, SalonCreate, SalonUpdate,
-    ServiceCreate, ServiceUpdate, SalonStaffCreate, SalonStaffUpdate
+    ServiceCreate, ServiceUpdate
 )
 from .request.payment import (
     PaymentBase, BookingOrderCreate, RazorpayOrderCreate, PaymentVerification
@@ -59,10 +59,10 @@ from .response.auth import (
 )
 from .response.vendor import (
     VendorJoinRequestResponse, SalonResponse, SalonListResponse,
-    ServiceCategoryResponse, ServiceResponse, SalonStaffResponse,
+    ServiceCategoryResponse, ServiceResponse,
     CompleteRegistrationResponse, VendorDashboardResponse, VendorAnalyticsResponse,
     PublicSalonsResponse, SalonDetailResponse, AvailableSlotsResponse,
-    NearbySalonsResponse, SearchSalonsResponse, SalonServicesResponse, SalonStaffListResponse,
+    NearbySalonsResponse, SearchSalonsResponse, SalonServicesResponse,
     PublicConfigResponse, CommissionConfigResponse, ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
 )
 from .response.booking import (

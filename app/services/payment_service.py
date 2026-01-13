@@ -29,8 +29,37 @@ class PaymentService:
     
     def __init__(self, db_client):
         self.db = db_client
-        self.razorpay = RazorpayService()
         self.config_service = ConfigService(db_client=db_client)
+        self.razorpay = None  # Initialize lazily when needed
+        self._razorpay_initialized = False
+    
+    async def _initialize_razorpay(self):
+        """Initialize Razorpay client with credentials from database"""
+        if self._razorpay_initialized:
+            return
+        
+        try:
+            # Get Razorpay credentials from database
+            key_id_config = await self.config_service.get_config("razorpay_key_id")
+            key_secret_config = await self.config_service.get_config("razorpay_key_secret")
+            
+            razorpay_key_id = key_id_config.get("config_value")
+            razorpay_key_secret = key_secret_config.get("config_value")
+            
+            # Initialize Razorpay service with database credentials
+            self.razorpay = RazorpayService(
+                razorpay_key_id=razorpay_key_id,
+                razorpay_key_secret=razorpay_key_secret
+            )
+            self._razorpay_initialized = True
+            logger.info("Razorpay initialized from database configuration")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Razorpay from database: {e}")
+            # Fallback to environment variables
+            self.razorpay = RazorpayService()
+            self._razorpay_initialized = True
+            logger.warning("Razorpay initialized from environment variables (fallback)")
     
     # =====================================================
     # BOOKING PAYMENT ORDERS
@@ -51,6 +80,9 @@ class PaymentService:
         Returns:
             Order details with Razorpay order_id, amount, key_id
         """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+        
         try:
             # Get booking details
             booking = self.db.table("bookings").select(
@@ -147,6 +179,64 @@ class PaymentService:
                 detail=f"Failed to create payment order: {str(e)}"
             )
     
+    async def verify_cart_payment(
+        self,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+        razorpay_signature: str
+    ) -> bool:
+        """
+        Verify Razorpay payment signature for cart checkout
+        
+        This method should be called by CustomerService during checkout
+        to verify payment before creating the booking.
+        
+        Args:
+            razorpay_order_id: Order ID from Razorpay
+            razorpay_payment_id: Payment ID from Razorpay
+            razorpay_signature: Signature from Razorpay
+        
+        Returns:
+            bool: True if signature is valid
+            
+        Raises:
+            HTTPException: If verification fails or service not configured
+        """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+        
+        if not self.razorpay or not self.razorpay.client:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment service not configured"
+            )
+        
+        try:
+            # Verify signature
+            is_valid = self.razorpay.verify_payment_signature(
+                razorpay_order_id,
+                razorpay_payment_id,
+                razorpay_signature
+            )
+            
+            if not is_valid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid payment signature"
+                )
+            
+            logger.info(f"Cart payment signature verified: {razorpay_order_id}")
+            return True
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Payment signature verification failed: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Payment verification failed"
+            )
+    
     async def verify_booking_payment(
         self,
         razorpay_order_id: str,
@@ -206,7 +296,7 @@ class PaymentService:
                         "booking_id": booking_data["id"],
                         "salon_name": booking_data["salons"]["business_name"],
                         "booking_date": booking_data["booking_date"],
-                        "booking_time": booking_data["booking_time"],
+                        "time_slots": booking_data.get("time_slots", []),
                         "amount_paid": payment_data["amount"]
                     }
                 
@@ -243,7 +333,7 @@ class PaymentService:
                 "booking_id": booking_data["id"],
                 "salon_name": booking_data["salons"]["business_name"],
                 "booking_date": booking_data["booking_date"],
-                "booking_time": booking_data["booking_time"],
+                "time_slots": booking_data.get("time_slots", []),
                 "amount_paid": payment_data["amount"]
             }
         
@@ -294,6 +384,9 @@ class PaymentService:
             HTTPException 400: Cart is empty or invalid amount
             HTTPException 500: Failed to create Razorpay order
         """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+        
         try:
             # Get cart items
             cart_response = self.db.table("cart_items")\
@@ -329,11 +422,19 @@ class PaymentService:
                 fee_config = await self.config_service.get_config("convenience_fee_percentage")
                 convenience_fee_percentage = float(fee_config.get("config_value"))
                 logger.info(f"Using convenience_fee_percentage from config: {convenience_fee_percentage}%")
-            except (ValueError, TypeError, Exception) as e:
+            except ValueError as e:
+                # Config not found in database
+                logger.error(f"Configuration missing: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment system is not configured. Please contact support."
+                )
+            except (TypeError, Exception) as e:
+                # Other errors (invalid value, database error, etc.)
                 logger.error(f"Failed to get convenience_fee_percentage from config: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Payment configuration not available. Please contact support."
+                    detail="Unable to process payment at this time. Please try again or contact support."
                 )
             
             booking_fee = total_service_price * (convenience_fee_percentage / 100)
@@ -388,7 +489,7 @@ class PaymentService:
             logger.error(f"Failed to create cart payment order: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create payment order: {str(e)}"
+                detail="Unable to create payment order. Please try again or contact support."
             )
     
     # =====================================================
@@ -410,6 +511,9 @@ class PaymentService:
         Returns:
             Order details with Razorpay order_id, amount, key_id
         """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+        
         try:
             # Verify vendor request exists
             request_check = self.db.table("vendor_join_requests").select(

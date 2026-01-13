@@ -22,7 +22,7 @@ class BookingCreate(BaseModel):
     """Schema for creating a new booking - supports multiple time slots"""
     salon_id: str  # UUID string
     booking_date: str
-    booking_time: str  # Primary booking time (for backward compatibility)
+    booking_time: str  # DEPRECATED: For backward compatibility only, use time_slots
     time_slots: Optional[List[str]] = Field(None, max_length=3, min_length=1)  # Up to 3 time slots
     services: List[ServiceItem]  # List of service items
     payment_status: Optional[str] = 'pending'  # Payment status
@@ -107,7 +107,7 @@ class ServiceNameSummary(BaseModel):
 class BookingForCancellation(BaseModel):
     id: Optional[str]
     booking_date: Optional[str]
-    booking_time: Optional[str]
+    time_slots: Optional[List[str]] = None
     convenience_fee: Optional[float] = 0.0
     profiles: Optional[ProfileSummary] = None
     services: Optional[ServiceNameSummary] = None

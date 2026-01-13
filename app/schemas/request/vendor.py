@@ -49,7 +49,6 @@ class VendorJoinRequestBase(BaseModel):
     
     # Operations
     services_offered: Optional[Dict[str, Any]] = Field(None, description="Services by category")
-    staff_count: Optional[int] = Field(1, ge=1)
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = Field(default_factory=list)
@@ -146,26 +145,4 @@ class ServiceUpdate(BaseModel):
     price: Optional[float] = Field(None, ge=0)
     category_id: Optional[str] = None
     image_url: Optional[str] = None
-    is_active: Optional[bool] = None
-
-# =====================================================
-# STAFF REQUEST SCHEMAS
-# =====================================================
-
-class SalonStaffCreate(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
-    phone: str = Field(..., max_length=20)
-    designation: Optional[str] = Field(None, max_length=100)
-    specializations: Optional[List[str]] = None
-    profile_image: Optional[str] = None
-    joining_date: Optional[str] = None
-
-class SalonStaffUpdate(BaseModel):
-    full_name: Optional[str] = Field(None, min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = Field(None, max_length=20)
-    designation: Optional[str] = Field(None, max_length=100)
-    specializations: Optional[List[str]] = None
-    profile_image: Optional[str] = None
     is_active: Optional[bool] = None

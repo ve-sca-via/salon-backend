@@ -116,7 +116,7 @@ class UserService:
                 logger.warning(f"Failed to create RM profile: {str(e)}")
                 # Don't rollback - user and profile are created
         
-        logger.info(f"✅ User created successfully: {request.email} ({request.user_role})")
+        logger.info(f"User created successfully: {request.email} ({request.user_role})")
         
         return UserCreationResult(
             success=True,
@@ -173,7 +173,7 @@ class UserService:
         if not user_id:
             raise Exception("No user ID returned from auth API")
         
-        logger.info(f"✅ Auth user created: {user_id}")
+        logger.info(f"Auth user created: {user_id}")
         return user_id
     
     async def _create_profile(
@@ -222,7 +222,7 @@ class UserService:
         if not created_profile:
             raise Exception("Failed to create profile - no data returned")
         
-        logger.info(f"✅ Profile created for {request.email}")
+        logger.info(f"Profile created for {request.email}")
         return created_profile[0] if isinstance(created_profile, list) else created_profile
     
     async def _create_rm_profile(self, user_id: str, request: CreateUserRequest) -> Dict[str, Any]:
@@ -276,7 +276,7 @@ class UserService:
         if not created_rm_profile:
             raise Exception("Failed to create RM profile - no data returned")
         
-        logger.info(f"✅ RM profile created for {request.email}")
+        logger.info(f"RM profile created for {request.email}")
         return created_rm_profile[0] if isinstance(created_rm_profile, list) else created_rm_profile
     
     async def _generate_next_employee_id(self) -> str:
@@ -325,7 +325,7 @@ class UserService:
             )
             
             if response.status_code in [200, 204]:
-                logger.info(f"✅ Auth user deleted: {user_id}")
+                logger.info(f"Auth user deleted: {user_id}")
             elif response.status_code == 404:
                 logger.warning(f"Auth user not found (may already be deleted): {user_id}")
             else:
@@ -370,7 +370,7 @@ class UserService:
         if user_role == "admin":
             raise ValueError("Cannot delete admin users")
         
-        logger.info(f"🗑️ Starting deletion process for user {user_id} ({user_email})")
+        logger.info(f"Starting deletion process for user {user_id} ({user_email})")
         
         # Check for dependencies that would prevent deletion (ON DELETE RESTRICT constraints)
         
@@ -400,7 +400,7 @@ class UserService:
         if user_role == "relationship_manager":
             try:
                 db.table("rm_profiles").delete().eq("id", user_id).execute()
-                logger.info(f"🗑️ RM profile deleted for user {user_id}")
+                logger.info(f"RM profile deleted for user {user_id}")
             except Exception as e:
                 logger.error(f"Failed to delete RM profile for {user_id}: {str(e)}")
                 raise Exception(f"Failed to delete RM profile: {str(e)}")
@@ -409,12 +409,12 @@ class UserService:
         # This will CASCADE delete the profile due to profiles.id_fkey constraint
         try:
             await self._delete_auth_user(user_id)
-            logger.info(f"🗑️ Auth user deleted for {user_id} (profile auto-deleted via CASCADE)")
+            logger.info(f"Auth user deleted for {user_id} (profile auto-deleted via CASCADE)")
         except Exception as e:
             logger.error(f"Failed to delete auth user {user_id}: {str(e)}")
             raise Exception(f"Failed to delete user from authentication system: {str(e)}")
         
-        logger.info(f"✅ User {user_id} ({user_email}) fully deleted and email is now available for reuse")
+        logger.info(f"User {user_id} ({user_email}) fully deleted and email is now available for reuse")
         return True
     
     async def update_user(self, user_id: str, updates: UserUpdate) -> Dict[str, Any]:
@@ -477,11 +477,11 @@ class UserService:
                     db.table("rm_profiles").update({
                         "is_active": False
                     }).eq("id", user_id).execute()
-                    logger.info(f"🗑️ RM profile also deactivated for user {user_id}")
+                    logger.info(f"RM profile also deactivated for user {user_id}")
                 except Exception as e:
                     logger.warning(f"Failed to deactivate RM profile for {user_id}: {str(e)}")
             
-            logger.info(f"✅ User {user_id} updated: {list(filtered_updates.keys())}")
+            logger.info(f"User {user_id} updated: {list(filtered_updates.keys())}")
             
             return {
                 "success": True,

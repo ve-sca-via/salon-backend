@@ -283,7 +283,7 @@ class RMService:
             
             self.db.table("rm_score_history").insert(history_data).execute()
             
-            logger.info(f"📊 RM {rm_id} score updated: {current_score} → {new_score} ({score_change:+d})")
+            logger.info(f"RM {rm_id} score updated: {current_score} -> {new_score} ({score_change:+d})")
             
             return RMScoreUpdate(
                 success=True,
@@ -424,7 +424,7 @@ class RMService:
             if not profile_response.data:
                 raise ValueError("Profile not found or update failed")
             
-            logger.info(f"✏️ Profile {rm_id} updated: {list(profile_updates.keys())}")
+            logger.info(f"Profile {rm_id} updated: {list(profile_updates.keys())}")
         
         # Update rm_profiles table if there are RM-specific fields to update
         if rm_updates:
@@ -435,7 +435,7 @@ class RMService:
             if not rm_response.data:
                 raise ValueError("RM profile not found or update failed")
             
-            logger.info(f"✏️ RM profile {rm_id} updated: {list(rm_updates.keys())}")
+            logger.info(f"RM profile {rm_id} updated: {list(rm_updates.keys())}")
         
         if not profile_updates and not rm_updates:
             raise ValueError("No valid fields to update")
@@ -626,7 +626,7 @@ class RMService:
                     detail="Vendor request not found or access denied"
                 )
             
-            if existing.data.get("status") != "draft":
+            if existing.data[0].get("status") != "draft":
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Only draft requests can be updated"

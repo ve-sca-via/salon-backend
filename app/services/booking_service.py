@@ -33,7 +33,7 @@ class BookingService:
     async def get_bookings(
         self,
         user_id: Optional[str] = None,
-        salon_id: Optional[int] = None,
+        salon_id: Optional[str] = None,
         current_user_id: str = None,
         current_user_role: str = None
     ) -> Dict[str, Any]:
@@ -61,7 +61,9 @@ class BookingService:
                         detail="Cannot access other users' bookings"
                     )
                 
-                response = self.db.table("bookings").select("*").eq(
+                response = self.db.table("bookings").select(
+                    "*, profiles!customer_id(full_name, email, phone)"
+                ).eq(
                     "customer_id", user_id
                 ).order("booking_date", desc=True).execute()
                 
@@ -75,7 +77,9 @@ class BookingService:
                         detail="Insufficient permissions to view salon bookings"
                     )
                 
-                response = self.db.table("bookings").select("*").eq(
+                response = self.db.table("bookings").select(
+                    "*, profiles!customer_id(full_name, email, phone)"
+                ).eq(
                     "salon_id", salon_id
                 ).order("booking_date", desc=True).execute()
                 
@@ -123,7 +127,7 @@ class BookingService:
         """
         try:
             response = self.db.table("bookings").select(
-                "*, services(*), salon_staff(*), profiles(*)"
+                "*, services(*), profiles!customer_id(id, full_name, email, phone)"
             ).eq("id", booking_id).single().execute()
             
             if not response.data:
@@ -176,12 +180,10 @@ class BookingService:
             # Calculate offset
             offset = (page - 1) * limit
             
-            # Build query with joins - Remove count="exact" to avoid timeout on large datasets
-            # We'll count separately if needed
-            query = self.db.table("bookings").select(
+            # Use bookings_with_payments view which has customer data pre-joined
+            query = self.db.from_("bookings_with_payments").select(
                 "*, "
-                "salons(id, business_name, city, address), "
-                "profiles(id, full_name, email, phone)"
+                "salons(id, business_name, city, address)"
             )
             
             # Apply filters
@@ -200,26 +202,45 @@ class BookingService:
             ).range(offset, offset + limit - 1).execute()
             
             bookings = response.data or []
+            
+            # Enrich bookings with profiles object for compatibility with frontend
+            enriched_bookings = []
+            for booking in bookings:
+                # Create profiles object from customer data in view
+                profiles_obj = None
+                if booking.get("customer_name") or booking.get("customer_email") or booking.get("customer_phone"):
+                    profiles_obj = {
+                        "full_name": booking.get("customer_name"),
+                        "email": booking.get("customer_email"),
+                        "phone": booking.get("customer_phone")
+                    }
+                
+                enriched_booking = {
+                    **booking,
+                    "profiles": profiles_obj  # Add profiles object for frontend compatibility
+                }
+                enriched_bookings.append(enriched_booking)
+            
             # Use length of returned data as count (exact count can be slow)
-            total_count = len(bookings)
+            total_count = len(enriched_bookings)
             
             # DEBUG: Log first booking to see structure
-            if bookings:
-                logger.info(f"First booking structure: {bookings[0].keys()}")
-                logger.info(f"Has 'salons' key: {'salons' in bookings[0]}")
-                logger.info(f"Has 'profiles' key: {'profiles' in bookings[0]}")
-                if 'salons' in bookings[0]:
-                    logger.info(f"Salons data: {bookings[0]['salons']}")
-                if 'profiles' in bookings[0]:
-                    logger.info(f"Profiles data: {bookings[0]['profiles']}")
+            if enriched_bookings:
+                logger.info(f"First booking structure: {enriched_bookings[0].keys()}")
+                logger.info(f"Has 'salons' key: {'salons' in enriched_bookings[0]}")
+                logger.info(f"Has 'profiles' key: {'profiles' in enriched_bookings[0]}")
+                if 'salons' in enriched_bookings[0]:
+                    logger.info(f"Salons data: {enriched_bookings[0]['salons']}")
+                if 'profiles' in enriched_bookings[0]:
+                    logger.info(f"Profiles data: {enriched_bookings[0]['profiles']}")
             
             # Calculate pagination info
-            total_pages = max(1, page) if bookings else 0
+            total_pages = max(1, page) if enriched_bookings else 0
             
-            logger.info(f"Admin fetched {len(bookings)} bookings (page {page})")
+            logger.info(f"Admin fetched {len(enriched_bookings)} bookings (page {page})")
             
             return {
-                "data": bookings,
+                "data": enriched_bookings,
                 "pagination": {
                     "page": page,
                     "limit": limit,
@@ -413,9 +434,6 @@ class BookingService:
                 convenience_fee_percentage
             )
 
-            # Parse and format booking time
-            db_time = self._parse_booking_time(booking.booking_time)
-
             # Generate unique booking number
             booking_number = self._generate_booking_number()
 
@@ -433,29 +451,28 @@ class BookingService:
                 services_jsonb.append(service_data)
             
             # Prepare time slots (up to 3)
-            time_slots = booking.time_slots if booking.time_slots else [booking.booking_time]
+            time_slots = booking.time_slots if booking.time_slots else []
+            if not time_slots:
+                from app.core.exceptions import ValidationError
+                raise ValidationError("time_slots is required", "time_slots")
             if len(time_slots) > 3:
                 from app.core.exceptions import ValidationError
                 raise ValidationError("Maximum 3 time slots allowed", "time_slots")
 
-            # Prepare database data
+            # Prepare database data (customer info fetched via JOIN, not stored redundantly)
             db_booking_data = {
                 "booking_number": booking_number,
                 "customer_id": current_user_id,
                 "salon_id": booking.salon_id,
                 "services": services_jsonb,
                 "booking_date": booking.booking_date,
-                "booking_time": db_time,
-                "time_slots": time_slots,  # Store time slots array
+                "time_slots": time_slots,  # Store time slots array (1-3 appointment times)
                 "duration_minutes": total_duration,
                 "status": "confirmed" if booking.payment_status == "paid" else "pending",
                 "service_price": total_service_price,
                 "convenience_fee": totals["convenience_fee"],
                 "total_amount": totals["total_amount"],
                 "notes": booking.notes,
-                "customer_name": customer_data["full_name"],
-                "customer_phone": customer_data.get("phone", ""),
-                "customer_email": customer_data.get("email", ""),
                 "created_by": current_user_id
             }
 
@@ -542,7 +559,7 @@ class BookingService:
                     salon_name=salon_data["business_name"],
                     booking_number=booking_number,
                     booking_date=str(booking.booking_date),
-                    booking_time=booking.booking_time,
+                    booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
                     services=[{
                         "name": svc.get("service_details", {}).get("name", "Service"),
                         "price": svc["unit_price"]
@@ -571,7 +588,7 @@ class BookingService:
                             customer_phone=customer_data.get("phone", "N/A"),
                             booking_number=booking_number,
                             booking_date=str(booking.booking_date),
-                            booking_time=booking.booking_time,
+                            booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
                             services=[{
                                 "name": svc.get("service_details", {}).get("name", "Service"),
                                 "price": svc["unit_price"]
@@ -690,7 +707,7 @@ class BookingService:
         try:
             # Get booking details with profile
             booking_response = self.db.table("bookings").select(
-                "*, profiles(email, full_name), services(name), salons(business_name)"
+                "*, profiles!customer_id(email, full_name), services(name), salons(business_name)"
             ).eq("id", booking_id).single().execute()
             
             if not booking_response.data:
@@ -773,7 +790,7 @@ class BookingService:
                     detail="Booking not found"
                 )
             
-            salon_id = booking_check.data["salon_id"]
+            salon_id = str(booking_check.data["salon_id"])
             
             # Verify vendor owns the salon
             if current_user_role == "vendor":
@@ -937,20 +954,6 @@ class BookingService:
         
         return services_lookup
     
-    def _parse_booking_time(self, booking_time: str) -> str:
-        """Parse and convert booking time to 24-hour format."""
-        # Handle multiple time slots - use first one
-        first_time_slot = booking_time.split(",")[0].strip() if "," in booking_time else booking_time
-        
-        # Convert 12-hour format to 24-hour format
-        try:
-            from datetime import datetime as dt
-            parsed_time = dt.strptime(first_time_slot, "%I:%M %p")
-            return parsed_time.strftime("%H:%M:%S")
-        except:
-            # Fallback - assume it's already in correct format
-            return first_time_slot
-    
     def _generate_booking_number(self) -> str:
         """Generate unique booking number."""
         date_part = datetime.now().strftime('%Y%m%d')
@@ -994,14 +997,16 @@ class BookingService:
             })
 
         try:
+            # Format time_slots for email display (use first slot)
+            booking_time_display = booking.time_slots[0] if booking.time_slots else "N/A"
+            
             email_sent = await email_service.send_booking_confirmation_email(
                 to_email=customer_email,
                 customer_name=customer_name,
                 salon_name=salon_name,
                 services=service_summary,  # Pass services array instead of single service
                 booking_date=booking.booking_date,
-                booking_time=booking.booking_time,
-                staff_name="Our Team",
+                booking_time=booking_time_display,
                 total_amount=totals.total_amount,
                 booking_id=booking_id
             )
@@ -1035,7 +1040,8 @@ class BookingService:
         service_name = booking_data.services.name if booking_data.services else "Service"
         salon_name = booking_data.salons.business_name if booking_data.salons else "Salon"
         booking_date = booking_data.booking_date or "N/A"
-        booking_time = booking_data.booking_time or "N/A"
+        # Use first time slot for email display
+        booking_time = booking_data.time_slots[0] if booking_data.time_slots else "N/A"
 
         try:
             email_sent = await email_service.send_booking_cancellation_email(
@@ -1072,119 +1078,16 @@ class BookingService:
 
         return BookingForUpdate.model_validate(response.data)
     
-    async def _verify_salon_ownership(self, salon_id: int, vendor_id: str) -> None:
+    async def _verify_salon_ownership(self, salon_id: str, vendor_id: str) -> None:
         """Verify vendor owns the salon."""
         salon_check = self.db.table("salons").select("vendor_id").eq("id", salon_id).single().execute()
         
-        if not salon_check.data or salon_check.data["vendor_id"] != vendor_id:
+        if not salon_check.data or str(salon_check.data["vendor_id"]) != vendor_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cannot access other salons' bookings"
             )
 
-    # =====================================================
-    # ADMIN-SPECIFIC METHODS
-    # =====================================================
-
-    async def get_admin_bookings(
-        self,
-        page: int = 1,
-        limit: int = 20,
-        status_filter: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Get all bookings with filters (admin only)."""
-        try:
-            offset = (page - 1) * limit
-            query = self.db.table("bookings").select("*", count="exact")
-            
-            # Apply filters
-            if status_filter:
-                query = query.eq("status", status_filter)
-            
-            if date_from:
-                query = query.gte("booking_date", date_from)
-            
-            if date_to:
-                query = query.lte("booking_date", date_to)
-            
-            # Execute with pagination
-            response = query.order("booking_date", desc=True).range(
-                offset, offset + limit - 1
-            ).execute()
-            
-            logger.info(
-                f"Admin bookings query - Page: {page}, Total: {response.count}, "
-                f"Filters: status={status_filter}, date_from={date_from}, date_to={date_to}"
-            )
-            
-            return {
-                "success": True,
-                "data": response.data or [],
-                "total": response.count or 0,
-                "page": page,
-                "limit": limit
-            }
-        except Exception as e:
-            logger.error(f"Failed to fetch admin bookings: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to fetch bookings: {str(e)}"
-            )
-    
-    async def update_booking_status_admin(
-        self,
-        booking_id: str,
-        new_status: str
-    ) -> Dict[str, Any]:
-        """
-        Update booking status (admin only).
-        
-        Args:
-            booking_id: Booking ID to update
-            new_status: New status value
-            
-        Returns:
-            Dict with success flag, message, and updated booking
-            
-        Raises:
-            HTTPException: If booking not found or update fails
-        """
-        try:
-            # Update booking status
-            response = self.db.table("bookings").update({
-                "status": new_status
-            }).eq("id", booking_id).execute()
-            
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            updated_booking = response.data[0]
-            
-            logger.info(
-                f"Admin updated booking status - ID: {booking_id}, "
-                f"New Status: {new_status}"
-            )
-            
-            return {
-                "success": True,
-                "message": "Booking status updated successfully",
-                "data": updated_booking
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to update booking status: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update booking: {str(e)}"
-            )
-    
     # =====================================================
     # AUTHORIZATION VERIFICATION METHODS
     # =====================================================

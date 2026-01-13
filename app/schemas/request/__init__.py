@@ -27,8 +27,6 @@ from .vendor import (
     SalonUpdate,
     ServiceCreate,
     ServiceUpdate,
-    SalonStaffCreate,
-    SalonStaffUpdate,
 )
 from .booking import (
     BookingCreate,
@@ -64,7 +62,6 @@ __all__ = [
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate",
     "VendorJoinRequestUpdate", "VendorApprovalRequest", "VendorRejectionRequest",
     "SalonBase", "SalonCreate", "SalonUpdate", "ServiceCreate", "ServiceUpdate",
-    "SalonStaffCreate", "SalonStaffUpdate",
     # Booking
     "BookingCreate", "BookingUpdate", "BookingCancellation",
     # Payment

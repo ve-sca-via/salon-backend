@@ -13,7 +13,7 @@ from app.schemas import (
 )
 
 
-router = APIRouter(prefix="/api/location", tags=["location"])
+router = APIRouter(prefix="/location", tags=["location"])
 
 
 @router.post("/geocode", response_model=GeocodeResponse)
