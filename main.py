@@ -188,7 +188,7 @@ if settings.ENVIRONMENT.lower() == "production":
     app.add_middleware(HTTPSRedirectMiddleware)
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=settings.ALLOWED_HOSTS
+        allowed_hosts=settings.allowed_hosts_list
     )
 else:
     logger.info("Development mode: HTTPS enforcement disabled")
