@@ -197,11 +197,11 @@ otp_expiry = 3600
 
 # Customize email templates for branding
 [auth.email.template.confirmation]
-subject = "Welcome to Lubist - Confirm Your Email 🎉"
+subject = "Welcome to Lubist - Confirm Your Email"
 content_path = "./supabase/templates/confirmation.html"
 
 [auth.email.template.magic_link]
-subject = "Sign in to Lubist - Your Magic Link ✨"
+subject = "Sign in to Lubist - Your Magic Link"
 content_path = "./supabase/templates/magic_link.html"
 
 # Uncomment to customize email template

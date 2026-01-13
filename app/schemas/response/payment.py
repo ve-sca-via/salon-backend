@@ -33,7 +33,7 @@ class PaymentVerificationResponse(BaseModel):
     booking_id: Optional[str] = None
     salon_name: Optional[str] = None
     booking_date: Optional[str] = None
-    booking_time: Optional[str] = None
+    time_slots: Optional[List[str]] = None
     amount_paid: Optional[float] = None
     salon_id: Optional[str] = None
     vendor_request_id: Optional[str] = None

@@ -91,25 +91,40 @@ class ConfigService:
         try:
             response = self.db.table("system_config").select(
                 "*"
-            ).eq("config_key", config_key).single().execute()
+            ).eq("config_key", config_key).execute()
             
-            if not response.data:
-                raise ValueError(f"Configuration not found: {config_key}")
+            if not response.data or len(response.data) == 0:
+                logger.error(f"Configuration not found in database: {config_key}")
+                raise ValueError(f"Configuration '{config_key}' not found. Please contact system administrator.")
             
-            config = response.data
+            config = response.data[0]
             
             # Auto-decrypt sensitive values
             if config_key in SENSITIVE_CONFIG_KEYS and config.get('config_value'):
                 try:
                     encryption_service = get_encryption_service()
-                    config['config_value'] = encryption_service.decrypt_value(config['config_value'])
+                    original_value = config['config_value']
+                    
+                    # Try to decrypt
+                    decrypted = encryption_service.decrypt_value(original_value)
+                    config['config_value'] = decrypted
                     logger.info(f"Decrypted sensitive config: {config_key}")
                 except Exception as e:
-                    logger.error(f"Failed to decrypt config {config_key}: {e}")
-                    if settings.is_production:
-                        raise Exception(f"Failed to decrypt sensitive configuration in production: {config_key}")
-                    # In development, set to None so fallback is used
-                    config['config_value'] = None
+                    # Decryption failed - value might be plain text or corrupted
+                    logger.warning(f"Failed to decrypt config {config_key}: {e}")
+                    
+                    # Check if it looks like a Fernet token (starts with 'gAAAAA')
+                    if isinstance(config['config_value'], str) and config['config_value'].startswith('gAAAAA'):
+                        # It looks encrypted but decryption failed - serious error
+                        logger.error(f"Config {config_key} appears encrypted but decryption failed")
+                        if settings.is_production:
+                            raise Exception(f"Failed to decrypt sensitive configuration in production: {config_key}")
+                        config['config_value'] = None
+                    else:
+                        # Doesn't look encrypted - might be plain text from old data
+                        logger.warning(f"Config {config_key} appears to be plain text, not encrypted. Consider re-encrypting.")
+                        # Return the plain text value as-is (backward compatibility)
+                        pass
             
             logger.info(f"Retrieved configuration: {config_key}")
             
@@ -118,8 +133,10 @@ class ConfigService:
         except ValueError:
             raise
         except Exception as e:
-            logger.error(f"Failed to fetch configuration {config_key}: {str(e)}")
-            raise Exception(f"Failed to fetch configuration: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Failed to fetch configuration {config_key}: {error_msg}")
+            # Don't expose internal database errors to users
+            raise Exception(f"Failed to retrieve system configuration '{config_key}'. Please contact support.")
     
     async def update_config(
         self,
@@ -152,10 +169,18 @@ class ConfigService:
             # Convert Pydantic model to dict and encrypt sensitive values before saving
             processed_updates = updates.model_dump(exclude_none=True)
             if config_key in SENSITIVE_CONFIG_KEYS and 'config_value' in processed_updates:
+                original_value = processed_updates['config_value']
                 try:
                     encryption_service = get_encryption_service()
-                    processed_updates['config_value'] = encryption_service.encrypt_value(processed_updates['config_value'])
-                    logger.info(f"Encrypted sensitive config before saving: {config_key}")
+                    encrypted_value = encryption_service.encrypt_value(original_value)
+                    
+                    # Verify encryption actually happened
+                    if encrypted_value == original_value:
+                        logger.warning(f"Encryption service returned same value (NoopEncryptionService in use). Value will be stored unencrypted.")
+                    else:
+                        logger.info(f"Encrypted sensitive config before saving: {config_key}")
+                    
+                    processed_updates['config_value'] = encrypted_value
                 except Exception as e:
                     logger.error(f"Failed to encrypt config {config_key}: {e}")
                     raise Exception(f"Failed to encrypt sensitive configuration: {e}")
@@ -225,7 +250,15 @@ class ConfigService:
             if config_key in SENSITIVE_CONFIG_KEYS and config_value is not None:
                 try:
                     encryption_service = get_encryption_service()
-                    to_store_value = encryption_service.encrypt_value(config_value)
+                    encrypted = encryption_service.encrypt_value(config_value)
+                    
+                    # Verify encryption actually happened
+                    if encrypted == config_value:
+                        logger.warning(f"Encryption service returned same value (NoopEncryptionService in use). Value will be stored unencrypted for {config_key}.")
+                    else:
+                        logger.info(f"Encrypted sensitive config during create: {config_key}")
+                    
+                    to_store_value = encrypted
                 except Exception as e:
                     logger.error(f"Failed to encrypt config during create {config_key}: {e}")
                     raise Exception(f"Failed to encrypt sensitive configuration: {e}")

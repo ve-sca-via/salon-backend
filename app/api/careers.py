@@ -4,16 +4,18 @@ Handles job application submissions for RM and other positions
 """
 from fastapi import APIRouter, UploadFile, File, Form, Depends
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 import logging
 
 from app.core.database import get_db_client
+from app.core.auth import require_admin, TokenData
 from app.services.career_service import CareerService
 from app.schemas import (
     CareerApplicationResponse,
     ApplicationStatusUpdate,
 )
+from app.schemas.response.career import CareerApplicationUpdateResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,7 +45,7 @@ async def submit_career_application(
     
     # Job Details
     position: str = Form("Relationship Manager"),
-    experience_years: int = Form(0),
+    experience_years: int = Form(0, ge=0, le=50, description="Years of experience (0-50)"),
     previous_company: Optional[str] = Form(None),
     current_salary: Optional[float] = Form(None),
     expected_salary: Optional[float] = Form(None),
@@ -149,10 +151,13 @@ async def get_career_applications(
     position: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
+    admin: TokenData = Depends(require_admin),
     career_service: CareerService = Depends(get_career_service)
 ):
     """
-    Get all career applications (Admin/RM only)
+    Get all career applications (Admin only)
+    
+    Requires: Admin authentication
     
     Query params:
     - status: Filter by status (pending, under_review, etc.)
@@ -171,20 +176,44 @@ async def get_career_applications(
 @router.get("/applications/{application_id}")
 async def get_career_application(
     application_id: str,
-    career_service: CareerService = Depends(get_career_service)
-):
-    """Get a specific career application by ID (Admin/RM only)"""
-    return career_service.get_application_by_id(application_id)
-
-
-@router.patch("/applications/{application_id}")
-async def update_career_application_status(
-    application_id: str,
-    update_data: ApplicationStatusUpdate,
+    admin: TokenData = Depends(require_admin),
     career_service: CareerService = Depends(get_career_service)
 ):
     """
-    Update career application status (Admin/RM only)
+    Get a specific career application by ID (Admin only)
+    
+    Requires: Admin authentication
+    """
+    return career_service.get_application_by_id(application_id)
+
+
+@router.get("/applications/by-number/{application_number}")
+async def get_career_application_by_number(
+    application_number: str,
+    admin: TokenData = Depends(require_admin),
+    career_service: CareerService = Depends(get_career_service)
+):
+    """
+    Get a specific career application by application number (Admin only)
+    
+    Requires: Admin authentication
+    
+    Example: GET /api/v1/careers/applications/by-number/CA-20260112-A1B2C3D4
+    """
+    return career_service.get_application_by_number(application_number)
+
+
+@router.patch("/applications/{application_id}", response_model=CareerApplicationUpdateResponse)
+async def update_career_application_status(
+    application_id: str,
+    update_data: ApplicationStatusUpdate,
+    admin: TokenData = Depends(require_admin),
+    career_service: CareerService = Depends(get_career_service)
+):
+    """
+    Update career application status (Admin only)
+    
+    Requires: Admin authentication
     
     Can update:
     - status
@@ -198,30 +227,35 @@ async def update_career_application_status(
         admin_notes=update_data.admin_notes,
         rejection_reason=update_data.rejection_reason,
         interview_scheduled_at=update_data.interview_scheduled_at,
-        interview_location=update_data.interview_location
+        interview_location=update_data.interview_location,
+        admin_user_id=admin.user_id
     )
     
-    return {
-        "message": "Application updated successfully",
-        "application": application
-    }
+    return CareerApplicationUpdateResponse(
+        message="Application updated successfully",
+        application=application
+    )
 
 
 @router.get("/applications/{application_id}/download/{document_type}")
 async def download_document(
     application_id: str,
     document_type: str,
+    admin: TokenData = Depends(require_admin),
     career_service: CareerService = Depends(get_career_service)
 ):
     """
-    Download a specific document from career application (Admin/RM only)
+    Download a specific document from career application (Admin only)
+    
+    Requires: Admin authentication
     
     document_type: resume, aadhaar, pan, photo, address_proof, 
                    experience_letter, salary_slip
     """
     download_url = career_service.get_document_download_url(
         application_id=application_id,
-        document_type=document_type
+        document_type=document_type,
+        admin_user_id=admin.user_id
     )
     
     return {"download_url": download_url}

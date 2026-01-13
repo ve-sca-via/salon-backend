@@ -20,15 +20,24 @@ logger = logging.getLogger(__name__)
 class RazorpayService:
     """Service class for Razorpay payment operations"""
     
-    def __init__(self):
-        """Initialize Razorpay client"""
-        if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
+    def __init__(self, razorpay_key_id: Optional[str] = None, razorpay_key_secret: Optional[str] = None):
+        """
+        Initialize Razorpay client
+        
+        Args:
+            razorpay_key_id: Razorpay key ID (from database or env)
+            razorpay_key_secret: Razorpay key secret (from database or env)
+        """
+        # Use provided keys or fall back to environment variables
+        key_id = razorpay_key_id or settings.RAZORPAY_KEY_ID
+        key_secret = razorpay_key_secret or settings.RAZORPAY_KEY_SECRET
+        
+        if not key_id or not key_secret:
             logger.warning("Razorpay credentials not configured")
             self.client = None
         else:
-            self.client = razorpay.Client(
-                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-            )
+            self.client = razorpay.Client(auth=(key_id, key_secret))
+            logger.info("Razorpay client initialized successfully")
     
     def create_order(
         self,

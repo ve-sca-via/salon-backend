@@ -18,7 +18,6 @@ from .vendor import (
     VendorJoinRequestResponse,
     SalonResponse,
     ServiceResponse,
-    SalonStaffResponse,
 )
 from .booking import (
     BookingResponse,
@@ -57,7 +56,7 @@ __all__ = [
     # Customer
     "FavoriteResponse",
     # Vendor
-    "VendorJoinRequestResponse", "SalonResponse", "ServiceResponse", "SalonStaffResponse",
+    "VendorJoinRequestResponse", "SalonResponse", "ServiceResponse",
     # Booking
     "BookingResponse",
     # Payment

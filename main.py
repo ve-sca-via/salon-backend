@@ -1,6 +1,7 @@
 import logging
 import sys
 from datetime import datetime
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, status, Depends
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,19 +25,22 @@ from app.core.database import get_db, get_db_client, get_auth_client, MockSupaba
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
 from supabase import Client
 from app.schemas.response import ErrorResponse, ValidationErrorResponse, ErrorDetail
-from app.api import location, auth, salons, bookings, realtime, admin, rm, vendors, payments, customers, careers, upload
-
-# Import test email router (only for dev/staging)
-if settings.ENVIRONMENT.lower() != "production":
-    from app.api import test_email
+from app.api import location, auth, salons, bookings, admin, rm, vendors, payments, customers, careers, upload
 
 # Configure logging
+log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+handlers = [logging.StreamHandler(sys.stdout)]
+
+# Add file handler if LOG_FILE is specified
+if settings.LOG_FILE:
+    import os
+    os.makedirs(os.path.dirname(settings.LOG_FILE), exist_ok=True)
+    handlers.append(logging.FileHandler(settings.LOG_FILE))
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=handlers
 )
 
 # Get logger for this module
@@ -46,7 +50,7 @@ logger = logging.getLogger(__name__)
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Log incoming request
-        logger.info(f"→ {request.method} {request.url.path} - {request.client.host if request.client else 'unknown'}")
+        logger.info(f"-> {request.method} {request.url.path} - {request.client.host if request.client else 'unknown'}")
         
         # Log request headers (sensitive headers excluded)
         safe_headers = {k: v for k, v in request.headers.items() 
@@ -64,14 +68,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             process_time = (datetime.utcnow() - start_time).total_seconds() * 1000
             
             # Log response
-            logger.info(f"← {request.method} {request.url.path} - {response.status_code} - {process_time:.2f}ms")
+            logger.info(f"<- {request.method} {request.url.path} - {response.status_code} - {process_time:.2f}ms")
             
             return response
             
         except Exception as e:
             # Log errors
             process_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-            logger.error(f"✗ {request.method} {request.url.path} - ERROR - {process_time:.2f}ms - {str(e)}")
+            logger.error(f" :( {request.method} {request.url.path} - ERROR - {process_time:.2f}ms - {str(e)}")
             raise
 
 # Log configuration on startup (avoid printing secrets)
@@ -86,33 +90,84 @@ except Exception:
 logger.info(f"Supabase configured: {bool(settings.SUPABASE_URL)} (host={supabase_host})")
 logger.info("="*60)
 
+# =====================================================
+# BACKGROUND TASKS & LIFESPAN
+# =====================================================
+
+async def cleanup_expired_tokens_task():
+    """Background task to cleanup expired tokens periodically"""
+    from app.core.auth import cleanup_expired_tokens
+    from app.core.database import get_db
+    import asyncio
+    
+    db = get_db()
+    while True:
+        try:
+            logger.info("Running scheduled token cleanup...")
+            cleaned_count = cleanup_expired_tokens(db)
+            if cleaned_count > 0:
+                logger.info(f"Cleaned up {cleaned_count} expired tokens")
+            else:
+                logger.debug("No expired tokens to clean up")
+        except Exception as e:
+            logger.error(f"Token cleanup task error: {str(e)}")
+        
+        # Run every 6 hours
+        await asyncio.sleep(6 * 60 * 60)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan event handler for startup and shutdown tasks"""
+    import asyncio
+    
+    # Startup: Start background tasks
+    logger.info("Starting background tasks")
+    cleanup_task = asyncio.create_task(cleanup_expired_tokens_task())
+    logger.info("Background tasks started")
+    
+    yield
+    
+    # Shutdown: Cancel background tasks gracefully
+    logger.info("Shutting down background tasks...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        logger.info("Cleanup task cancelled")
+    except Exception as e:
+        logger.error(f"Error while cancelling cleanup task: {e}")
+
 # Create FastAPI app
 if settings.is_production:
     app = FastAPI(
-        title="Salon Management API - Complete Restructure",
-        description="Multi-role salon management with RM scoring, dynamic fees, and Razorpay integration",
-        version="3.0.0",
+        title="Lubist API (Production)",
+        description="Beauty . Booking. Simplified",
+        version="1.0.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
 else:
     app = FastAPI(
-        title="Salon Management API - Complete Restructure",
-        description="Multi-role salon management with RM scoring, dynamic fees, and Razorpay integration",
-        version="3.0.0"
+        title="Lubist API (Development)",
+        description="Beauty . Booking. Simplified",
+        version="1.0.0",
+        lifespan=lifespan,
     )
 
-logger.info("🚀 Salon Management API starting up...")
-logger.info(f"📧 Email sending: {'ENABLED' if settings.EMAIL_ENABLED else 'DISABLED (Dev Mode)'}")
+logger.info("Salon Management API starting up")
+logger.info(f"Environment: {settings.ENVIRONMENT}")
+logger.info(f"Email SMTP: {settings.SMTP_HOST}:{settings.SMTP_PORT}")
 
 # Configure rate limiting (using centralized rate_limit module)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-logger.info(f"🛡️ Rate limiting enabled: {settings.RATE_LIMIT_PER_MINUTE}/minute per IP (global default)")
-logger.info("🛡️ Auth endpoints have stricter limits (5 login, 3 signup, 3 password reset)")
+# Apply stricter limits to auth endpoints
+logger.info("Auth endpoints have stricter limits (5 login, 3 signup, 3 password reset)")
 
 
 # Configure CORS
@@ -129,68 +184,14 @@ app.add_middleware(LoggingMiddleware)
 
 # Configure HTTPS enforcement for production
 if settings.ENVIRONMENT.lower() == "production":
-    logger.info("🔒 Production mode: Enabling HTTPS enforcement")
+    logger.info("Production mode: HTTPS enforcement enabled")
     app.add_middleware(HTTPSRedirectMiddleware)
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=settings.ALLOWED_HOSTS
     )
 else:
-    logger.info("🔓 Development mode: HTTPS enforcement disabled")
-
-
-# =====================================================
-# BACKGROUND TASKS
-# =====================================================
-
-async def cleanup_expired_tokens_task():
-    """Background task to cleanup expired tokens periodically"""
-    from app.core.auth import cleanup_expired_tokens
-    from app.core.database import get_db
-    import asyncio
-    
-    db = get_db()
-    while True:
-        try:
-            logger.info("🧹 Running scheduled token cleanup...")
-            cleaned_count = cleanup_expired_tokens(db)
-            if cleaned_count > 0:
-                logger.info(f"🗑️ Cleaned up {cleaned_count} expired tokens")
-            else:
-                logger.debug("No expired tokens to clean up")
-        except Exception as e:
-            logger.error(f"Token cleanup task error: {str(e)}")
-        
-        # Run every 6 hours
-        await asyncio.sleep(6 * 60 * 60)
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup tasks"""
-    logger.info("🚀 Starting background tasks...")
-    
-    # Start token cleanup task
-    import asyncio
-    # Keep a reference to the task so it can be cancelled on shutdown
-    app.state.cleanup_task = asyncio.create_task(cleanup_expired_tokens_task())
-    
-    logger.info("✅ Background tasks started")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown tasks - cancel background tasks gracefully"""
-    import asyncio
-    logger.info("🛑 Shutting down background tasks...")
-    task = getattr(app.state, "cleanup_task", None)
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            logger.info("Cleanup task cancelled")
-        except Exception as e:
-            logger.error(f"Error while cancelling cleanup task: {e}")
+    logger.info("Development mode: HTTPS enforcement disabled")
 
 
 # =====================================================
@@ -293,7 +294,6 @@ app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(location.router, prefix=settings.API_PREFIX)
 app.include_router(salons.router, prefix=settings.API_PREFIX)
 app.include_router(bookings.router, prefix=settings.API_PREFIX)
-app.include_router(realtime.router, prefix=settings.API_PREFIX)
 
 # New routers for restructured system
 app.include_router(admin.router, prefix=settings.API_PREFIX)
@@ -305,17 +305,13 @@ app.include_router(careers.router, prefix=f"{settings.API_PREFIX}/careers", tags
 app.include_router(upload.router, prefix=settings.API_PREFIX)  # File upload endpoints
 
 # Include test email router (only for dev/staging)
-if settings.ENVIRONMENT.lower() != "production":
-    app.include_router(test_email.router, prefix=settings.API_PREFIX)
-    logger.info("🧪 Test email endpoint enabled (dev/staging mode)")
-
 
 
 @app.get("/")
 async def root():
     base = {
-        "message": "Salon Management API - Complete Restructure",
-        "version": "3.0.0",
+        "message": "Lubist API ",
+        "version": "1.0.0",
         "api_version": "v1",
         "base_url": settings.API_PREFIX,
         "status": "running",
@@ -368,12 +364,12 @@ async def health_check(db_client: Client = Depends(get_db_client), auth_client: 
         }
 
         # Check Email configuration
-        if settings.EMAIL_ENABLED:
-            health_status["checks"]["email"] = {
-                "status": "healthy" if (settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD) else "warning"
-            }
-        else:
-            health_status["checks"]["email"] = {"status": "info"}
+        email_configured = bool(settings.SMTP_HOST and settings.SMTP_PORT)
+        health_status["checks"]["email"] = {
+            "status": "healthy" if email_configured else "warning",
+            "smtp_host": settings.SMTP_HOST if email_configured else None,
+            "smtp_port": settings.SMTP_PORT if email_configured else None
+        }
 
         # Check Payment gateway configuration
         health_status["checks"]["payment"] = {

@@ -83,10 +83,10 @@ async def approve_vendor_request(
     - Updates RM score
     - Sends email to vendor with registration link
     """
-    logger.info(f"🔍 Admin {current_user.user_id} approving vendor request: {request_id}")
+    logger.info(f"Admin {current_user.user_id} approving vendor request: {request_id}")
     # Avoid logging potentially sensitive or PII-containing admin notes.
     notes_preview = (request_body.admin_notes or "")[:120]
-    logger.info(f"📝 Admin notes length={len(request_body.admin_notes or '')}; preview='{notes_preview}'")
+    logger.info(f"Admin notes length={len(request_body.admin_notes or '')}; preview='{notes_preview}'")
 
     # Use service layer for approval
     result = await approval_service.approve_vendor_request(
@@ -104,7 +104,7 @@ async def approve_vendor_request(
     # Log warnings if any
     if result.warnings:
         for warning in result.warnings:
-            logger.warning(f"⚠️ {warning}")
+            logger.warning(f"Warning: {warning}")
 
     # Log activity
     try:
@@ -139,9 +139,9 @@ async def reject_vendor_request(
     - Updates status
     - Sends rejection email
     """
-    logger.info(f"🚫 Admin {current_user.user_id} rejecting vendor request: {request_id}")
+    logger.info(f"Admin {current_user.user_id} rejecting vendor request: {request_id}")
     notes_preview = (request_body.admin_notes or "")[:120]
-    logger.info(f"📝 Rejection notes length={len(request_body.admin_notes or '')}; preview='{notes_preview}'")
+    logger.info(f"Rejection notes length={len(request_body.admin_notes or '')}; preview='{notes_preview}'")
 
     # Use service layer for rejection
     result = await approval_service.reject_vendor_request(

@@ -1,6 +1,6 @@
 """
 Vendor API Endpoints
-Handles vendor registration completion, salon management, services, staff, and bookings
+Handles vendor registration completion, salon management, services, and bookings
 """
 from fastapi import APIRouter, HTTPException, Depends, status, Body
 from typing import List, Optional
@@ -18,9 +18,6 @@ from app.schemas import (
     ServiceCreate,
     ServiceUpdate,
     ServiceResponse,
-    SalonStaffCreate,
-    SalonStaffUpdate,
-    SalonStaffResponse,
     BookingResponse,
     SuccessResponse,
     CompleteRegistrationRequest,
@@ -234,76 +231,6 @@ async def delete_service(
 
 
 # =====================================================
-# STAFF MANAGEMENT
-# =====================================================
-
-@router.get("/staff", response_model=List[SalonStaffResponse])
-async def get_own_staff(
-    current_user: TokenData = Depends(require_vendor),
-    vendor_service: VendorService = Depends(get_vendor_service)
-):
-    """
-    Get all staff for own salon.
-    
-    Returns staff members ordered by creation date (newest first).
-    """
-    return await vendor_service.get_staff(vendor_id=current_user.user_id)
-
-
-@router.post("/staff", response_model=SalonStaffResponse)
-async def create_staff(
-    staff: SalonStaffCreate,
-    current_user: TokenData = Depends(require_vendor),
-    vendor_service: VendorService = Depends(get_vendor_service)
-):
-    """
-    Add new staff member to your salon.
-    
-    Automatically associates staff with your salon.
-    """
-    return await vendor_service.create_staff(
-        vendor_id=current_user.user_id,
-        staff=staff
-    )
-
-
-@router.put("/staff/{staff_id}", response_model=SalonStaffResponse)
-async def update_staff(
-    staff_id: str,
-    update: SalonStaffUpdate,
-    current_user: TokenData = Depends(require_vendor),
-    vendor_service: VendorService = Depends(get_vendor_service)
-):
-    """
-    Update staff member details.
-    
-    Can update name, role, phone, availability, etc.
-    """
-    return await vendor_service.update_staff(
-        vendor_id=current_user.user_id,
-        staff_id=staff_id,
-        update=update
-    )
-
-
-@router.delete("/staff/{staff_id}", response_model=SuccessResponse)
-async def delete_staff(
-    staff_id: str,
-    current_user: TokenData = Depends(require_vendor),
-    vendor_service: VendorService = Depends(get_vendor_service)
-):
-    """
-    Delete staff member.
-    
-    Returns success message on successful deletion.
-    """
-    return await vendor_service.delete_staff(
-        vendor_id=current_user.user_id,
-        staff_id=staff_id
-    )
-
-
-# =====================================================
 # BOOKINGS VIEW
 # =====================================================
 
@@ -378,7 +305,7 @@ async def get_vendor_analytics(
     """
     Get vendor analytics for dashboard.
     
-    Returns bookings, revenue, active services, staff, and ratings.
+    Returns bookings, revenue, active services, and ratings.
     """
     return await vendor_service.get_analytics(vendor_id=current_user.user_id)
 

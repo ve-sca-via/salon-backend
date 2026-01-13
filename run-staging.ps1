@@ -12,9 +12,9 @@ Write-Host ""
 
 # Check if .env.staging exists
 if (-not (Test-Path ".env.staging")) {
-    Write-Host " Error: .env.staging not found!" -ForegroundColor Red
+    Write-Host "ERROR: .env.staging not found!" -ForegroundColor Red
     Write-Host ""
-    Write-Host " Setup Instructions:" -ForegroundColor Yellow
+    Write-Host "Setup Instructions:" -ForegroundColor Yellow
     Write-Host "1. Copy the example file:" -ForegroundColor White
     Write-Host "   Copy-Item .env.staging.example .env.staging" -ForegroundColor Gray
     Write-Host ""
@@ -24,29 +24,28 @@ if (-not (Test-Path ".env.staging")) {
     Write-Host ""
     Write-Host "3. Configure real SMTP for email testing" -ForegroundColor White
     Write-Host "   - Use Gmail or another email provider" -ForegroundColor Gray
-    Write-Host "   - Set EMAIL_ENABLED=True" -ForegroundColor Gray
+    Write-Host "   - Emails will be sent via SMTP (no EMAIL_ENABLED flag needed)" -ForegroundColor Gray
     Write-Host ""
-    exit
 }
 
 # Copy staging config to active .env
-Write-Host " Loading staging configuration..." -ForegroundColor Green
+Write-Host "Loading staging configuration..." -ForegroundColor Green
 Copy-Item .env.staging .env -Force
-Write-Host " Staging config loaded" -ForegroundColor Green
+Write-Host "Staging config loaded" -ForegroundColor Green
 Write-Host ""
 
 # Activate virtual environment if it exists
 $venvPath = ".\venv\Scripts\Activate.ps1"
 if (Test-Path $venvPath) {
-    Write-Host " Activating Python virtual environment..." -ForegroundColor Green
+    Write-Host "Activating Python virtual environment..." -ForegroundColor Green
     & $venvPath
 } else {
-    Write-Host "  No virtual environment found. Make sure Python dependencies are installed." -ForegroundColor Yellow
+    Write-Host "WARNING: No virtual environment found. Make sure Python dependencies are installed." -ForegroundColor Yellow
 }
 
 # Display environment info
 Write-Host "Environment: STAGING" -ForegroundColor Magenta
-Write-Host "Emails: ENABLED (real emails will be sent)" -ForegroundColor Yellow
+Write-Host "Emails: Sent via SMTP (real emails)" -ForegroundColor Yellow
 Write-Host "Payments: TEST MODE (Razorpay test keys)" -ForegroundColor Yellow
 Write-Host "Database: STAGING Supabase (online)" -ForegroundColor Yellow
 Write-Host ""

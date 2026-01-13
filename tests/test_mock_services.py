@@ -13,14 +13,14 @@ def test_email_service_is_mocked():
     """Verify email service is mocked in test mode"""
     # In test mode, email_service should be MockEmailService
     assert isinstance(email_service, MockEmailService)
-    print("✅ Email service is MockEmailService!")
+    print("Email service is MockEmailService!")
 
 
 def test_geocoding_service_is_mocked():
     """Verify geocoding service is mocked in test mode"""
     # In test mode, geocoding_service should be MockGeocodingService
     assert isinstance(geocoding_service, MockGeocodingService)
-    print("✅ Geocoding service is MockGeocodingService!")
+    print("Geocoding service is MockGeocodingService!")
 
 
 @pytest.mark.asyncio
@@ -47,7 +47,7 @@ async def test_mock_email_sending():
     assert sent_email["to_email"] == "test@example.com"
     assert "Test Salon" in sent_email["subject"]
     
-    print(f"✅ Mock email stored: {sent_email['subject']}")
+    print(f"Mock email stored: {sent_email['subject']}")
     print(f"   To: {sent_email['to_email']}")
 
 
@@ -60,7 +60,7 @@ async def test_mock_geocoding():
     assert coords is not None
     assert coords == (19.0760, 72.8777)
     
-    print(f"✅ Mock geocoding returned: {coords}")
+    print(f"Mock geocoding returned: {coords}")
 
 
 async def test_mock_reverse_geocoding():
@@ -73,7 +73,7 @@ async def test_mock_reverse_geocoding():
     assert address["city"] == "Mumbai"
     assert address["state"] == "Maharashtra"
     
-    print(f"✅ Mock reverse geocoding returned: {address['formatted_address']}")
+    print(f"Mock reverse geocoding returned: {address['formatted_address']}")
 
 
 if __name__ == "__main__":
@@ -91,5 +91,5 @@ if __name__ == "__main__":
     asyncio.run(test_mock_reverse_geocoding())
     
     print("=" * 80)
-    print("ALL TESTS PASSED! ✅")
+    print("ALL TESTS PASSED!")
     print("=" * 80)

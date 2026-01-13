@@ -103,7 +103,6 @@ class TestEmailServiceIntegration:
     async def test_send_vendor_approval_email_integration(self, mock_send, mock_settings):
         """Test vendor approval email sending with mocked SMTP"""
         mock_send.return_value = True
-        mock_settings.EMAIL_ENABLED = True
 
         service = EmailService()
         result = await service.send_vendor_approval_email(
@@ -123,7 +122,6 @@ class TestEmailServiceIntegration:
     async def test_send_booking_confirmation_email_integration(self, mock_send, mock_settings):
         """Test booking confirmation email with mocked SMTP"""
         mock_send.return_value = True
-        mock_settings.EMAIL_ENABLED = True
 
         service = EmailService()
         result = await service.send_booking_confirmation_email(

@@ -20,22 +20,6 @@ class ServiceUpdate(BaseModel):
     image_url: Optional[str] = None
 
 
-class StaffCreate(BaseModel):
-    full_name: str = Field(..., min_length=1, max_length=200)
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    role: Optional[str] = None
-    is_active: Optional[bool] = True
-
-
-class StaffUpdate(BaseModel):
-    full_name: Optional[str] = Field(None, min_length=1, max_length=200)
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    role: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
 class StatusToggle(BaseModel):
     is_active: bool
 
