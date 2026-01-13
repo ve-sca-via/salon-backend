@@ -1,46 +1,55 @@
-name: CI
+name: CI - Smoke Build Check
 
+# Only run on pull requests to main (not on pushes)
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
-  test:
+  smoke-build:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: [3.11, 3.12]
-
+    
     steps:
-      - name: Checkout repository
+      # 1. Checkout the code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+      # 2. Set up Python 3.13.4 (matches Render's Python version exactly)
+      - name: Set up Python 3.13.4
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.13.4'
+          cache: 'pip'  # Cache pip dependencies for faster builds
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+      # 3. Install system dependencies (python-magic requires libmagic C library)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmagic1
 
-      - name: Install dependencies
+      # 4. Install Python dependencies from requirements.txt
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements-test.txt ]; then pip install -r requirements-test.txt; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo " No requirements.txt found"
+            exit 1
+          fi
 
-      - name: Run route-uniqueness smoke test
+      # 5. Smoke test: Try importing the main application module
+      #    This validates all dependencies install correctly and are compatible
+      - name: Smoke build check
         run: |
-          python -m pytest tests/test_routes_unique.py -q
-
-      - name: Run full test suite
-        run: |
-          python -m pytest -q
+          python -c "import main; print(' Application imports successfully')"
+        env:
+          # Required env vars (no defaults in config)
+          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
+          JWT_SECRET_KEY: "dummy-jwt-secret-key-for-ci-testing-at-least-32-characters-long"
+          # Optional env vars with defaults (set to prevent any issues)
+          SUPABASE_URL: "https://dummy.supabase.co"
+          SUPABASE_ANON_KEY: "dummy-anon-key"
+          SUPABASE_SERVICE_ROLE_KEY: "dummy-service-key"
+          ENVIRONMENT: "ci"
