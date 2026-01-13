@@ -25,7 +25,14 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
     WORKERS: int = Field(default=4)
-    ALLOWED_HOSTS: List[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
+    ALLOWED_HOSTS: str = Field(default="localhost,127.0.0.1")
+    
+    @property
+    def allowed_hosts_list(self) -> List[str]:
+        """Convert comma-separated ALLOWED_HOSTS string to list"""
+        if isinstance(self.ALLOWED_HOSTS, str):
+            return [host.strip() for host in self.ALLOWED_HOSTS.split(",")]
+        return self.ALLOWED_HOSTS
     
     # =====================================================
     # SUPABASE CONFIGURATION
