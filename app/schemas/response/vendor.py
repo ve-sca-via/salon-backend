@@ -51,7 +51,6 @@ class VendorJoinRequestResponse(BaseModel):
     cover_image_url: Optional[str] = None
     gallery_images: Optional[List[str]] = None
     services_offered: Optional[Dict[str, Any]] = None
-    staff_count: Optional[int] = None
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
@@ -160,26 +159,6 @@ class ServiceResponse(BaseModel):
 
     class Config:
         from_attributes = True
-# =====================================================
-# STAFF RESPONSE SCHEMAS
-# =====================================================
-
-class SalonStaffResponse(BaseModel):
-    id: str
-    salon_id: str
-    user_id: Optional[str] = None
-    full_name: str = Field(..., min_length=2, max_length=255)
-    email: Optional[EmailStr] = None
-    phone: str = Field(..., max_length=20)
-    designation: Optional[str] = Field(None, max_length=100)
-    specializations: Optional[List[str]] = None
-    profile_image: Optional[str] = None
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 # =====================================================
@@ -189,7 +168,6 @@ class SalonStaffResponse(BaseModel):
 class DashboardStatistics(BaseModel):
     """Statistics section of dashboard response"""
     total_services: int
-    total_staff: int
     total_bookings: int
     pending_bookings: int
     today_bookings: int
@@ -210,7 +188,6 @@ class VendorAnalyticsResponse(BaseModel):
     total_bookings: int
     total_revenue: float
     active_services: int
-    total_staff: int
     average_rating: float
     pending_bookings: int
 
@@ -233,7 +210,6 @@ class SalonDetailResponse(BaseModel):
     """Detailed salon information for single salon view"""
     salon: SalonResponse
     services: Optional[List[Dict[str, Any]]] = None  # Service details
-    staff: Optional[List[Dict[str, Any]]] = None     # Staff details
     available_slots: Optional[List[Dict[str, Any]]] = None
 
 class AvailableSlotsResponse(BaseModel):
@@ -261,12 +237,6 @@ class SearchSalonsResponse(BaseModel):
 class SalonServicesResponse(BaseModel):
     """Response for salon services listing"""
     services: List[Dict[str, Any]]
-    count: int
-
-
-class SalonStaffListResponse(BaseModel):
-    """Response for salon staff listing"""
-    staff: List[Dict[str, Any]]
     count: int
 
 

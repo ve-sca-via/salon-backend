@@ -21,14 +21,14 @@ from app.schemas import (
     PublicSalonsResponse,
     SalonDetailResponse,
     SalonServicesResponse,
-    SalonStaffListResponse,
     AvailableSlotsResponse,
     NearbySalonsResponse,
     SearchSalonsResponse,
     SalonResponse,
     SuccessResponse,
     PublicConfigResponse,
-    CommissionConfigResponse
+    CommissionConfigResponse,
+    PopularCitiesResponse
 )
 
 router = APIRouter(prefix="/salons", tags=["salons"])
@@ -96,6 +96,45 @@ async def get_public_salons(
     }
 
 
+@router.get("/popular-cities", response_model=PopularCitiesResponse)
+async def get_popular_cities(
+    limit: int = Query(8, ge=1, le=20, description="Number of cities to return"),
+    db: Client = Depends(get_db_client)
+):
+    """
+    Get top cities by salon count (aggregated at database level).
+    
+    **Performance:**
+    - Uses database-level aggregation (efficient for large datasets)
+    - Returns only aggregated counts, not full salon data
+    - Case-insensitive city matching (Mumbai = mumbai = MUMBAI)
+    - Automatic whitespace trimming
+    
+    **Use Cases:**
+    - Homepage popular locations section
+    - City filter dropdowns
+    - Analytics dashboards
+    
+    **Only includes salons that are:**
+    - is_active = true
+    - is_verified = true
+    - registration_fee_paid = true
+    
+    **Returns:**
+    - cities: Array of {city: string, salon_count: int}
+    - total: Number of cities returned
+    """
+    # Call database function for efficient aggregation
+    response = db.rpc('get_popular_cities', {'result_limit': limit}).execute()
+    
+    cities = response.data if response.data else []
+    
+    return {
+        "cities": cities,
+        "total": len(cities)
+    }
+
+
 @router.get("/", response_model=PublicSalonsResponse, operation_id="public_get_salons")
 async def get_salons(
     status: Optional[str] = Query(None, description="Filter by status: 'approved' or 'pending'"),
@@ -137,7 +176,6 @@ async def get_salons(
 async def get_salon(
     salon_id: str,
     include_services: bool = Query(False, description="Include salon services"),
-    include_staff: bool = Query(False, description="Include staff members"),
     salon_service: SalonService = Depends(get_salon_service)
 ):
     """
@@ -148,7 +186,6 @@ async def get_salon(
     - Business hours
     - Average rating and review count
     - Optional: Services list
-    - Optional: Staff members
     
     **Visibility:**
     Only returns salons that are:
@@ -159,7 +196,6 @@ async def get_salon(
     **Parameters:**
     - salon_id: Salon UUID
     - include_services: Include full services list (default: false)
-    - include_staff: Include staff members (default: false)
     
     **Use Cases:**
     - Salon detail page (public view)
@@ -169,13 +205,11 @@ async def get_salon(
     **Returns:**
     - salon: Complete salon object
     - services: Array (if include_services=true)
-    - staff: Array (if include_staff=true)
     """
     # Use service layer to get salon with optional relations
     salon_data = await salon_service.get_salon(
         salon_id=salon_id,
-        include_services=include_services,
-        include_staff=include_staff
+        include_services=include_services
     )
     
     # Service layer will raise ValueError if not found
@@ -186,14 +220,12 @@ async def get_salon(
             detail="Salon not available. It may be inactive, unverified, or payment pending."
         )
     
-    # Extract services and staff from the salon data if present
+    # Extract services from the salon data if present
     services = salon_data.pop('services', None) if include_services else None
-    staff = salon_data.pop('salon_staff', None) if include_staff else None
     
     return {
         "salon": salon_data,
-        "services": services,
-        "staff": staff
+        "services": services
     }
 
 
@@ -226,31 +258,6 @@ async def get_salon_services(
     }
 
 
-@router.get("/{salon_id}/staff", response_model=SalonStaffListResponse)
-async def get_salon_staff(
-    salon_id: str,
-    salon_service: SalonService = Depends(get_salon_service)
-):
-    """
-    Get all staff members for a specific salon.
-    
-    **Use Cases:**
-    - Staff selection during booking
-    - Salon detail page staff display
-    
-    **Returns:**
-    - staff: Array of staff member objects
-    - count: Total number of staff
-    """
-    # Get staff through service layer
-    staff = await salon_service.get_salon_staff(salon_id)
-    
-    return {
-        "staff": staff,
-        "count": len(staff)
-    }
-
-
 @router.get("/{salon_id}/available-slots", response_model=AvailableSlotsResponse)
 async def get_available_slots(
     salon_id: str,
@@ -266,7 +273,7 @@ async def get_available_slots(
     - Salon business hours for the given date
     - Existing bookings
     - Service duration
-    - Staff availability
+    
     
     **Parameters:**
     - salon_id: Salon UUID
@@ -300,7 +307,7 @@ async def get_available_slots(
     
     # Get existing bookings for this date
     try:
-        bookings_result = await db.table('bookings').select('booking_time, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
+        bookings_result = await db.table('bookings').select('time_slots, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
         existing_bookings = bookings_result.data
     except Exception as e:
         logger.warning(f"Could not fetch existing bookings: {e}")
@@ -335,7 +342,11 @@ async def get_available_slots(
             slot_end = current + timedelta(minutes=total_duration)
             
             for booking in existing_bookings:
-                booking_time = datetime.strptime(booking['booking_time'], "%H:%M:%S").time()
+                # Use first time slot from the array
+                time_slots = booking.get('time_slots', [])
+                if not time_slots:
+                    continue
+                booking_time = datetime.strptime(time_slots[0], "%H:%M:%S").time()
                 booking_start = datetime.combine(datetime.today(), booking_time)
                 booking_end = booking_start + timedelta(minutes=booking['duration_minutes'])
                 

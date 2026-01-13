@@ -24,7 +24,7 @@ class MockSupabaseClient:
     are missing. For proper testing, use pytest mocking with MagicMock.
     """
     def __init__(self):
-        logger.info("🧪 Using MockSupabaseClient (Test Mode)")
+        logger.info("Using MockSupabaseClient (Test Mode)")
         self._single_mode = False
     
     def table(self, table_name: str):
@@ -182,16 +182,16 @@ def get_db() -> Client:
     """
     # Check if we're in test environment
     if settings.ENVIRONMENT == "test":
-        logger.info("🧪 Test environment detected - using MockSupabaseClient")
+        logger.info("Test environment detected - using MockSupabaseClient")
         return MockSupabaseClient()
     
     # Check if credentials are present
     if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-        logger.warning("⚠️  Supabase credentials missing - using MockSupabaseClient")
+        logger.warning("WARNING: Supabase credentials missing - using MockSupabaseClient")
         return MockSupabaseClient()
     
     # Create real client with SERVICE_ROLE (bypasses RLS)
-    logger.info("✅ Creating real Supabase client (SERVICE_ROLE - bypasses RLS)")
+    logger.info("Creating real Supabase client (SERVICE_ROLE - bypasses RLS)")
     real_client = create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_SERVICE_ROLE_KEY
@@ -234,16 +234,16 @@ def get_auth_client() -> Client:
     """
     # Check if we're in test environment
     if settings.ENVIRONMENT == "test":
-        logger.info("🧪 Test environment detected - using MockSupabaseClient for auth")
+        logger.info("Test environment detected - using MockSupabaseClient for auth")
         return MockSupabaseClient()
     
     # Check if credentials are present
     if not settings.SUPABASE_URL or not settings.SUPABASE_ANON_KEY:
-        logger.warning("⚠️  Supabase auth credentials missing - using MockSupabaseClient")
+        logger.warning("Supabase auth credentials missing - using MockSupabaseClient")
         return MockSupabaseClient()
     
     # Create real client
-    logger.info("✅ Creating real Supabase auth client (ANON)")
+    logger.info("Creating real Supabase auth client (ANON)")
     return create_client(
         settings.SUPABASE_URL,
         settings.SUPABASE_ANON_KEY

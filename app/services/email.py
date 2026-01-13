@@ -20,123 +20,28 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
-# MOCK EMAIL SERVICE (FOR TESTING)
+# JINJA2 TEMPLATE ENVIRONMENT (SINGLETON)
 # =====================================================
+# Created once at module load time and shared across all EmailService instances
+# This prevents creating new Jinja2 environments (500KB-1MB each) on every instantiation
 
-class MockEmailService:
-    """
-    Mock email service for testing - doesn't send real emails.
-    Instead, stores them in memory for verification.
-    """
-    
-    def __init__(self):
-        self.sent_emails = []  # Store all "sent" emails here
-        logger.info("🧪 Using MockEmailService (Test Mode) - No real emails will be sent")
-        
-    def _send_email(self, to_email: str, subject: str, html_body: str, text_body: str = None) -> bool:
-        """Mock _send_email - just stores the email data"""
-        email_data = {
-            "to_email": to_email,
-            "subject": subject,
-            "html_body": html_body,
-            "text_body": text_body
-        }
-        self.sent_emails.append(email_data)
-        logger.info(f"🧪 MOCK: Email stored (not sent) to {to_email}: {subject}")
-        return True
-    
-    async def send_vendor_approval_email(self, to_email: str, owner_name: str, salon_name: str, 
-                                   registration_token: str, registration_fee: float) -> bool:
-        """Mock vendor approval email"""
-        return self._send_email(
-            to_email=to_email,
-            subject=f"🎉 Congratulations! {salon_name} has been approved",
-            html_body=f"Mock approval email for {owner_name}",
-            text_body=None
-        )
-    
-    async def send_rm_salon_approved_email(self, to_email: str, rm_name: str, salon_name: str,
-                                          owner_name: str, owner_email: str, points_awarded: int,
-                                          new_total_score: int, registration_fee: float) -> bool:
-        """Mock RM salon approved email"""
-        return self._send_email(
-            to_email=to_email,
-            subject=f"🎊 Salon Approved: {salon_name} - You've earned {points_awarded} points!",
-            html_body=f"Mock RM notification for {rm_name}",
-            text_body=None
-        )
-    
-    async def send_vendor_rejection_email(self, to_email: str, owner_name: str, salon_name: str,
-                                    rejection_reason: str, rm_name: str) -> bool:
-        """Mock vendor rejection email"""
-        return self._send_email(
-            to_email=to_email,
-            subject=f"Regarding {salon_name} Registration",
-            html_body=f"Mock rejection email for {owner_name}",
-            text_body=None
-        )
-    
-    async def send_booking_confirmation_email(self, to_email: str, customer_name: str, 
-                                             salon_name: str, service_name: str, booking_date: str,
-                                             booking_time: str, staff_name: str, total_amount: float,
-                                             booking_id: str) -> bool:
-        """Mock booking confirmation email"""
-        return self._send_email(
-            to_email=to_email,
-            subject=f"Booking Confirmed at {salon_name}",
-            html_body=f"Mock confirmation for {customer_name}",
-            text_body=None
-        )
-    
-    async def send_booking_cancellation_email(self, to_email: str, customer_name: str,
-                                             salon_name: str, service_name: str, booking_date: str,
-                                             booking_time: str, refund_amount: float,
-                                             cancellation_reason: str = None) -> bool:
-        """Mock booking cancellation email"""
-        return self._send_email(
-            to_email=to_email,
-            subject=f"Booking Cancelled - {salon_name}",
-            html_body=f"Mock cancellation for {customer_name}",
-            text_body=None
-        )
+template_dir = Path(__file__).parent.parent / "templates" / "email"
+_jinja2_env = Environment(
+    loader=FileSystemLoader(str(template_dir)),
+    autoescape=select_autoescape(['html', 'xml'])
+)
 
+logger.info("Initialized shared Jinja2 template environment (singleton)")
 
-# =====================================================
-# FACTORY FUNCTION (Like get_db())
-# =====================================================
-
-def get_email_service():
-    """
-    Factory function to get email service based on environment.
-    
-    Returns MockEmailService in test mode, real EmailService otherwise.
-    This allows testing without sending real emails!
-    """
-    # Check if we're in test mode
-    if settings.ENVIRONMENT == "test":
-        logger.info("🧪 Email Service: Using MockEmailService (test mode)")
-        return MockEmailService()
-    
-    # Check if email is disabled (dev mode)
-    if not settings.EMAIL_ENABLED:
-        logger.info("📧 Email Service: Real service but emails disabled (dev mode)")
-        return EmailService()
-    
-    # Production mode - real emails
-    logger.info("📧 Email Service: Using real EmailService (production mode)")
-    return EmailService()
 
 
 class EmailService:
     """Email service for sending templated emails"""
     
     def __init__(self, email_logger: Optional[EmailLogger] = None):
-        # Setup Jinja2 template environment
-        template_dir = Path(__file__).parent.parent / "templates" / "email"
-        self.env = Environment(
-            loader=FileSystemLoader(str(template_dir)),
-            autoescape=select_autoescape(['html', 'xml'])
-        )
+        # Use shared Jinja2 template environment (singleton)
+        # This prevents creating new environments on every instantiation
+        self.env = _jinja2_env
         # Email logger for tracking sent emails
         self.email_logger = email_logger
         
@@ -186,20 +91,6 @@ class EmailService:
                     email_data=email_data,
                     retry_count=0
                 )
-            
-            # Check if email sending is enabled
-            if not settings.EMAIL_ENABLED:
-                # Log email info in dev mode
-                logger.info(f"📧 DEV MODE - Email not sent")
-                logger.info(f"   To: {to_email}")
-                logger.info(f"   Subject: {subject}")
-                logger.info(f"   Body length: {len(html_body)} chars")
-                
-                # Update log status to sent (dev mode)
-                if self.email_logger and log_id:
-                    await self.email_logger.update_email_status(log_id, "sent")
-                
-                return True
             
             # Create message
             msg = MIMEMultipart('alternative')
@@ -335,16 +226,15 @@ class EmailService:
             
             registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
             
-            # Log registration URL in dev mode for easy testing
-            if not settings.EMAIL_ENABLED:
-                logger.info("=" * 100)
-                logger.info(f"📧 VENDOR APPROVAL EMAIL (DEV MODE - NOT SENT)")
-                logger.info(f"To: {to_email}")
-                logger.info(f"Subject: 🎉 Congratulations! {salon_name} has been approved")
-                logger.info("-" * 100)
-                logger.info(f"🔗 REGISTRATION URL (Click or copy this):")
-                logger.info(f"   {registration_url}")
-                logger.info("=" * 100)
+            # Log registration URL for easy access (in all environments)
+            logger.info("=" * 100)
+            logger.info(f"VENDOR APPROVAL EMAIL")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Subject: Congratulations! {salon_name} has been approved")
+            logger.info("-" * 100)
+            logger.info(f"REGISTRATION URL:")
+            logger.info(f"   {registration_url}")
+            logger.info("=" * 100)
             
             html_body = template.render(
                 owner_name=owner_name,
@@ -355,7 +245,7 @@ class EmailService:
                 current_year=2025
             )
             
-            subject = f"🎉 Congratulations! {salon_name} has been approved"
+            subject = f"Congratulations! {salon_name} has been approved"
             
             return await self._send_email(
                 to_email, 
@@ -419,7 +309,7 @@ class EmailService:
                 current_year=2025
             )
             
-            subject = f"🎊 Salon Approved: {salon_name} - You've earned {points_awarded} points!"
+            subject = f"Salon Approved: {salon_name} - You've earned {points_awarded} points!"
             
             return await self._send_email(
                 to_email, 
@@ -503,7 +393,6 @@ class EmailService:
         services: list,
         booking_date: str,
         booking_time: str,
-        staff_name: str,
         total_amount: float,
         booking_id: str
     ) -> bool:
@@ -517,7 +406,6 @@ class EmailService:
             services: List of service dictionaries with 'name' and 'price' keys
             booking_date: Booking date
             booking_time: Booking time
-            staff_name: Staff member name
             total_amount: Total payment amount
             booking_id: Booking ID
             
@@ -548,14 +436,13 @@ class EmailService:
                 services=services_list,
                 booking_date=booking_date,
                 booking_time=booking_time,
-                staff_name=staff_name,
                 total_amount=total_amount,
                 booking_id=booking_id,
                 support_email=settings.EMAIL_FROM,
                 current_year=2025
             )
             
-            subject = f"✅ Booking Confirmed at {salon_name}"
+            subject = f"Booking Confirmed at {salon_name}"
             
             return await self._send_email(
                 to_email, 
@@ -736,7 +623,7 @@ class EmailService:
                 current_year=2025
             )
             
-            subject = f"🎊 Welcome to Salon Platform - {salon_name} is now active!"
+            subject = f"Welcome to Salon Platform - {salon_name} is now active!"
             
             return await self._send_email(
                 to_email, 
@@ -856,7 +743,7 @@ class EmailService:
                 has_salary_slip=experience_years > 0
             )
             
-            subject = f"🔔 New Career Application - {position}"
+            subject = f" New Career Application - {position}"
             
             return self._send_email(admin_email, subject, html_body)
             
@@ -931,7 +818,7 @@ class EmailService:
             </html>
             """
             
-            subject = f"✅ Booking Confirmed - {salon_name} ({booking_number})"
+            subject = f"Booking Confirmed - {salon_name} ({booking_number})"
             
             result = await self._send_email(
                 customer_email, 
@@ -995,7 +882,7 @@ class EmailService:
             <html>
             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                 <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <h2 style="color: #2196F3;">🔔 New Booking Received!</h2>
+                    <h2 style="color: #2196F3;"> New Booking Received!</h2>
                     <p>Hi {salon_name} Team,</p>
                     <p>You have received a new booking. Please check your dashboard for details.</p>
                     
@@ -1031,7 +918,7 @@ class EmailService:
             </html>
             """
             
-            subject = f"🔔 New Booking - {customer_name} ({booking_number})"
+            subject = f"New Booking - {customer_name} ({booking_number})"
             
             result = await self._send_email(
                 vendor_email, 
@@ -1059,29 +946,7 @@ class EmailService:
 
 
 # =====================================================
-# GLOBAL INSTANCE (Uses Factory Pattern)
+# GLOBAL INSTANCE
 # =====================================================
 
-def get_email_service():
-    """
-    Factory function to get appropriate email service based on environment
-    
-    Returns:
-        MockEmailService in test mode, EmailService otherwise
-    """
-    from app.core.config import settings
-    from app.core.database import get_db
-    
-    if settings.ENVIRONMENT == "test":
-        return MockEmailService()
-    else:
-        # Get database client for email logging
-        db = get_db()
-        email_logger = EmailLogger(db)
-        return EmailService(email_logger=email_logger)
-
-
-# Get email service using factory function
-# In test mode (ENVIRONMENT=test), this will be MockEmailService
-# In production, this will be real EmailService
-email_service = get_email_service()
+email_service = EmailService()

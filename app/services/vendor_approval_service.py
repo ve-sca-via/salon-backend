@@ -58,7 +58,7 @@ class VendorApprovalService:
         Returns:
             ApprovalResult with success status and salon details
         """
-        logger.info(f"🔍 Starting approval for request: {request_id}")
+        logger.info(f"Starting approval for request: {request_id}")
         
         # Step 1: Get and validate request
         try:
@@ -92,7 +92,7 @@ class VendorApprovalService:
         # Step 6: Insert services if provided
         services_created = await self._create_salon_services(salon_id, request_data)
         if services_created:
-            logger.info(f"✅ Created {services_created} services")
+            logger.info(f"Created {services_created} services")
         
         # Step 7: Update RM score and get new total
         rm_new_score = None
@@ -138,7 +138,7 @@ class VendorApprovalService:
         except Exception as e:
             warnings.append(f"Failed to send RM notification: {str(e)}")
         
-        logger.info(f"✅ Vendor request {request_id} approved. Salon: {salon_id}")
+        logger.info(f"Vendor request {request_id} approved. Salon: {salon_id}")
         
         return ApprovalResult(
             success=True,
@@ -230,12 +230,11 @@ class VendorApprovalService:
         
         # If coordinates already provided and valid, use them
         if latitude and longitude and latitude != 0.0 and longitude != 0.0:
-            logger.info(f"✅ Using provided coordinates: {latitude}, {longitude}")
+            logger.info(f"Using provided coordinates: {latitude}, {longitude}")
             return {"latitude": latitude, "longitude": longitude}
         
         # Try geocoding full address
-        logger.info(f"🗺️ Geocoding address for {request_data.business_name}...")
-
+        logger.info(f"Geocoding address for {request_data.business_name}...")
         full_address = f"{request_data.business_address}, {request_data.city}, {request_data.state}, {request_data.pincode}"
         
         try:
@@ -244,11 +243,11 @@ class VendorApprovalService:
             if coords:
                 # geocode_address returns tuple (latitude, longitude)
                 latitude, longitude = coords
-                logger.info(f"✅ Geocoded to: {latitude}, {longitude}")
+                logger.info(f"Geocoded to: {latitude}, {longitude}")
                 return {"latitude": latitude, "longitude": longitude}
             
             # Fallback to city-level geocoding
-            logger.warning(f"⚠️ Full address geocoding failed, trying city...")
+            logger.warning(f"Full address geocoding failed, trying city...")
             city_coords = await geocoding_service.geocode_address(
                 f"{request_data.city}, {request_data.state}"
             )
@@ -256,15 +255,15 @@ class VendorApprovalService:
             if city_coords:
                 # geocode_address returns tuple (latitude, longitude)
                 latitude, longitude = city_coords
-                logger.info(f"✅ City geocoded to: {latitude}, {longitude}")
+                logger.info(f"City geocoded to: {latitude}, {longitude}")
                 return {"latitude": latitude, "longitude": longitude}
             
             # Final fallback
-            logger.error(f"❌ All geocoding failed")
+            logger.error(f"All geocoding failed")
             return {"latitude": 0.0, "longitude": 0.0}
             
         except Exception as e:
-            logger.error(f"❌ Geocoding error: {str(e)}")
+            logger.error(f"Geocoding error: {str(e)}")
             return {"latitude": 0.0, "longitude": 0.0}
     
     async def _create_salon(
@@ -347,7 +346,7 @@ class VendorApprovalService:
             raise Exception("Failed to create salon - no data returned")
         
         salon_id = response.data[0]["id"]
-        logger.info(f"✅ Salon created: {salon_id}")
+        logger.info(f"Salon created: {salon_id}")
         
         return salon_id
     
@@ -370,10 +369,10 @@ class VendorApprovalService:
         services_data = documents.get("services", [])
         
         if not services_data or not isinstance(services_data, list):
-            logger.info(f"⚠️ No services data found in documents for salon {salon_id}")
+            logger.info(f"No services data found in documents for salon {salon_id}")
             return 0
         
-        logger.info(f"📋 Found {len(services_data)} services to create for salon {salon_id}")
+        logger.info(f"Found {len(services_data)} services to create for salon {salon_id}")
         
         try:
             services_to_insert = []
@@ -383,7 +382,7 @@ class VendorApprovalService:
                 category_id = service.get("category_id")
                 
                 if not category_id:
-                    logger.warning(f"⚠️ Service '{service.get('name')}' missing category_id - skipping")
+                    logger.warning(f"Service '{service.get('name')}' missing category_id - skipping")
                     continue
                 
                 service_entry = {
@@ -400,23 +399,23 @@ class VendorApprovalService:
                 services_to_insert.append(service_entry)
             
             if services_to_insert:
-                logger.info(f"📝 Inserting {len(services_to_insert)} services for salon {salon_id}")
+                logger.info(f"Inserting {len(services_to_insert)} services for salon {salon_id}")
                 logger.debug(f"Services data: {services_to_insert}")
                 
                 response = self.db.table("services").insert(services_to_insert).execute()
                 
                 if response.data:
-                    logger.info(f"✅ Successfully created {len(response.data)} services")
+                    logger.info(f"Successfully created {len(response.data)} services")
                     return len(response.data)
                 else:
-                    logger.warning("⚠️ Services insert returned no data")
+                    logger.warning("Services insert returned no data")
                     return 0
             else:
-                logger.warning(f"⚠️ No valid services to insert (all missing category_id)")
+                logger.warning("No valid services to insert (all missing category_id)")
                 return 0
             
         except Exception as e:
-            logger.error(f"❌ Failed to create services: {str(e)}")
+            logger.error(f"Failed to create services: {str(e)}")
             logger.exception("Full traceback:")
         
         return 0
@@ -448,7 +447,7 @@ class VendorApprovalService:
             "performance_score": new_score
         }).eq("id", rm_id).execute()
         
-        logger.info(f"📉 RM score penalized: {penalty} points (Total: {new_score})")
+        logger.info(f"RM score penalized: {penalty} points (Total: {new_score})")
         
         # Add score history
         self.db.table("rm_score_history").insert({
@@ -469,7 +468,7 @@ class VendorApprovalService:
         """Send approval email to vendor with registration link"""
         # Skip if owner email is same as RM email (testing scenario)
         if rm_email and request_data.owner_email.lower() == rm_email.lower():
-            logger.info(f"⏭️ Skipping vendor email - owner is the RM ({request_data.owner_email})")
+            logger.info(f"Skipping vendor email - owner is the RM ({request_data.owner_email})")
             return
         
         # Generate registration token
@@ -479,7 +478,7 @@ class VendorApprovalService:
             owner_email=request_data.owner_email
         )
         
-        logger.info(f"🔐 Registration token generated for {request_data.owner_email}")
+        logger.info(f"Registration token generated for {request_data.owner_email}")
         
         # Send email
         email_sent = await email_service.send_vendor_approval_email(
@@ -492,9 +491,9 @@ class VendorApprovalService:
         )
         
         if email_sent:
-            logger.info(f"✉️ Approval email sent to {request_data.owner_email}")
+            logger.info(f"Approval email sent to {request_data.owner_email}")
         else:
-            logger.warning(f"⚠️ Failed to send approval email to {request_data.owner_email}")
+            logger.warning(f"Failed to send approval email to {request_data.owner_email}")
     
     async def _send_rm_notification_email(
         self,
@@ -524,26 +523,31 @@ class VendorApprovalService:
             )
             
             if email_sent:
-                logger.info(f"✉️ RM notification sent to {rm_email}")
+                logger.info(f"RM notification sent to {rm_email}")
             else:
-                logger.warning(f"⚠️ Failed to send RM notification to {rm_email}")
+                logger.warning(f"Failed to send RM notification to {rm_email}")
                 
         except Exception as e:
-            logger.error(f"❌ Error sending RM notification: {str(e)}")
+            logger.error(f"Error sending RM notification: {str(e)}")
             raise
     
     async def _get_rm_details(self, rm_id: str) -> Dict[str, str]:
         """Get RM email and name from database"""
+        from fastapi import HTTPException, status
+        
         rm_response = self.db.table("rm_profiles").select(
             "profiles(email, full_name)"
-        ).eq("id", rm_id).single().execute()
+        ).eq("id", rm_id).execute()
         
-        if not rm_response.data or not rm_response.data.get("profiles"):
-            raise ValueError(f"RM profile not found for {rm_id}")
+        if not rm_response.data or len(rm_response.data) == 0 or not rm_response.data[0].get("profiles"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"RM profile not found for {rm_id}"
+            )
         
         return {
-            "email": rm_response.data["profiles"]["email"],
-            "name": rm_response.data["profiles"]["full_name"] or "RM"
+            "email": rm_response.data[0]["profiles"]["email"],
+            "name": rm_response.data[0]["profiles"]["full_name"] or "RM"
         }
     
     async def _update_rm_score(
@@ -571,10 +575,10 @@ class VendorApprovalService:
         )
         
         if result.success:
-            logger.info(f"✅ RM {rm_id} awarded {score_points} points (new total: {result.new_total_score})")
+            logger.info(f"RM {rm_id} awarded {score_points} points (new total: {result.new_total_score})")
             return result.new_total_score
         else:
-            logger.error(f"❌ Failed to update RM score: {result.error}")
+            logger.error(f"Failed to update RM score: {result.error}")
             raise Exception(result.error or "Failed to update RM score")
     
     async def _penalize_rm_for_rejection(
@@ -609,7 +613,7 @@ class VendorApprovalService:
         )
         
         if result.success:
-            logger.info(f"⚠️ RM {rm_id} penalized {penalty} points (new total: {result.new_total_score})")
+            logger.info(f"RM {rm_id} penalized {penalty} points (new total: {result.new_total_score})")
         else:
             logger.warning(f"Failed to penalize RM: {result.error}")
     
@@ -683,7 +687,7 @@ class VendorApprovalService:
             if not email_sent:
                 logger.warning(f"Failed to send rejection email to {rm_email}")
         
-        logger.info(f"❌ Vendor request {request_id} rejected")
+        logger.info(f"Vendor request {request_id} rejected")
         
         return {
             "success": True,
@@ -711,4 +715,4 @@ class VendorApprovalService:
             salon_id=None
         )
         
-        logger.info(f"⚠️ RM {rm_id} penalized {score_penalty} points for rejection")
+        logger.info(f"RM {rm_id} penalized {score_penalty} points for rejection")

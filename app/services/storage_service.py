@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import UploadFile, HTTPException, status
 import uuid
 import mimetypes
+import magic  # python-magic-bin for Windows
 from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class StorageService:
     Provides validation, upload, and signed URL generation.
     """
     
-    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx'}
+    ALLOWED_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.svg', '.doc', '.docx'}
     MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
     ALLOWED_MIME_TYPES = {
         'application/pdf',
@@ -26,6 +27,7 @@ class StorageService:
         'image/jpg', 
         'image/png',
         'image/webp',
+        'image/svg+xml',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     }
@@ -36,7 +38,10 @@ class StorageService:
     
     def validate_file(self, file: UploadFile, allowed_types: Optional[set] = None) -> bool:
         """
-        Validate file type and size
+        Validate file type and size using actual file content
+        
+        Reads file content once to avoid race conditions and validates everything
+        from the buffer.
         
         Args:
             file: UploadFile object from FastAPI
@@ -50,18 +55,7 @@ class StorageService:
         """
         allowed_types = allowed_types or self.ALLOWED_MIME_TYPES
         
-        # Check file size
-        file.file.seek(0, 2)  # Seek to end
-        file_size = file.file.tell()
-        file.file.seek(0)  # Reset to beginning
-        
-        if file_size > self.MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} exceeds 5MB limit"
-            )
-        
-        # Check file extension
+        # Check file extension (first line of defense)
         ext = '.' + file.filename.split('.')[-1].lower() if '.' in file.filename else ''
         if ext not in self.ALLOWED_EXTENSIONS:
             raise HTTPException(
@@ -69,12 +63,78 @@ class StorageService:
                 detail=f"File type {ext} not allowed"
             )
         
-        # Check MIME type
-        mime_type, _ = mimetypes.guess_type(file.filename)
-        if mime_type not in allowed_types:
+        # Read entire file content once to avoid race conditions
+        # This ensures size and content validation happen on the same data
+        try:
+            file.file.seek(0)
+            file_content = file.file.read()  # Read entire file into memory
+            file.file.seek(0)  # Reset for subsequent upload
+            
+            # Check file size from actual content
+            file_size = len(file_content)
+            if file_size == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File {file.filename} is empty"
+                )
+            
+            if file_size > self.MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File {file.filename} exceeds 5MB limit ({file_size / 1024 / 1024:.2f}MB)"
+                )
+            
+            # Detect MIME type from actual file content (using first 2KB for efficiency)
+            mime = magic.Magic(mime=True)
+            detected_mime = mime.from_buffer(file_content[:2048])
+            
+            logger.debug(f"File {file.filename}: Size={file_size} bytes, Extension={ext}, Detected MIME={detected_mime}")
+            
+            # Verify detected MIME type is in allowed types
+            if detected_mime not in allowed_types:
+                # Check for common variations
+                allowed_variations = {
+                    'image/jpg': 'image/jpeg',
+                    'image/jpeg': 'image/jpg',
+                }
+                
+                normalized_mime = allowed_variations.get(detected_mime, detected_mime)
+                if normalized_mime not in allowed_types:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"File content type mismatch. Detected: {detected_mime}, Allowed: {', '.join(allowed_types)}"
+                    )
+            
+            # Additional check: filename MIME should roughly match content MIME
+            filename_mime, _ = mimetypes.guess_type(file.filename)
+            if filename_mime:
+                # Extract main type (e.g., 'image' from 'image/jpeg')
+                filename_type = filename_mime.split('/')[0]
+                detected_type = detected_mime.split('/')[0]
+                
+                if filename_type != detected_type:
+                    logger.warning(
+                        f"Suspicious file detected: {file.filename} "
+                        f"(extension suggests {filename_mime} but content is {detected_mime})"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"File extension does not match file content"
+                    )
+        
+        except HTTPException:
+            raise
+        except MemoryError:
+            logger.error(f"File {file.filename} too large to load into memory")
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File too large to process"
+            )
+        except Exception as e:
+            logger.error(f"File content validation failed: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid file type: {mime_type}"
+                detail="File validation failed. Please ensure the file is not corrupted."
             )
         
         return True
@@ -127,7 +187,7 @@ class StorageService:
             # Reset file pointer for potential reuse
             await file.seek(0)
             
-            logger.info(f"✅ File uploaded: {storage_path}")
+            logger.info(f"File uploaded: {storage_path}")
             return storage_path
             
         except HTTPException:
@@ -201,7 +261,7 @@ class StorageService:
                     detail="Failed to delete file"
                 )
             
-            logger.info(f"🗑️ File deleted: {path}")
+            logger.info(f"File deleted: {path}")
             return True
             
         except HTTPException:

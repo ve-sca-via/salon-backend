@@ -3,12 +3,13 @@ Admin Service
 Handles admin-specific operations including dashboard statistics and vendor request management
 """
 from typing import List, Optional, Dict, Any
-from app.schemas.admin import ServiceCreate, ServiceUpdate, StaffUpdate
+from app.schemas.admin import ServiceCreate, ServiceUpdate
 from datetime import date, datetime
 from app.core.database import get_db
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 
 class DashboardStats:
@@ -237,23 +238,31 @@ class AdminService:
             Exception: If database query fails
         """
         try:
-            # Attempt to use Supabase's relationship join syntax
+            from fastapi import HTTPException, status
+            
+            # Fetch vendor request
             response = self.db.table("vendor_join_requests").select(
                 "*, rm_profiles(*, profiles(*))"
-            ).eq("id", request_id).single().execute()
+            ).eq("id", request_id).execute()
             
-            if not response.data:
-                raise ValueError(f"Vendor request not found: {request_id}")
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Vendor request {request_id} not found"
+                )
             
             logger.info(f"Retrieved vendor request: {request_id}")
             
-            return response.data
+            return response.data[0]
             
-        except ValueError:
+        except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Failed to fetch vendor request {request_id}: {str(e)}")
-            raise Exception(f"Failed to fetch vendor request: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch vendor request"
+            )
     
     async def _enrich_vendor_request_with_rm_profile(
         self,
@@ -375,11 +384,11 @@ class AdminService:
         try:
             response = self.db.table("services").select("*").order("name").execute()
             
-            logger.info(f"✅ Fetched {len(response.data)} services")
+            logger.info(f"Fetched {len(response.data)} services")
             return response.data
             
         except Exception as e:
-            logger.error(f"❌ Failed to fetch services: {str(e)}")
+            logger.error(f"Failed to fetch services: {str(e)}")
             raise Exception(f"Failed to fetch services: {str(e)}")
     
     async def create_service(self, service_data: ServiceCreate) -> Dict[str, Any]:
@@ -403,11 +412,11 @@ class AdminService:
                 raise Exception("No data returned from insert")
             
             created_name = getattr(service_data, "name", "Unknown")
-            logger.info(f"✅ Created service: {created_name}")
+            logger.info(f"Created service: {created_name}")
             return response.data[0]
             
         except Exception as e:
-            logger.error(f"❌ Failed to create service: {str(e)}")
+            logger.error(f"Failed to create service: {str(e)}")
             raise Exception(f"Failed to create service: {str(e)}")
     
     async def update_service(self, service_id: str, updates: ServiceUpdate) -> Dict[str, Any]:
@@ -431,11 +440,11 @@ class AdminService:
             if not response.data:
                 raise Exception(f"Service not found: {service_id}")
             
-            logger.info(f"✅ Updated service: {service_id}")
+            logger.info(f"Updated service: {service_id}")
             return response.data[0]
             
         except Exception as e:
-            logger.error(f"❌ Failed to update service {service_id}: {str(e)}")
+            logger.error(f"Failed to update service {service_id}: {str(e)}")
             raise Exception(f"Failed to update service: {str(e)}")
     
     async def delete_service(self, service_id: str) -> bool:
@@ -454,93 +463,9 @@ class AdminService:
         try:
             response = self.db.table("services").delete().eq("id", service_id).execute()
             
-            logger.info(f"✅ Deleted service: {service_id}")
+            logger.info(f"Deleted service: {service_id}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to delete service {service_id}: {str(e)}")
+            logger.error(f"Failed to delete service {service_id}: {str(e)}")
             raise Exception(f"Failed to delete service: {str(e)}")
-    
-    # =====================================================
-    # STAFF MANAGEMENT
-    # =====================================================
-    
-    async def get_all_staff(self) -> List[Dict[str, Any]]:
-        """
-        Get all staff members (relationship managers) ordered by full name
-        
-        Returns:
-            List of all relationship manager profiles
-            
-        Raises:
-            Exception: If query fails
-        """
-        try:
-            result = await self.db.table('profiles').select('*').eq('user_role', 'relationship_manager').order('full_name').execute()
-            return result.data
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch staff: {str(e)}")
-            raise Exception(f"Failed to fetch staff: {str(e)}")
-    
-    async def update_staff(self, staff_id: str, updates: StaffUpdate) -> Dict[str, Any]:
-        """
-        Update staff member by ID
-        
-        Args:
-            staff_id: Staff profile ID to update
-            updates: Fields to update
-            
-        Returns:
-            Updated staff profile data
-            
-        Raises:
-            Exception: If staff not found or update fails
-        """
-        try:
-            # Apply only provided fields
-            update_payload = updates.model_dump(exclude_none=True)
-
-            if not update_payload:
-                raise Exception("No update fields provided")
-
-            response = self.db.table("profiles").update(update_payload).eq("id", staff_id).execute()
-
-            if not response.data:
-                raise Exception(f"Staff not found: {staff_id}")
-
-            logger.info(f"✅ Updated staff: {staff_id}")
-            return response.data[0]
-
-        except Exception as e:
-            logger.error(f"❌ Failed to update staff {staff_id}: {str(e)}")
-            raise Exception(f"Failed to update staff: {str(e)}")
-    
-    async def delete_staff(self, staff_id: str) -> Dict[str, Any]:
-        """
-        Delete (soft delete) staff member by ID
-        
-        Sets is_active to False instead of hard delete
-        
-        Args:
-            staff_id: Staff profile ID to delete
-            
-        Returns:
-            Updated staff profile data
-            
-        Raises:
-            Exception: If staff not found or deletion fails
-        """
-        try:
-            # Soft-delete: set is_active to False
-            response = self.db.table("profiles").update({"is_active": False}).eq("id", staff_id).execute()
-
-            if not response.data:
-                raise Exception(f"Staff not found: {staff_id}")
-
-            logger.info(f"✅ Soft-deleted staff: {staff_id}")
-            return response.data[0]
-
-        except Exception as e:
-            logger.error(f"❌ Failed to delete staff {staff_id}: {str(e)}")
-            raise Exception(f"Failed to delete staff: {str(e)}")

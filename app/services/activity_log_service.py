@@ -47,15 +47,15 @@ class ActivityLogService:
                 "ip_address": ip_address
             }
             
-            logger.info(f"📝 Attempting to log activity: {action} by {user_id or 'system'}, entity: {entity_type}/{entity_id}")
+            logger.info(f"Attempting to log activity: {action} by {user_id or 'system'}, entity: {entity_type}/{entity_id}")
             response = db.table("activity_logs").insert(log_data).execute()
-            logger.info(f"✅ Activity logged successfully: {action} (response: {len(response.data) if response.data else 0} rows)")
+            logger.info(f"Activity logged successfully: {action} (response: {len(response.data) if response.data else 0} rows)")
             return True
             
         except Exception as e:
             # Don't fail the main operation if logging fails
-            logger.error(f"❌ Failed to log activity '{action}': {type(e).__name__}: {str(e)}")
-            logger.error(f"   Data attempted: user_id={user_id}, entity={entity_type}/{entity_id}")
+            logger.error(f"Failed to log activity '{action}': {type(e).__name__}: {str(e)}")
+            logger.error(f"Data attempted: user_id={user_id}, entity={entity_type}/{entity_id}")
             return False
     
     @staticmethod

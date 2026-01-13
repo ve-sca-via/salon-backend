@@ -18,6 +18,7 @@ class SystemConfigCreate(BaseModel):
     is_active: Optional[bool] = Field(default=True, description="Whether config is active")
 
 class SystemConfigUpdate(BaseModel):
-    config_value: str
+    config_value: Optional[str] = None
+    config_type: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None

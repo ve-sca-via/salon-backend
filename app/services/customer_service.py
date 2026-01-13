@@ -553,19 +553,23 @@ class CustomerService:
             
             # Verify Razorpay payment signature if payment details provided
             if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
-                from app.services.payment import RazorpayService
-                razorpay_service = RazorpayService()
+                from app.services.payment_service import PaymentService
                 
-                # Verify signature to ensure payment authenticity
+                # Use PaymentService to verify payment (proper separation of concerns)
+                payment_service = PaymentService(db_client=self.db)
+                
                 try:
-                    razorpay_service.verify_payment_signature(
+                    await payment_service.verify_cart_payment(
                         razorpay_order_id=checkout_data["razorpay_order_id"],
                         razorpay_payment_id=checkout_data["razorpay_payment_id"],
                         razorpay_signature=checkout_data["razorpay_signature"]
                     )
-                    logger.info(f"Payment signature verified for customer {customer_id}")
+                    logger.info(f"Payment verified for customer {customer_id}")
+                except HTTPException as e:
+                    # Re-raise HTTPException as-is
+                    raise
                 except Exception as e:
-                    logger.error(f"Payment signature verification failed: {str(e)}")
+                    logger.error(f"Payment verification failed: {str(e)}")
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Payment verification failed. Please contact support."
@@ -877,10 +881,9 @@ class CustomerService:
             response = self.db.table("salons")\
                 .select("*")\
                 .eq("id", salon_id)\
-                .single()\
                 .execute()
             
-            if not response.data:
+            if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Salon not found"
@@ -890,7 +893,7 @@ class CustomerService:
             
             return {
                 "success": True,
-                "salon": response.data
+                "salon": response.data[0]
             }
         
         except HTTPException:

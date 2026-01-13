@@ -5,25 +5,6 @@
 Write-Host "Starting LOCAL development environment..." -ForegroundColor Green
 Write-Host ""
 
-# Check if Docker is running
-$dockerRunning = docker ps 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Docker Desktop is not running!" -ForegroundColor Red
-    Write-Host "Please start Docker Desktop and try again." -ForegroundColor Yellow
-    exit 1
-}
-
-# Check if Supabase is running
-Write-Host "Checking Supabase local status..." -ForegroundColor Cyan
-$supabaseStatus = supabase status 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Supabase is not running. Starting..." -ForegroundColor Yellow
-    supabase start
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Failed to start Supabase!" -ForegroundColor Red
-        exit 1
-    }
-}
 
 # Use local environment
 Write-Host "Switching to local environment..." -ForegroundColor Cyan
@@ -40,4 +21,4 @@ Write-Host "Starting FastAPI server..." -ForegroundColor Cyan
 Write-Host ""
 
 & .\.venv\Scripts\Activate.ps1
-python main.py
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload

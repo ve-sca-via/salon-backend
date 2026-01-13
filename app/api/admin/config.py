@@ -89,12 +89,14 @@ async def update_config(
     try:
         # Get old value first for logging
         old_config = await config_service.get_config(config_key)
-        old_value = old_config.config_value if old_config else None
+        old_value = old_config.get('config_value') if old_config else None
         
         # Update config (config_service.update_config expects the update object directly)
         updated_config = await config_service.update_config(config_key, update)
 
-        logger.info(f"System config updated: {config_key} = {update.config_value}")
+        # Get the new value from the updated config
+        new_value = updated_config.get('config_value') if updated_config else None
+        logger.info(f"System config updated: {config_key} = {new_value}")
 
         # Log activity
         try:
@@ -102,7 +104,7 @@ async def update_config(
                 user_id=current_user.user_id,
                 config_key=config_key,
                 old_value=old_value,
-                new_value=update.config_value
+                new_value=new_value
             )
         except Exception as e:
             logger.error(f"Failed to log activity: {e}")

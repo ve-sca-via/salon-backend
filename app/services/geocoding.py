@@ -23,62 +23,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# =====================================================
-# MOCK GEOCODING SERVICE (FOR TESTING)
-# =====================================================
-
-class MockGeocodingService:
-    """
-    Mock geocoding service for testing - doesn't make real API calls.
-    Returns fake coordinates for any address.
-    """
-    
-    def __init__(self):
-        self.provider = "mock"
-        logger.info("🧪 Using MockGeocodingService (Test Mode) - No real API calls")
-    
-    async def geocode_address(self, address: str) -> Optional[Tuple[float, float]]:
-        """
-        Mock geocode - returns fake coordinates without API call.
-        Always returns coordinates for Mumbai, India (19.0760, 72.8777)
-        """
-        logger.info(f"🧪 MOCK: Geocoding '{address}' -> Returning fake Mumbai coordinates")
-        # Return fake coordinates (Mumbai)
-        return (19.0760, 72.8777)
-    
-    async def reverse_geocode(self, latitude: float, longitude: float) -> Optional[Dict]:
-        """
-        Mock reverse geocode - returns fake address without API call.
-        """
-        logger.info(f"🧪 MOCK: Reverse geocoding ({latitude}, {longitude}) -> Returning fake address")
-        return {
-            "city": "Mumbai",
-            "state": "Maharashtra",
-            "country": "India",
-            "formatted_address": f"Mock Address for ({latitude}, {longitude})"
-        }
-
-
-# =====================================================
-# FACTORY FUNCTION (Like get_db() and get_email_service())
-# =====================================================
-
-def get_geocoding_service():
-    """
-    Factory function to get geocoding service based on environment.
-    
-    Returns MockGeocodingService in test mode, real GeocodingService otherwise.
-    This allows testing without making real API calls!
-    """
-    # Check if we're in test mode
-    if settings.ENVIRONMENT == "test":
-        logger.info("🧪 Geocoding Service: Using MockGeocodingService (test mode)")
-        return MockGeocodingService()
-    
-    # Production/Dev mode - real geocoding
-    logger.info("🗺️ Geocoding Service: Using real GeocodingService")
-    return GeocodingService()
-
 
 class GeocodingService:
     def __init__(self):
@@ -88,7 +32,7 @@ class GeocodingService:
         
         # Log the API key status
         api_key = settings.GOOGLE_MAPS_API_KEY
-        logger.info(f"🗺️ Geocoding initialization:")
+        logger.info(f"Geocoding initialization:")
         logger.info(f"   Google Maps API key present: {bool(api_key)}")
         logger.info(f"   Google Maps API key length: {len(api_key) if api_key else 0}")
         
@@ -101,20 +45,20 @@ class GeocodingService:
             try:
                 self.geocoder = GoogleV3(api_key=api_key)
                 self.provider = "google"
-                logger.info("✅ Geocoding: Using Google Maps API")
+                logger.info("Geocoding: Using Google Maps API")
             except Exception as e:
-                logger.warning(f"⚠️ Google Maps API initialization failed: {e}")
-                logger.info("🔄 Falling back to Nominatim (OpenStreetMap)")
+                logger.warning(f"Google Maps API initialization failed: {e}")
+                logger.info("Falling back to Nominatim (OpenStreetMap)")
                 self._init_nominatim()
         else:
             if api_key and not is_placeholder:
-                logger.warning(f"⚠️ Google Maps API key is invalid (too short): '{api_key[:20]}...'")
-            logger.info("✅ Using Nominatim (OpenStreetMap) - FREE geocoding, no API key needed")
+                logger.warning(f"Google Maps API key is invalid (too short): '{api_key[:20]}...'")
+            logger.info("Using Nominatim (OpenStreetMap) - FREE geocoding, no API key needed")
             self._init_nominatim()
     
     def _init_nominatim(self):
         """Initialize Nominatim (free OpenStreetMap geocoder)"""
-        logger.info("🌍 Initializing Nominatim geocoder...")
+        logger.info("Initializing Nominatim geocoder...")
         # User agent is required by Nominatim usage policy
         # Format: <application name> <contact email>
         user_agent = "salon-management-app/1.0 (contact: support@salonplatform.com)"
@@ -125,7 +69,7 @@ class GeocodingService:
             domain='nominatim.openstreetmap.org'
         )
         self.provider = "nominatim"
-        logger.info("✅ Nominatim initialized successfully (FREE, no API key needed)")
+        logger.info("Nominatim initialized successfully (FREE, no API key needed)")
 
     async def _rate_limit(self):
         """
@@ -249,8 +193,5 @@ class GeocodingService:
 # GLOBAL INSTANCE (Singleton created at module import)
 # =====================================================
 
-# Get geocoding service using factory function
-# In test mode (ENVIRONMENT=test), this will be MockGeocodingService
-# In production/dev, this will be real GeocodingService
-geocoding_service = get_geocoding_service()
+geocoding_service = GeocodingService()
 

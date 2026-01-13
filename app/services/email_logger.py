@@ -72,7 +72,7 @@ class EmailLogger:
             
             if response.data:
                 log_id = response.data[0].get("id")
-                logger.info(f"📧 Email log created: {log_id} ({email_type} to {recipient_email}) - Status: {status}")
+                logger.info(f"Email log created: {log_id} ({email_type} to {recipient_email}) - Status: {status}")
                 return log_id
             else:
                 logger.error(f"Failed to create email log: No data returned")
@@ -114,7 +114,7 @@ class EmailLogger:
                 .execute()
             
             if response.data:
-                logger.info(f"📧 Email log updated: {log_id} - Status: {status}")
+                logger.info(f"Email log updated: {log_id} - Status: {status}")
                 return True
             else:
                 logger.error(f"Failed to update email log {log_id}: No data returned")
@@ -164,7 +164,7 @@ class EmailLogger:
                 .execute()
             
             if update_response.data:
-                logger.info(f"📧 Email log retry count incremented: {log_id} - Retry #{new_retry}")
+                logger.info(f"Email log retry count incremented: {log_id} - Retry #{new_retry}")
                 return True
             else:
                 return False
@@ -191,7 +191,7 @@ class EmailLogger:
                 .execute()
             
             if response.data:
-                logger.info(f"📧 Found {len(response.data)} failed emails ready for retry")
+                logger.info(f"Found {len(response.data)} failed emails ready for retry")
                 return response.data
             else:
                 return []

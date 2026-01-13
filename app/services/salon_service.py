@@ -4,9 +4,10 @@ Handles salon CRUD operations, activation, verification, and queries
 """
 import logging
 from typing import Dict, Any, Optional, List, Union
+from fastapi import HTTPException, status
 from app.schemas.request.payment import PaymentDetails
 from app.schemas.request.vendor import SalonUpdate
-from app.schemas.admin import ServiceCreate, ServiceUpdate, StaffCreate, StaffUpdate
+from app.schemas.admin import ServiceCreate, ServiceUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
@@ -51,8 +52,7 @@ class SalonService:
     async def get_salon(
         self,
         salon_id: str,
-        include_services: bool = False,
-        include_staff: bool = False
+        include_services: bool = False
     ) -> Dict[str, Any]:
         """
         Get salon by ID with optional related data.
@@ -60,7 +60,6 @@ class SalonService:
         Args:
             salon_id: Salon ID
             include_services: Include salon services
-            include_staff: Include staff members
             
         Returns:
             Salon data with optional relations
@@ -71,17 +70,29 @@ class SalonService:
         if include_services:
             select_parts.append("services(*)")
         
-        if include_staff:
-            select_parts.append("salon_staff(*)")
-        
         select_query = ", ".join(select_parts)
         
-        response = self.db.table("salons").select(select_query).eq("id", salon_id).single().execute()
-        
-        if not response.data:
-            raise ValueError(f"Salon {salon_id} not found")
-        
-        return response.data
+        try:
+            response = self.db.table("salons").select(select_query).eq("id", salon_id).execute()
+            
+            # Check if we got results
+            if not response.data or len(response.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Salon {salon_id} not found"
+                )
+            
+            # Return first result
+            return response.data[0]
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching salon {salon_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch salon details"
+            )
     
     async def list_salons(self, params: SalonSearchParams) -> List[Dict[str, Any]]:
         """
@@ -251,7 +262,7 @@ class SalonService:
         if not response.data:
             raise ValueError("Salon not found or update failed")
         
-        logger.info(f"✏️ Salon {salon_id} updated: {list(safe_updates.keys())}")
+        logger.info(f"Salon {salon_id} updated: {list(safe_updates.keys())}")
         
         return response.data[0]
     
@@ -272,7 +283,7 @@ class SalonService:
         if not response.data:
             raise ValueError("Salon not found")
         
-        logger.info(f"✅ Salon {salon_id} activated")
+        logger.info(f"Salon {salon_id} activated")
         
         return response.data[0]
     
@@ -297,7 +308,7 @@ class SalonService:
         if not response.data:
             raise ValueError("Salon not found")
         
-        logger.info(f"⛔ Salon {salon_id} deactivated")
+        logger.info(f"Salon {salon_id} deactivated")
         
         return response.data[0]
     
@@ -325,7 +336,7 @@ class SalonService:
         if not response.data:
             raise ValueError("Salon not found")
         
-        logger.info(f"✓ Salon {salon_id} verified")
+        logger.info(f"Salon {salon_id} verified")
         
         return response.data[0]
     
@@ -355,7 +366,7 @@ class SalonService:
         if not response.data:
             raise ValueError("Salon not found")
         
-        logger.info(f"💰 Payment verified for salon {salon_id}")
+        logger.info(f"Payment verified for salon {salon_id}")
         
         return response.data[0]
     
@@ -376,13 +387,6 @@ class SalonService:
         
         service_count = services_response.count or 0
         
-        # Get staff count
-        staff_response = self.db.table("staff").select(
-            "id", count="exact"
-        ).eq("salon_id", salon_id).execute()
-        
-        staff_count = staff_response.count or 0
-        
         # Get booking count
         bookings_response = self.db.table("bookings").select(
             "id", count="exact"
@@ -400,7 +404,6 @@ class SalonService:
         
         return {
             "services_count": service_count,
-            "staff_count": staff_count,
             "bookings_count": booking_count,
             "reviews_count": len(reviews),
             "average_rating": round(avg_rating, 2)
@@ -421,7 +424,7 @@ class SalonService:
             # Hard delete - remove from database
             response = self.db.table("salons").delete().eq("id", salon_id).execute()
             
-            logger.warning(f"🗑️ Salon {salon_id} permanently deleted")
+            logger.warning(f"Salon {salon_id} permanently deleted")
             
             return {"message": "Salon permanently deleted", "salon_id": salon_id}
         
@@ -506,7 +509,7 @@ class SalonService:
         response = query.execute()
         salons = response.data or []
         
-        logger.info(f"📋 Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
+        logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
         
         return salons
     
@@ -540,7 +543,7 @@ class SalonService:
         response = query.execute()
         salons = response.data or []
         
-        logger.info(f"📋 Retrieved {len(salons)} approved salons")
+        logger.info(f" Retrieved {len(salons)} approved salons")
         
         return salons
     
@@ -596,7 +599,7 @@ class SalonService:
         response = query.execute()
         salons = response.data or []
         
-        logger.info(f"🔍 Search returned {len(salons)} salons (query='{query_text}', city={city})")
+        logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")
         
         return salons
     
@@ -626,7 +629,7 @@ class SalonService:
         
         services = response.data or []
         
-        logger.info(f"📋 Retrieved {len(services)} services for salon {salon_id}")
+        logger.info(f"Retrieved {len(services)} services for salon {salon_id}")
         
         return services
 
@@ -697,93 +700,6 @@ class SalonService:
             logger.error(f"Failed to delete service {service_id} from salon {salon_id}: {e}")
             raise
     
-    async def get_salon_staff(self, salon_id: str) -> List[Dict[str, Any]]:
-        """
-        Get all active staff members for a salon.
-        
-        Args:
-            salon_id: Salon ID
-            
-        Returns:
-            List of staff members
-            
-        Raises:
-            ValueError: If salon not found or not public
-        """
-        # Verify salon exists and is public
-        salon = await self.get_salon(salon_id)
-        
-        if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
-            raise ValueError("Salon not available")
-        
-        # Get active staff members
-        response = self.db.table("staff").select("*").eq(
-            "salon_id", salon_id
-        ).eq("is_active", True).order("name").execute()
-        
-        staff = response.data or []
-        
-        logger.info(f"👥 Retrieved {len(staff)} staff members for salon {salon_id}")
-        
-        return staff
-
-    async def add_salon_staff(self, salon_id: str, staff: StaffCreate) -> Dict[str, Any]:
-        """
-        Add a staff member to a salon (admin action).
-        """
-        try:
-            await self.get_salon(salon_id)
-
-            staff_data = staff.model_dump()
-            staff_data["salon_id"] = salon_id
-
-            response = self.db.table("salon_staff").insert(staff_data).execute()
-            created = response.data[0] if response.data else None
-
-            logger.info(f"Admin added staff to salon {salon_id}: {staff.full_name}")
-            return created
-
-        except Exception as e:
-            logger.error(f"Failed to add staff to salon {salon_id}: {e}")
-            raise
-
-    async def update_salon_staff(self, salon_id: str, staff_id: str, staff: StaffUpdate) -> Dict[str, Any]:
-        """
-        Update a salon staff member (admin action).
-        """
-        try:
-            await self.get_salon(salon_id)
-
-            update_data = staff.model_dump(exclude_none=True)
-            if not update_data:
-                raise ValueError("No fields provided for update")
-
-            response = self.db.table("salon_staff").update(update_data).eq("id", staff_id).eq("salon_id", salon_id).execute()
-            if not response.data:
-                raise ValueError("Staff not found or update failed")
-
-            logger.info(f"Admin updated staff {staff_id} for salon {salon_id}")
-            return response.data[0]
-
-        except Exception as e:
-            logger.error(f"Failed to update staff {staff_id} for salon {salon_id}: {e}")
-            raise
-
-    async def delete_salon_staff(self, salon_id: str, staff_id: str) -> Dict[str, Any]:
-        """
-        Delete a salon staff member (admin action).
-        """
-        try:
-            await self.get_salon(salon_id)
-
-            self.db.table("salon_staff").delete().eq("id", staff_id).eq("salon_id", salon_id).execute()
-            logger.info(f"Admin deleted staff {staff_id} from salon {salon_id}")
-            return {"success": True, "staff_id": staff_id}
-
-        except Exception as e:
-            logger.error(f"Failed to delete staff {staff_id} from salon {salon_id}: {e}")
-            raise
-    
     async def get_platform_commission_config(self) -> float:
         """
         Get the platform commission percentage from system config.
@@ -801,7 +717,7 @@ class SalonService:
                 return 10.0
             
             commission = float(response.data["config_value"])
-            logger.info(f"💰 Platform commission: {commission}%")
+            logger.info(f"Platform commission: {commission}%")
             
             return commission
             

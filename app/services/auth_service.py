@@ -129,6 +129,8 @@ class AuthService:
         password: str,
         full_name: str,
         phone: Optional[str] = None,
+        age: int = None,
+        gender: str = None,
         user_role: str = "customer"
     ) -> Dict:
         """
@@ -139,6 +141,8 @@ class AuthService:
             password: User's password
             full_name: User's full name
             phone: User's phone number (optional)
+            age: User's age (required, 13-120)
+            gender: User's gender (required: male, female, other)
             user_role: User role (defaults to customer)
             
         Returns:
@@ -151,6 +155,34 @@ class AuthService:
             # Sanitize inputs (XSS protection)
             sanitized_full_name = html.escape(full_name.strip())
             sanitized_phone = html.escape(phone.strip()) if phone else None
+            
+            # Validate and sanitize gender (REQUIRED)
+            if not gender:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Gender is required"
+                )
+            
+            gender_lower = gender.lower().strip()
+            if gender_lower not in ['male', 'female', 'other']:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid gender. Must be 'male', 'female', or 'other'."
+                )
+            sanitized_gender = gender_lower
+            
+            # Validate age (REQUIRED)
+            if age is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age is required"
+                )
+            
+            if age < 13 or age > 120:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Age must be between 13 and 120"
+                )
             
             # Only allow customer signups
             if user_role not in ["customer"]:
@@ -201,6 +233,8 @@ class AuthService:
                 "email": email,
                 "full_name": sanitized_full_name,
                 "phone": sanitized_phone,
+                "age": age,
+                "gender": sanitized_gender,
                 "user_role": user_role,
                 "is_active": True
             }
@@ -249,6 +283,8 @@ class AuthService:
                 "user_role": user_role,
                 "role": user_role,  # Backward compatibility for frontend
                 "phone": sanitized_phone,
+                "age": age,
+                "gender": sanitized_gender,
                 "is_active": True
             }
             
@@ -620,3 +656,41 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to reset password"
             )
+    async def resend_verification_email(self, user_id: str, email: str) -> Dict:
+        """
+        Resend email verification link to user
+        
+        Args:
+            user_id: User's ID
+            email: User's email address
+            
+        Returns:
+            Dict with success status and message
+            
+        Raises:
+            HTTPException: If resend fails
+        """
+        try:
+            # Use Supabase's resend functionality
+            response = self.auth_client.auth.resend({
+                "type": "signup",
+                "email": email,
+                "options": {
+                    "email_redirect_to": f"{settings.FRONTEND_URL}"
+                }
+            })
+            
+            logger.info(f"Verification email resent to: {email}")
+            
+            return {
+                "success": True,
+                "message": "Verification email sent successfully. Please check your inbox."
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to resend verification email: {str(e)}")
+            # Don't expose detailed error to user
+            return {
+                "success": True,
+                "message": "If your email is registered and unverified, you will receive a verification email shortly."
+            }

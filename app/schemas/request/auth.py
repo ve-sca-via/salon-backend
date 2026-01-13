@@ -19,6 +19,8 @@ class SignupRequest(BaseModel):
     password: str
     full_name: str
     phone: Optional[str] = None
+    age: int = Field(..., ge=13, le=120, description="User age (13-120 years, required)")
+    gender: str = Field(..., description="User gender: male, female, or other (required)")
     user_role: str = "customer"  # Default role
 
 class LogoutAllRequest(BaseModel):
