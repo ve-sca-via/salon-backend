@@ -3,7 +3,8 @@ Tests for Email Service
 """
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from app.services.email import EmailService, MockEmailService
+from app.services.email import EmailService
+from tests.mocks import MockEmailService
 
 
 class TestMockEmailService:
@@ -131,7 +132,6 @@ class TestEmailServiceIntegration:
             services=[{"name": "Hair Cut", "price": 1000}],
             booking_date="2024-01-01",
             booking_time="10:00",
-            staff_name="Staff",
             total_amount=1000.0,
             booking_id="BK001"
         )

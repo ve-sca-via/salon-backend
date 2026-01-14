@@ -114,6 +114,7 @@ class TestBookingService:
             salon_id="salon123",
             booking_date="2024-01-15",
             booking_time="10:00",
+            time_slots=["10:00"],
             services=[ServiceItem(service_id="service1", quantity=1)],
             total_amount=500.0,
             notes="Test booking",

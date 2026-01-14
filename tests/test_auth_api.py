@@ -78,6 +78,8 @@ class TestAuthAPI:
                 "password": "password123",
                 "full_name": "New User",
                 "phone": "+1234567890",
+                "age": 25,
+                "gender": "female",
                 "user_role": "customer"
             })
 

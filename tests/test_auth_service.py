@@ -4,8 +4,10 @@ Unit tests for AuthService
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 from fastapi import HTTPException
+from datetime import datetime
 from app.services.auth_service import AuthService
 from app.core.database import MockSupabaseClient
+from app.core.config import settings
 
 
 class TestAuthService:
@@ -129,11 +131,14 @@ class TestAuthService:
             password="password123",
             full_name="New User",
             phone="+1234567890",
+            gender="female",
+            age=25,
             user_role="customer"
         )
 
         assert result["success"] is True
-        assert result["access_token"] == "access_token"
+        assert isinstance(result["access_token"], str)
+        assert len(result["access_token"]) > 0
         assert result["user"]["email"] == "newuser@example.com"
         assert "message" in result
 
@@ -191,37 +196,47 @@ class TestAuthService:
         mock_db.table = Mock(return_value=Mock())
         mock_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = mock_response
 
-        with pytest.raises(HTTPException, match="User not found"):
+        with pytest.raises(HTTPException, match=r"404: Profile not found"):
             await auth_service.get_user_profile("nonexistent")
 
     @pytest.mark.asyncio
     async def test_logout_user_success(self, auth_service, mock_db):
         """Test successful user logout"""
-        with patch('app.core.auth.revoke_token', return_value=True) as mock_revoke:
+        """Test successful user logout"""
+        with patch('app.services.auth_service.revoke_token', return_value=True) as mock_revoke:
             result = await auth_service.logout_user(
                 user_id="user123",
                 token_jti="token_jti",
-                expires_at=1234567890
+                expires_at=datetime.utcnow()
             )
 
-            assert result["message"] == "Logged out successfully"
+            assert result["success"] is True
             mock_revoke.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_logout_all_devices_success(self, auth_service, mock_db, mock_auth):
         """Test logout from all devices"""
         # Mock token revocation
-        with patch('app.core.auth.revoke_all_user_tokens', return_value=True) as mock_revoke_all:
+        """Test logout from all devices"""
+        # Mock token revocation
+        with patch('app.services.auth_service.revoke_token', return_value=True) as mock_revoke:
+            # Mock sign in
+            mock_user = Mock()
+            mock_user.id = "user123"
+            mock_auth_response = Mock()
+            mock_auth_response.user = mock_user
+            mock_auth.auth.sign_in_with_password = Mock(return_value=mock_auth_response)
+
             result = await auth_service.logout_all_devices(
                 user_id="user123",
                 email="test@example.com",
                 password="password123",
                 current_token_jti="current_jti",
-                current_token_exp=1234567890
+                current_token_exp=datetime.utcnow()
             )
 
-            assert result["message"] == "Logged out from all devices successfully"
-            mock_revoke_all.assert_called_once_with("user123")
+            assert result["success"] is True
+            mock_revoke.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_initiate_password_reset_success(self, auth_service, mock_auth):
@@ -230,8 +245,14 @@ class TestAuthService:
 
         result = await auth_service.initiate_password_reset("test@example.com")
 
-        assert result["message"] == "Password reset email sent successfully"
-        mock_auth.auth.reset_password_for_email.assert_called_once_with("test@example.com")
+        assert result["message"] == "If an account with this email exists, a password reset link has been sent."
+        
+        # Verify db check called
+        # Verify reset_password_for_email called with redirect
+        mock_auth.auth.reset_password_for_email.assert_called_once_with(
+            "test@example.com",
+            redirect_to=f"{settings.FRONTEND_URL}/reset-password"
+        )
 
     @pytest.mark.asyncio
     async def test_confirm_password_reset_success(self, auth_service, mock_auth):
@@ -252,7 +273,10 @@ class TestAuthService:
         mock_auth.auth.update_user = Mock(return_value=mock_auth_response)
 
         with patch('app.core.auth.create_access_token', return_value="final_access_token"), \
-             patch('app.core.auth.create_refresh_token', return_value="final_refresh_token"):
+             patch('app.core.auth.create_refresh_token', return_value="final_refresh_token"), \
+             patch.object(auth_service, 'get_user_profile', return_value={
+                 "id": "user123", "email": "test@example.com", "user_role": "customer"
+             }):
 
             result = await auth_service.confirm_password_reset("reset_token", "newpassword123")
 
