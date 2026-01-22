@@ -54,20 +54,26 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expires_delta: Optional expiration time delta
     
     Returns:
-        Encoded JWT token string with jti claim
+        Encoded JWT token string with jti and iat claims
     """
     to_encode = data.copy()
+    now = datetime.utcnow()
     
     # Generate unique JWT ID (jti) for token revocation
     jti = str(uuid.uuid4())
-    to_encode.update({"jti": jti})
     
+    # Calculate expiration
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    to_encode.update({"exp": expire})
+    # Add all claims including explicit iat (issued at) for token_valid_after checking
+    to_encode.update({
+        "jti": jti,
+        "iat": now,
+        "exp": expire
+    })
     
     encoded_jwt = jwt.encode(
         to_encode,
@@ -108,7 +114,7 @@ def create_refresh_token(data: dict) -> str:
 
 def verify_token(token: str, db) -> TokenPayload:
     """
-    Verify and decode JWT token, checking against blacklist
+    Verify and decode JWT token, checking against blacklist and token_valid_after
     
     Args:
         token: JWT token string
@@ -117,7 +123,7 @@ def verify_token(token: str, db) -> TokenPayload:
         TokenPayload with user data
     
     Raises:
-        HTTPException: If token is invalid, expired, or blacklisted
+        HTTPException: If token is invalid, expired, blacklisted, or issued before token_valid_after
     """
     try:
         payload = jwt.decode(
@@ -130,6 +136,7 @@ def verify_token(token: str, db) -> TokenPayload:
         email: str = payload.get("email")
         user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
+        iat: int = payload.get("iat")  # Issued-at timestamp (Unix timestamp)
         
         if user_id is None:
             raise HTTPException(
@@ -145,9 +152,36 @@ def verify_token(token: str, db) -> TokenPayload:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        # Check if token is blacklisted (revoked)
+        # Check if token was issued before user's token_valid_after timestamp (logout_all)
+        if iat:
+            user_response = db.table("profiles").select(
+                "token_valid_after"
+            ).eq("id", user_id).single().execute()
+            
+            if user_response.data and user_response.data.get("token_valid_after"):
+                token_valid_after_str = user_response.data.get("token_valid_after")
+                # Convert iat (Unix timestamp) to datetime
+                token_issued_at = datetime.utcfromtimestamp(iat)
+                # Parse token_valid_after timestamp
+                # Handle both ISO format with and without 'Z'
+                if token_valid_after_str.endswith('Z'):
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                elif '+' in token_valid_after_str:
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
+                else:
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
+                
+                # Reject token if it was issued before the logout_all timestamp
+                if token_issued_at < token_valid_after_dt:
+                    logger.warning(f"Token issued before logout_all timestamp for user {user_id}")
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token has been revoked (logged out from all devices)",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+        
+        # Check if token is blacklisted (for single logout)
         if jti:
-            # Avoid logging blacklist contents or secrets
             blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
             if blacklist_check.data:
                 logger.warning(f"Blocked attempt to use blacklisted token")
@@ -170,7 +204,7 @@ def verify_token(token: str, db) -> TokenPayload:
 
 def verify_refresh_token(token: str, db) -> dict:
     """
-    Verify and decode JWT refresh token, checking against blacklist
+    Verify and decode JWT refresh token, checking against blacklist and token_valid_after
     
     Args:
         token: JWT refresh token string
@@ -179,7 +213,7 @@ def verify_refresh_token(token: str, db) -> dict:
         Dictionary with token data
     
     Raises:
-        HTTPException: If token is invalid, expired, or blacklisted
+        HTTPException: If token is invalid, expired, blacklisted, or issued before token_valid_after
     """
     try:
         payload = jwt.decode(
@@ -192,6 +226,7 @@ def verify_refresh_token(token: str, db) -> dict:
         email: str = payload.get("email")
         user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
+        iat: int = payload.get("iat")  # Issued-at timestamp
         
         if user_id is None:
             raise HTTPException(
@@ -200,7 +235,34 @@ def verify_refresh_token(token: str, db) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        # Check if refresh token is blacklisted (revoked)
+        # Check if refresh token was issued before user's token_valid_after timestamp (logout_all)
+        if iat:
+            user_response = db.table("profiles").select(
+                "token_valid_after"
+            ).eq("id", user_id).single().execute()
+            
+            if user_response.data and user_response.data.get("token_valid_after"):
+                token_valid_after_str = user_response.data.get("token_valid_after")
+                # Convert iat (Unix timestamp) to datetime
+                token_issued_at = datetime.utcfromtimestamp(iat)
+                # Parse token_valid_after timestamp
+                if token_valid_after_str.endswith('Z'):
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                elif '+' in token_valid_after_str:
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
+                else:
+                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
+                
+                # Reject refresh token if it was issued before the logout_all timestamp
+                if token_issued_at < token_valid_after_dt:
+                    logger.warning(f"Refresh token issued before logout_all timestamp for user {user_id}")
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Refresh token has been revoked (logged out from all devices)",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+        
+        # Check if refresh token is blacklisted (for single logout)
         if jti:
             blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
             if blacklist_check.data:
@@ -276,25 +338,7 @@ def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: 
         )
 
 
-def revoke_all_user_tokens(user_id: str, reason: str = "security") -> int:
-    """
-    Revoke all tokens for a specific user (useful for security incidents)
-    
-    Args:
-        user_id: User ID whose tokens should be revoked
-        reason: Reason for mass revocation
-    
-    Returns:
-        Number of tokens revoked
-    """
-    try:
-        # This is a placeholder - in reality you'd need to track all active tokens
-        # For now, we log the action and return 0 (will be implemented with token tracking)
-        logger.warning(f"Mass token revocation requested for user {user_id}, reason: {reason}")
-        return 0
-    except Exception as e:
-        logger.error(f"Failed to revoke user tokens: {str(e)}")
-        return 0
+# revoke_all_user_tokens removed - now properly implemented via token_valid_after in auth_service.logout_all_devices()
 
 
 def cleanup_expired_tokens(db) -> int:

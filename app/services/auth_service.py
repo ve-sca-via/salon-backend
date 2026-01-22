@@ -489,23 +489,29 @@ class AuthService:
         current_token_exp: datetime
     ) -> Dict:
         """
-        Logout user from all devices by revoking all tokens
+        Logout user from all devices by invalidating all tokens issued before now
+        
+        Strategy: Sets token_valid_after timestamp in profiles table to NOW.
+        All tokens (access and refresh) issued before this timestamp will be rejected
+        during verification in verify_token() and verify_refresh_token().
+        
+        This is more efficient and complete than blacklisting individual tokens.
         
         Args:
             user_id: User's unique identifier
             email: User's email for password verification
             password: User's password for confirmation
-            current_token_jti: Current token ID
-            current_token_exp: Current token expiration
+            current_token_jti: Current token ID (unused - all tokens invalidated via timestamp)
+            current_token_exp: Current token expiration (unused - all tokens invalidated via timestamp)
             
         Returns:
             Dict with success message
             
         Raises:
-            HTTPException: If password is invalid
+            HTTPException: If password is invalid or database update fails
         """
         try:
-            # Verify password before revoking all tokens
+            # Verify password before invalidating all tokens
             auth_response = self.auth_client.auth.sign_in_with_password({
                 "email": email,
                 "password": password
@@ -517,22 +523,34 @@ class AuthService:
                     detail="Invalid password"
                 )
             
-            # Revoke current token
-            if current_token_jti:
-                revoke_token(
-                    db=self.db,
-                    token_jti=current_token_jti,
-                    user_id=user_id,
-                    token_type="access",
-                    expires_at=current_token_exp,
-                    reason="logout_all"
+            # Set token_valid_after to NOW - this invalidates ALL tokens issued before now
+            now = datetime.utcnow()
+            update_response = self.db.table("profiles").update({
+                "token_valid_after": now.isoformat()
+            }).eq("id", user_id).execute()
+            
+            if not update_response.data:
+                logger.error(f"Failed to update token_valid_after for user {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to logout from all devices"
                 )
             
-            logger.warning(f"Logout all devices requested for user: {user_id}")
+            logger.warning(f"All tokens invalidated for user {user_id} via token_valid_after: {now.isoformat()}")
+            
+            # Log activity for security audit
+            await ActivityLogService.log(
+                db=self.db,
+                user_id=user_id,
+                action="logout_all_devices",
+                entity_type="auth",
+                entity_id=user_id,
+                details={"timestamp": now.isoformat(), "method": "token_valid_after"}
+            )
             
             return {
                 "success": True,
-                "message": "Successfully logged out from all devices"
+                "message": "Successfully logged out from all devices. Please login again."
             }
             
         except HTTPException:

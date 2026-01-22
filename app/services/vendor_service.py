@@ -667,7 +667,9 @@ class VendorService:
         self,
         user_id: str,
         email: str,
-        full_name: str
+        full_name: str,
+        age: int,
+        gender: str
     ) -> Dict[str, Any]:
         """
         Create vendor profile in profiles table.
@@ -676,14 +678,25 @@ class VendorService:
             user_id: User ID from Supabase auth
             email: Vendor email
             full_name: Vendor full name
+            age: Vendor age (18-120)
+            gender: Vendor gender (male, female, other)
             
         Returns:
             Created profile data
         """
+        # Validate gender
+        if gender.lower() not in ['male', 'female', 'other']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid gender. Must be 'male', 'female', or 'other'."
+            )
+        
         profile_data = {
             "id": user_id,
             "email": email,
             "full_name": full_name,
+            "age": age,
+            "gender": gender.lower(),
             "user_role": "vendor",
             "is_active": True
         }
@@ -771,7 +784,9 @@ class VendorService:
         token: str,
         full_name: str,
         password: str,
-        confirm_password: str
+        confirm_password: str,
+        age: int,
+        gender: str
     ) -> Dict[str, Any]:
         """
         Complete vendor registration after admin approval.
@@ -781,6 +796,8 @@ class VendorService:
             full_name: Vendor's full name
             password: Password for the account
             confirm_password: Password confirmation
+            age: Vendor's age (18-120)
+            gender: Vendor's gender (male, female, other)
             
         Returns:
             Registration completion data with tokens
@@ -867,7 +884,9 @@ class VendorService:
             await self.create_vendor_profile(
                 user_id=user_id,
                 email=vendor_email,
-                full_name=vendor_full_name
+                full_name=vendor_full_name,
+                age=age,
+                gender=gender
             )
             logger.info("Vendor profile created successfully")
         except Exception as profile_error:

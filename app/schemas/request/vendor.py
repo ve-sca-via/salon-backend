@@ -18,6 +18,8 @@ class CompleteRegistrationRequest(BaseModel):
     full_name: str
     password: str
     confirm_password: str
+    age: int = Field(..., ge=18, le=120, description="Age must be between 18 and 120")
+    gender: str = Field(..., description="Gender: male, female, or other")
 
 class VendorJoinRequestBase(BaseModel):
     """Vendor join request schema - comprehensive salon onboarding data"""

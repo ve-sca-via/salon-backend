@@ -19,8 +19,16 @@ from typing import Optional, Tuple, Dict
 import asyncio
 import time
 import logging
+from functools import lru_cache
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# In-memory cache for reverse geocoding results
+# Key: (lat, lon) rounded to 4 decimal places (~11m precision)
+# Value: (result_dict, timestamp)
+REVERSE_GEOCODE_CACHE = {}
+CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
 
@@ -165,6 +173,23 @@ class GeocodingService:
             #     }
             # }
         """
+        # Round coordinates to 4 decimal places (~11m precision) for cache key
+        cache_key = (round(lat, 4), round(lon, 4))
+        
+        # Check cache first
+        if cache_key in REVERSE_GEOCODE_CACHE:
+            cached_result, timestamp = REVERSE_GEOCODE_CACHE[cache_key]
+            # Check if cache is still valid (within TTL)
+            if datetime.utcnow() - timestamp < timedelta(seconds=CACHE_TTL_SECONDS):
+                logger.info(f"[Reverse Geocode Cache HIT] {cache_key}")
+                return cached_result
+            else:
+                # Cache expired, remove it
+                logger.info(f"[Reverse Geocode Cache EXPIRED] {cache_key}")
+                del REVERSE_GEOCODE_CACHE[cache_key]
+        
+        logger.info(f"[Reverse Geocode Cache MISS] {cache_key} - Calling {self.provider} API")
+        
         try:
             location = await self._reverse_sync(lat, lon)
             if location:
@@ -178,6 +203,10 @@ class GeocodingService:
                 # Add structured address components if available
                 if hasattr(location, 'raw') and 'address' in location.raw:
                     response['components'] = location.raw['address']
+                
+                # Store in cache with timestamp
+                REVERSE_GEOCODE_CACHE[cache_key] = (response, datetime.utcnow())
+                logger.info(f"[Reverse Geocode Cached] {cache_key} - TTL: {CACHE_TTL_SECONDS}s")
                 
                 return response
             return None

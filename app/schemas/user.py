@@ -8,6 +8,8 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8)
     role: str = Field(..., description="relationship_manager or customer")
     phone: Optional[str] = None
+    age: int = Field(..., ge=18, le=100, description="User age, must be between 18 and 100")
+    gender: str = Field(..., description="User gender: male, female, or other")
 
 
 class UserUpdate(BaseModel):
