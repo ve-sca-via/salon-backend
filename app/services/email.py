@@ -174,7 +174,38 @@ class EmailService:
     def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
         """
         Synchronous email sending (called from thread pool)
+        
+        ⚠️ TODO: BLOCKING I/O IN ASYNC CONTEXT - Fix when traffic grows
+        
+        CURRENT ISSUE:
+        - Using smtplib (synchronous) with asyncio.to_thread() causes blocking I/O
+        - Each email blocks a thread pool worker for 1-5 seconds
+        - Default thread pool = 32 threads max
+        - 100 concurrent emails = 68 emails queued and waiting
+        
+        WHY IT'S OK FOR NOW:
+        - Low traffic (<10 emails/minute) works fine with current approach
+        - Thread pool sufficient for current load
+        
+        WHEN TO FIX:
+        - Traffic exceeds 50+ emails/minute
+        - Noticeable email delivery delays
+        - Thread pool exhaustion warnings in logs
+        
+        HOW TO FIX:
+        1. Migrate to aiosmtplib for true async email:
+           async def _send_email_async(self, msg, to_email):
+               async with aiosmtplib.SMTP(hostname=settings.SMTP_HOST, port=settings.SMTP_PORT) as smtp:
+                   await smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                   await smtp.send_message(msg)
+        
+        2. Or implement Celery/Redis task queue for production scalability
+        
+        RESOURCES:
+        - aiosmtplib docs: https://aiosmtplib.readthedocs.io/
+        - Current blocking location: Lines 186-192 (SMTP connection & send)
         """
+        server = None
         try:
             # Send email
             if settings.SMTP_SSL:
@@ -189,7 +220,6 @@ class EmailService:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             
             server.send_message(msg)
-            server.quit()
             
             logger.info(f"Email sent successfully to {to_email}: {subject}")
             return True
@@ -197,6 +227,14 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
+            
+        finally:
+            # Always close connection to prevent memory leaks
+            if server:
+                try:
+                    server.quit()
+                except Exception as e:
+                    logger.warning(f"Error closing SMTP connection: {str(e)}")
     
     async def send_vendor_approval_email(
         self,

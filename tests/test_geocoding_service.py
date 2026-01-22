@@ -3,7 +3,8 @@ Tests for Geocoding Service
 """
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from app.services.geocoding import GeocodingService, MockGeocodingService
+from app.services.geocoding import GeocodingService
+from tests.mocks import MockGeocodingService
 
 
 class TestMockGeocodingService:

@@ -318,6 +318,7 @@ class VendorApprovalService:
         salon_data = {
             "vendor_id": getattr(request_data, "user_id", None),  # Will be set after vendor registers
             "assigned_rm": getattr(request_data, "user_id", None),  # RM who submitted this
+            "join_request_id": request_id,  # Link salon to original vendor request
             "business_name": request_data.business_name,
             "description": documents.get("description"),
             "phone": request_data.owner_phone,

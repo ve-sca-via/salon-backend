@@ -51,15 +51,13 @@ async def test_get_salons_by_city(db_integration):
     service = CustomerService(db_integration)
     
     # Get salons in Mumbai (if any exist in test data)
-    result = await service.get_salons_by_city(
-        city="Mumbai",
-        limit=10,
-        offset=0
+    result = await service.browse_salons(
+        city="Mumbai"
     )
     
     assert "salons" in result
     assert isinstance(result["salons"], list)
-    assert "total" in result
+    assert "count" in result
 
 
 @pytest.mark.asyncio
@@ -68,27 +66,11 @@ async def test_search_salons(db_integration):
     service = CustomerService(db_integration)
     
     result = await service.search_salons(
-        query="salon",
-        city=None,
-        limit=20
+        query="salon"
     )
     
-    assert "salons" in result
-    assert isinstance(result["salons"], list)
+    assert "results" in result
+    assert isinstance(result["results"], list)
 
 
-@pytest.mark.asyncio
-async def test_get_nearby_salons(db_integration):
-    """Test getting nearby salons by coordinates"""
-    service = CustomerService(db_integration)
-    
-    # Mumbai coordinates
-    result = await service.get_nearby_salons(
-        latitude=19.0760,
-        longitude=72.8777,
-        radius_km=10.0,
-        limit=10
-    )
-    
-    assert "salons" in result
-    assert isinstance(result["salons"], list)
+

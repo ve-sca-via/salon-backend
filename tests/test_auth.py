@@ -13,7 +13,6 @@ from app.core.auth import (
     verify_token,
     verify_refresh_token,
     revoke_token,
-    revoke_all_user_tokens,
     cleanup_expired_tokens,
     get_current_user,
     get_current_user_id,
@@ -89,8 +88,37 @@ class TestTokenVerification:
     def test_verify_token_valid(self, mocker):
         """Test verifying a valid token"""
         mock_db = mocker.Mock()
-        # Mock blacklist check to return no results
-        mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        
+        # Mock profiles table query (for token_valid_after check) - return None to skip check
+        mock_profiles_response = mocker.Mock()
+        mock_profiles_response.data = {"token_valid_after": None}
+        
+        # Mock blacklist query - return empty list (not blacklisted)
+        mock_blacklist_response = mocker.Mock()
+        mock_blacklist_response.data = []
+        
+        # Set up the mock to return different responses for different table calls
+        def mock_table_call(table_name):
+            if table_name == "profiles":
+                return mocker.Mock(
+                    select=lambda *args: mocker.Mock(
+                        eq=lambda *args: mocker.Mock(
+                            single=lambda: mocker.Mock(
+                                execute=lambda: mock_profiles_response
+                            )
+                        )
+                    )
+                )
+            elif table_name == "token_blacklist":
+                return mocker.Mock(
+                    select=lambda *args: mocker.Mock(
+                        eq=lambda *args: mocker.Mock(
+                            execute=lambda: mock_blacklist_response
+                        )
+                    )
+                )
+        
+        mock_db.table = mock_table_call
 
         data = {"sub": "test-user-id", "email": "test@example.com", "user_role": "customer"}
 
@@ -171,13 +199,103 @@ class TestTokenRevocation:
         mock_db.table.assert_called_with('token_blacklist')
         mock_db.table.return_value.insert.assert_called_once()
 
-    def test_revoke_all_user_tokens(self):
-        """Test revoking all tokens for a user"""
-        user_id = "test-user-id"
+    def test_verify_token_with_token_valid_after(self, mocker):
+        """Test that tokens issued before token_valid_after are rejected"""
+        mock_db = mocker.Mock()
         
-        result = revoke_all_user_tokens(user_id)
+        # Create a token (will have current timestamp as iat)
+        data = {"sub": "test-user-id", "email": "test@example.com", "user_role": "customer"}
+        token = create_access_token(data)
         
-        assert result == 0  # Currently returns 0 as placeholder
+        # Sleep briefly to ensure timestamp difference
+        import time
+        time.sleep(0.1)
+        
+        # Mock token_valid_after to be AFTER the token was issued
+        future_time = datetime.utcnow() + timedelta(seconds=1)
+        mock_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+            "token_valid_after": future_time.isoformat()
+        }
+        
+        # Token should be rejected because it was issued before token_valid_after
+        with pytest.raises(HTTPException) as exc_info:
+            verify_token(token, mock_db)
+        
+        assert exc_info.value.status_code == 401
+        assert "revoked" in exc_info.value.detail.lower()
+        assert "logged out from all devices" in exc_info.value.detail.lower()
+
+    def test_verify_token_without_token_valid_after(self, mocker):
+        """Test that tokens work normally when token_valid_after is NULL"""
+        mock_db = mocker.Mock()
+        
+        # Create a token
+        data = {"sub": "test-user-id", "email": "test@example.com", "user_role": "customer"}
+        token = create_access_token(data)
+        
+        # Mock token_valid_after as NULL (no logout_all performed)
+        mock_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+            "token_valid_after": None
+        }
+        
+        # Mock blacklist check to return no results
+        mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        
+        # Token should be accepted
+        payload = verify_token(token, mock_db)
+        
+        assert payload.sub == "test-user-id"
+        assert payload.email == "test@example.com"
+        assert payload.user_role == "customer"
+
+    def test_verify_token_issued_after_token_valid_after(self, mocker):
+        """Test that tokens issued AFTER token_valid_after are accepted"""
+        mock_db = mocker.Mock()
+        
+        # Set token_valid_after to a past timestamp
+        past_time = datetime.utcnow() - timedelta(hours=1)
+        
+        # Create a token NOW (will be after past_time)
+        data = {"sub": "test-user-id", "email": "test@example.com", "user_role": "customer"}
+        token = create_access_token(data)
+        
+        # Mock token_valid_after to be BEFORE the token was issued
+        mock_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+            "token_valid_after": past_time.isoformat()
+        }
+        
+        # Mock blacklist check
+        mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+        
+        # Token should be accepted because it was issued after token_valid_after
+        payload = verify_token(token, mock_db)
+        
+        assert payload.sub == "test-user-id"
+        assert payload.email == "test@example.com"
+
+    def test_verify_refresh_token_with_token_valid_after(self, mocker):
+        """Test that refresh tokens respect token_valid_after"""
+        mock_db = mocker.Mock()
+        
+        # Create a refresh token
+        data = {"sub": "test-user-id", "email": "test@example.com", "user_role": "customer"}
+        token = create_refresh_token(data)
+        
+        import time
+        time.sleep(0.1)
+        
+        # Mock token_valid_after to be AFTER the token was issued
+        future_time = datetime.utcnow() + timedelta(seconds=1)
+        mock_db.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = {
+            "token_valid_after": future_time.isoformat()
+        }
+        
+        # Refresh token should be rejected
+        with pytest.raises(HTTPException) as exc_info:
+            verify_refresh_token(token, mock_db)
+        
+        assert exc_info.value.status_code == 401
+        assert "revoked" in exc_info.value.detail.lower()
 
     def test_cleanup_expired_tokens(self, mocker):
         """Test cleaning up expired revoked tokens"""

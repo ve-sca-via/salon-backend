@@ -551,6 +551,67 @@ class CustomerService:
             booking_fee = total_amount * (convenience_fee_percentage / 100)
             gst_amount = booking_fee * 0.18  # 18% GST on booking fee
             
+            # IDEMPOTENCY CHECK: Check if payment already used for a booking
+            if checkout_data.get("razorpay_payment_id"):
+                existing_booking = self.db.table("bookings").select(
+                    "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
+                ).eq("razorpay_payment_id", checkout_data["razorpay_payment_id"]).execute()
+                
+                if existing_booking.data:
+                    logger.warning(f"Payment {checkout_data['razorpay_payment_id']} already used for booking. Returning existing booking (idempotent).")
+                    existing = existing_booking.data[0]
+                    return {
+                        "success": True,
+                        "message": "Booking already created with this payment",
+                        "booking": existing,
+                        "booking_id": existing.get("id"),
+                        "booking_number": existing.get("booking_number")
+                    }
+            
+            # CART VALIDATION: Verify cart hasn't changed since payment order creation
+            # This prevents race conditions where cart is modified between payment and checkout
+            if checkout_data.get("razorpay_order_id"):
+                try:
+                    # Fetch the Razorpay order to get the cart snapshot
+                    from app.services.payment_service import PaymentService
+                    payment_service = PaymentService(db_client=self.db)
+                    await payment_service._initialize_razorpay()
+                    
+                    import json
+                    razorpay_order = payment_service.razorpay.client.order.fetch(checkout_data["razorpay_order_id"])
+                    stored_snapshot = razorpay_order.get("notes", {}).get("cart_snapshot")
+                    stored_item_count = razorpay_order.get("notes", {}).get("cart_item_count")
+                    
+                    if stored_snapshot and stored_item_count:
+                        stored_cart = json.loads(stored_snapshot)
+                        current_item_count = len(cart_response["items"])
+                        
+                        # Quick check: item count mismatch
+                        if int(stored_item_count) != current_item_count:
+                            logger.warning(f"Cart modified: expected {stored_item_count} items, found {current_item_count}")
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Your cart has been modified since payment. Please try checkout again."
+                            )
+                        
+                        # Detailed validation: compare service IDs and quantities
+                        current_cart = {item["service_id"]: item["quantity"] for item in cart_response["items"]}
+                        stored_cart_dict = {item["service_id"]: item["quantity"] for item in stored_cart}
+                        
+                        if current_cart != stored_cart_dict:
+                            logger.warning(f"Cart contents changed since payment order creation")
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Your cart contents have changed since payment. Please try checkout again."
+                            )
+                        
+                        logger.info(f"Cart validation passed: snapshot matches current cart")
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    # Don't fail checkout if cart validation fails (log warning only)
+                    logger.warning(f"Cart validation skipped due to error: {str(e)}")
+            
             # Verify Razorpay payment signature if payment details provided
             if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
                 from app.services.payment_service import PaymentService

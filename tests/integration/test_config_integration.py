@@ -33,7 +33,7 @@ async def test_set_and_get_config(db_integration, cleanup_records):
     config_key = "test_integration_key"
     config_value = "test_value_123"
     
-    result = await service.set_config(
+    result = await service.create_config(
         config_key=config_key,
         config_value=config_value,
         description="Integration test config"
@@ -64,7 +64,7 @@ async def test_update_existing_config(db_integration, cleanup_records):
     config_key = "test_update_key"
     
     # Create initial config
-    await service.set_config(
+    await service.create_config(
         config_key=config_key,
         config_value="initial_value",
         description="Test config"
@@ -72,10 +72,9 @@ async def test_update_existing_config(db_integration, cleanup_records):
     cleanup_records["system_config"].append(config_key)
     
     # Update the config
-    updated = await service.set_config(
+    updated = await service.update_config(
         config_key=config_key,
-        config_value="updated_value",
-        description="Updated test config"
+        updates={"config_value": "updated_value", "description": "Updated test config"}
     )
     
     assert updated["config_value"] == "updated_value"
@@ -96,7 +95,7 @@ async def test_delete_config(db_integration, cleanup_records):
     config_key = "test_delete_key"
     
     # Create config
-    await service.set_config(
+    await service.create_config(
         config_key=config_key,
         config_value="delete_me",
         description="Config to delete"

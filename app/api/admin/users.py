@@ -64,7 +64,9 @@ async def create_user(
         full_name=user_data.full_name,
         user_role=role,
         password=user_data.password,
-        phone=user_data.phone or None
+        phone=user_data.phone or None,
+        age=user_data.age,
+        gender=user_data.gender
     )
 
     result = await user_service.create_user(request)

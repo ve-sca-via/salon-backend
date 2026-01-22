@@ -8,7 +8,7 @@ def get_admin_token():
     """Login as admin and get access token"""
     login_data = {
         "email": "admin@salonhub.com",
-        "password": "Safdar@1234"
+        "password": "12345678"
     }
     
     try:

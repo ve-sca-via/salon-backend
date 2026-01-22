@@ -489,23 +489,29 @@ class AuthService:
         current_token_exp: datetime
     ) -> Dict:
         """
-        Logout user from all devices by revoking all tokens
+        Logout user from all devices by invalidating all tokens issued before now
+        
+        Strategy: Sets token_valid_after timestamp in profiles table to NOW.
+        All tokens (access and refresh) issued before this timestamp will be rejected
+        during verification in verify_token() and verify_refresh_token().
+        
+        This is more efficient and complete than blacklisting individual tokens.
         
         Args:
             user_id: User's unique identifier
             email: User's email for password verification
             password: User's password for confirmation
-            current_token_jti: Current token ID
-            current_token_exp: Current token expiration
+            current_token_jti: Current token ID (unused - all tokens invalidated via timestamp)
+            current_token_exp: Current token expiration (unused - all tokens invalidated via timestamp)
             
         Returns:
             Dict with success message
             
         Raises:
-            HTTPException: If password is invalid
+            HTTPException: If password is invalid or database update fails
         """
         try:
-            # Verify password before revoking all tokens
+            # Verify password before invalidating all tokens
             auth_response = self.auth_client.auth.sign_in_with_password({
                 "email": email,
                 "password": password
@@ -517,22 +523,34 @@ class AuthService:
                     detail="Invalid password"
                 )
             
-            # Revoke current token
-            if current_token_jti:
-                revoke_token(
-                    db=self.db,
-                    token_jti=current_token_jti,
-                    user_id=user_id,
-                    token_type="access",
-                    expires_at=current_token_exp,
-                    reason="logout_all"
+            # Set token_valid_after to NOW - this invalidates ALL tokens issued before now
+            now = datetime.utcnow()
+            update_response = self.db.table("profiles").update({
+                "token_valid_after": now.isoformat()
+            }).eq("id", user_id).execute()
+            
+            if not update_response.data:
+                logger.error(f"Failed to update token_valid_after for user {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to logout from all devices"
                 )
             
-            logger.warning(f"Logout all devices requested for user: {user_id}")
+            logger.warning(f"All tokens invalidated for user {user_id} via token_valid_after: {now.isoformat()}")
+            
+            # Log activity for security audit
+            await ActivityLogService.log(
+                db=self.db,
+                user_id=user_id,
+                action="logout_all_devices",
+                entity_type="auth",
+                entity_id=user_id,
+                details={"timestamp": now.isoformat(), "method": "token_valid_after"}
+            )
             
             return {
                 "success": True,
-                "message": "Successfully logged out from all devices"
+                "message": "Successfully logged out from all devices. Please login again."
             }
             
         except HTTPException:
@@ -552,10 +570,10 @@ class AuthService:
             email: User's email address
             
         Returns:
-            Dict with success message
+            Dict with success message (always returns success for security)
             
-        Raises:
-            HTTPException: If user not found or email sending fails
+        Note:
+            Always returns success message to prevent account enumeration
         """
         try:
             # Check if user exists
@@ -563,6 +581,7 @@ class AuthService:
             
             if not response.data:
                 # Don't reveal if email exists for security
+                logger.info(f"Password reset requested for non-existent email (redacted)")
                 return {
                     "success": True,
                     "message": "If an account with this email exists, a password reset link has been sent."
@@ -570,18 +589,43 @@ class AuthService:
             
             user_id = response.data["id"]
             
-            # Generate reset token (using Supabase auth reset)
-            try:
-                self.auth_client.auth.reset_password_for_email(
-                    email,
-                    redirect_to=f"{settings.FRONTEND_URL}/reset-password"
-                )
-            except Exception as e:
-                logger.error(f"Supabase password reset error: {str(e)}")
-                # Still return success for security
-                pass
+            # Hash user_id for logging to prevent account enumeration via logs
+            import hashlib
+            user_id_hash = hashlib.sha256(user_id.encode()).hexdigest()[:12]
             
-            logger.info(f"Password reset initiated for user: {user_id}")
+            # Determine which password reset method is available (explicit feature detection)
+            reset_method = None
+            if hasattr(self.auth_client.auth, 'reset_password_email'):
+                reset_method = 'reset_password_email'
+            elif hasattr(self.auth_client.auth, 'reset_password_for_email'):
+                reset_method = 'reset_password_for_email'
+            else:
+                logger.error(
+                    f"No supported password reset method found in Supabase client. "
+                    f"User hash: {user_id_hash}. Returning success for security but reset will fail."
+                )
+                return {
+                    "success": True,
+                    "message": "If an account with this email exists, a password reset link has been sent."
+                }
+            
+            # Send password reset email using detected method
+            reset_options = {"redirect_to": f"{settings.FRONTEND_URL}/reset-password"}
+            try:
+                if reset_method == 'reset_password_email':
+                    self.auth_client.auth.reset_password_email(email, options=reset_options)
+                else:  # reset_password_for_email
+                    self.auth_client.auth.reset_password_for_email(email, reset_options)
+                
+                logger.info(f"Password reset email sent successfully (user hash: {user_id_hash})")
+                
+            except Exception as e:
+                # Log error with context but still return success for security
+                logger.error(
+                    f"Failed to send password reset email. "
+                    f"Method: {reset_method}, User hash: {user_id_hash}, Error: {str(e)}"
+                )
+                # Explicitly return success to prevent account enumeration
             
             return {
                 "success": True,
@@ -592,17 +636,18 @@ class AuthService:
             raise
         except Exception as e:
             logger.error(f"Password reset initiation error: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to initiate password reset"
-            )
+            # Return success even on unexpected errors to prevent account enumeration
+            return {
+                "success": True,
+                "message": "If an account with this email exists, a password reset link has been sent."
+            }
     
     async def confirm_password_reset(self, token: str, new_password: str) -> Dict:
         """
         Confirm password reset with token
         
         Args:
-            token: Reset token from email
+            token: Reset token from email (access_token from hash)
             new_password: New password
             
         Returns:
@@ -612,31 +657,76 @@ class AuthService:
             HTTPException: If token is invalid or reset fails
         """
         try:
-            # Verify and update password using Supabase
-            auth_response = self.auth_client.auth.verify_otp({
-                "token_hash": token,
-                "type": "recovery"
-            })
-            
-            if not auth_response.user:
+            # First, set the session using the access token from the reset email
+            # This authenticates the user for password update
+            try:
+                session_response = self.auth_client.auth.set_session(token, token)
+                if not session_response.user:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid or expired reset token"
+                    )
+            except Exception as session_error:
+                logger.error(f"Session error: {str(session_error)}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid or expired reset token"
                 )
             
-            user_id = auth_response.user.id
+            user_id = session_response.user.id
+            user_email = session_response.user.email
             
-            # Update password in Supabase
-            self.auth_client.auth.update_user({
-                "password": new_password
-            })
+            # Now update the password using the authenticated session
+            try:
+                update_response = self.auth_client.auth.update_user({
+                    "password": new_password
+                })
+                
+                if not update_response.user:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to update password"
+                    )
+            except Exception as update_error:
+                logger.error(f"Password update error: {str(update_error)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update password"
+                )
             
-            # Generate new tokens
-            access_token = create_access_token(user_id)
-            refresh_token = create_refresh_token(user_id)
+            # Fetch user profile
+            profile_response = self.db.table("profiles").select(
+                "*"
+            ).eq("id", user_id).single().execute()
             
-            # Get user profile
-            user_profile = await self.get_user_profile(user_id)
+            if not profile_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User profile not found"
+                )
+            
+            profile = profile_response.data
+            
+            # Generate new JWT tokens for auto-login
+            token_data = {
+                "sub": user_id,
+                "email": user_email,
+                "user_role": profile.get("user_role", "customer")
+            }
+            
+            access_token = create_access_token(token_data)
+            refresh_token = create_refresh_token(token_data)
+            
+            # Sanitize user data
+            user_data = {
+                "id": user_id,
+                "email": user_email,
+                "full_name": html.escape(profile.get("full_name") or ""),
+                "user_role": profile.get("user_role", "customer"),
+                "role": profile.get("user_role", "customer"),
+                "phone": html.escape(profile.get("phone") or ""),
+                "is_active": profile.get("is_active", True)
+            }
             
             logger.info(f"Password reset confirmed for user: {user_id}")
             
@@ -645,7 +735,7 @@ class AuthService:
                 "message": "Password reset successfully",
                 "access_token": access_token,
                 "refresh_token": refresh_token,
-                "user": user_profile
+                "user": user_data
             }
             
         except HTTPException:

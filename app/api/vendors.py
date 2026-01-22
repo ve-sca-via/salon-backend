@@ -64,7 +64,9 @@ async def complete_registration(
         token=request.token,
         full_name=request.full_name,
         password=request.password,
-        confirm_password=request.confirm_password
+        confirm_password=request.confirm_password,
+        age=request.age,
+        gender=request.gender
     )
 # =====================================================
 # PAYMENT PROCESSING (DEMO)
