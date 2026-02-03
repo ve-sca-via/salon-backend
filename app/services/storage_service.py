@@ -144,16 +144,18 @@ class StorageService:
         file: UploadFile, 
         bucket: str,
         folder: str,
-        custom_filename: Optional[str] = None
+        custom_filename: Optional[str] = None,
+        max_retries: int = 2
     ) -> str:
         """
-        Upload file to Supabase Storage
+        Upload file to Supabase Storage with retry logic for token expiration
         
         Args:
             file: UploadFile object
             bucket: Storage bucket name
             folder: Folder path within bucket
             custom_filename: Optional custom filename (generates UUID if not provided)
+            max_retries: Maximum number of retry attempts for token expiration errors
         
         Returns:
             File path in storage (bucket/folder/filename)
@@ -161,43 +163,72 @@ class StorageService:
         Raises:
             HTTPException on upload failure
         """
-        try:
-            # Generate unique filename if not provided
-            ext = file.filename.split('.')[-1] if '.' in file.filename else 'bin'
-            filename = custom_filename or f"{uuid.uuid4()}.{ext}"
-            storage_path = f"{folder}/{filename}"
-            
-            # Read file content
-            content = await file.read()
-            
-            # Upload to Supabase Storage
-            result = self.client.storage.from_(bucket).upload(
-                path=storage_path,
-                file=content,
-                file_options={"content-type": file.content_type or "application/octet-stream"}
-            )
-            
-            if hasattr(result, 'error') and result.error:
-                logger.error(f"Storage upload error: {result.error}")
+        # Generate unique filename if not provided
+        ext = file.filename.split('.')[-1] if '.' in file.filename else 'bin'
+        filename = custom_filename or f"{uuid.uuid4()}.{ext}"
+        storage_path = f"{folder}/{filename}"
+        
+        # Read file content once
+        content = await file.read()
+        
+        # Retry logic for token expiration
+        for attempt in range(max_retries + 1):
+            try:
+                # Get fresh client on retry attempts
+                if attempt > 0:
+                    logger.warning(f"Retrying upload (attempt {attempt + 1}/{max_retries + 1}) for {storage_path}")
+                    self.client = get_db()  # Get fresh client with new token
+                
+                # Upload to Supabase Storage
+                result = self.client.storage.from_(bucket).upload(
+                    path=storage_path,
+                    file=content,
+                    file_options={"content-type": file.content_type or "application/octet-stream"}
+                )
+                
+                if hasattr(result, 'error') and result.error:
+                    error_dict = result.error if isinstance(result.error, dict) else {}
+                    error_msg = error_dict.get('message', str(result.error))
+                    
+                    # Check for token expiration error
+                    if 'exp' in error_msg or 'Unauthorized' in error_msg:
+                        if attempt < max_retries:
+                            logger.warning(f"Token expired during upload, retrying... ({error_msg})")
+                            continue  # Retry with fresh client
+                    
+                    logger.error(f"Storage upload error: {result.error}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to upload file"
+                    )
+                
+                # Reset file pointer for potential reuse
+                await file.seek(0)
+                
+                logger.info(f"File uploaded successfully: {storage_path}")
+                return storage_path
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                error_str = str(e)
+                
+                # Check for token expiration in exception message
+                if ('exp' in error_str or 'Unauthorized' in error_str) and attempt < max_retries:
+                    logger.warning(f"Token expiration error, retrying... ({error_str})")
+                    continue
+                
+                logger.error(f"Error uploading file: {error_str}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to upload file"
+                    detail=f"File upload failed: {error_str}"
                 )
-            
-            # Reset file pointer for potential reuse
-            await file.seek(0)
-            
-            logger.info(f"File uploaded: {storage_path}")
-            return storage_path
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error uploading file: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"File upload failed: {str(e)}"
-            )
+        
+        # If all retries failed
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="File upload failed after multiple attempts due to authentication issues"
+        )
     
     def create_signed_url(self, bucket: str, path: str, expires_in: int = 3600) -> str:
         """
