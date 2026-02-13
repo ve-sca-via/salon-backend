@@ -108,15 +108,18 @@ class AuthService:
         except Exception as e:
             import traceback
             error_message = str(e).lower()
-            logger.error(f"Authentication error: {str(e)}")
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             
             # Check if it's an authentication error from Supabase
             if "invalid login credentials" in error_message or "invalid credentials" in error_message:
+                logger.warning(f"Failed login attempt for email: {email}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid credentials"
+                    detail="Invalid email or password. Please check your credentials and try again."
                 )
+            
+            # Log unexpected errors with full traceback
+            logger.error(f"Authentication error: {str(e)}")
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

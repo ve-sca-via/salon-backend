@@ -549,7 +549,6 @@ class CustomerService:
                 )
             
             booking_fee = total_amount * (convenience_fee_percentage / 100)
-            gst_amount = booking_fee * 0.18  # 18% GST on booking fee
             
             # IDEMPOTENCY CHECK: Check if payment already used for a booking
             if checkout_data.get("razorpay_payment_id"):

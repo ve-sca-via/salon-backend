@@ -855,10 +855,11 @@ class BookingService:
         }
     
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
-        """Get salon details with vendor email (prevents N+1 query)."""
+        """Get salon details with vendor email."""
         try:
+            # Get salon details first
             response = self.db.table("salons").select(
-                "id, business_name, vendor_id, vendors(profiles(email))"
+                "id, business_name, vendor_id"
             ).eq("id", salon_id).execute()
             
             if not response.data or len(response.data) == 0:
@@ -868,10 +869,20 @@ class BookingService:
                 )
             
             salon = response.data[0]
-            # Flatten vendor email for easier access
+            
+            # Get vendor email separately if vendor_id exists
             vendor_email = None
-            if salon.get("vendors") and salon["vendors"].get("profiles"):
-                vendor_email = salon["vendors"]["profiles"].get("email")
+            if salon.get("vendor_id"):
+                try:
+                    vendor_response = self.db.table("profiles").select(
+                        "email"
+                    ).eq("id", salon["vendor_id"]).execute()
+                    
+                    if vendor_response.data and len(vendor_response.data) > 0:
+                        vendor_email = vendor_response.data[0].get("email")
+                except Exception as vendor_error:
+                    logger.warning(f"Could not fetch vendor email for salon {salon_id}: {vendor_error}")
+            
             salon["vendor_email"] = vendor_email
             
             return salon
