@@ -18,6 +18,7 @@ from app.schemas import (
     SalonUpdate
 )
 from app.services.activity_log_service import ActivityLogService
+from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class VendorService:
     def __init__(self, db_client):
         """Initialize service with database client"""
         self.db = db_client
+        self.config_service = ConfigService(db_client=db_client)
     
     # =====================================================
     # SALON OPERATIONS
@@ -44,7 +46,7 @@ class VendorService:
             vendor_id: Vendor user ID
             
         Returns:
-            Salon data
+            Salon data with registration_fee_amount from system_config
             
         Raises:
             HTTPException: If salon not found
@@ -58,7 +60,17 @@ class VendorService:
                     detail="Salon not found"
                 )
             
-            return response.data[0]
+            salon_data = response.data[0]
+            
+            # Add registration fee amount from system config
+            try:
+                registration_fee_config = await self.config_service.get_config("registration_fee_amount")
+                salon_data["registration_fee_amount"] = float(registration_fee_config.get("config_value", 1000.0))
+            except Exception as e:
+                logger.warning(f"Failed to fetch registration fee config: {e}")
+                salon_data["registration_fee_amount"] = 1000.0  # Default fallback
+            
+            return salon_data
             
         except HTTPException:
             raise
