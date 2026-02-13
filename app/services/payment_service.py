@@ -120,7 +120,7 @@ class PaymentService:
                     detail="This booking has already been paid"
                 )
             
-            # Calculate payment amount (convenience_fee already includes GST if applicable)
+            # Calculate payment amount (convenience_fee only, no GST)
             convenience_fee = float(booking_data.get("convenience_fee", 0))
             total_payment = convenience_fee
             
@@ -387,10 +387,9 @@ class PaymentService:
         Process:
         1. Fetches all cart items for user
         2. Calculates total service price from cart
-        3. Calculates booking_fee (config: booking_fee_percentage, default 10%)
-        4. Calculates GST (18% of booking_fee)
-        5. Creates Razorpay order for total payment (booking_fee + GST)
-        6. Returns order details for frontend to open Razorpay modal
+        3. Calculates booking_fee (config: convenience_fee_percentage)
+        4. Creates Razorpay order for convenience fee
+        5. Returns order details for frontend to open Razorpay modal
         
         Important: This does NOT create a booking or payment record.
         It only initiates the payment process with Razorpay.
@@ -407,7 +406,7 @@ class PaymentService:
                 - amount_paise: Payment amount in paise (for Razorpay)
                 - currency: Currency code (INR)
                 - key_id: Razorpay public key for frontend
-                - breakdown: Dict with service_price, booking_fee, gst_amount, totals
+                - breakdown: Dict with service_price, booking_fee, totals
                 
         Raises:
             HTTPException 400: Cart is empty or invalid amount
@@ -475,8 +474,7 @@ class PaymentService:
                 )
             
             booking_fee = total_service_price * (convenience_fee_percentage / 100)
-            gst_amount = booking_fee * 0.18  # 18% GST
-            total_payment = booking_fee + gst_amount
+            total_payment = booking_fee
             
             if total_payment <= 0:
                 raise HTTPException(
@@ -496,7 +494,6 @@ class PaymentService:
                     "type": "cart_checkout",
                     "service_total": total_service_price,
                     "booking_fee": booking_fee,
-                    "gst_amount": gst_amount,
                     "cart_snapshot": json.dumps(cart_snapshot),  # Store cart state
                     "cart_item_count": len(cart_snapshot)
                 }
@@ -517,7 +514,6 @@ class PaymentService:
                 "breakdown": {
                     "service_price": total_service_price,
                     "booking_fee": booking_fee,
-                    "gst_amount": gst_amount,
                     "total_to_pay_now": total_payment,
                     "pay_at_salon": total_service_price
                 }

@@ -85,7 +85,7 @@ async def create_cart_payment_order(
     Cart Payment Flow - Step 5 of checkout:
     1. Frontend calls this endpoint before opening Razorpay modal
     2. Backend calculates total from cart items
-    3. Backend calculates booking_fee (10% of service total) + GST (18% of booking_fee)
+    3. Backend calculates booking_fee (% of service total - configured by admin)
     4. Backend creates Razorpay order for total payment amount
     5. Backend returns order_id, amount, key_id
     6. Frontend uses this data to open Razorpay checkout modal

@@ -810,7 +810,7 @@ COMMENT ON COLUMN "public"."payments"."payment_type" IS 'Type of payment: conven
 
 
 
-COMMENT ON COLUMN "public"."payments"."amount" IS 'Payment amount in specified currency. For convenience_fee this includes GST.';
+COMMENT ON COLUMN "public"."payments"."amount" IS 'Payment amount in specified currency (convenience fee for online payments, service amount for at-salon payments)';
 
 
 

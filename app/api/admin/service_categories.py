@@ -8,6 +8,7 @@ from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client
 from app.schemas.admin import ServiceCategoryCreate, ServiceCategoryUpdate, StatusToggle
 from app.services.storage_service import StorageService
+from app.services.activity_log_service import ActivityLogger
 import logging
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,21 @@ async def create_service_category(
         
         response = db.table("service_categories").insert(category_data.model_dump()).execute()
         
-        return {"success": True, "data": response.data[0]}
+        created_category = response.data[0]
+        
+        # Log activity
+        try:
+            await ActivityLogger.log(
+                user_id=current_user.user_id,
+                action="service_category_created",
+                entity_type="service_category",
+                entity_id=created_category['id'],
+                details={"name": created_category['name'], "display_order": created_category.get('display_order')}
+            )
+        except Exception as e:
+            logger.error(f"Failed to log activity: {e}")
+        
+        return {"success": True, "data": created_category}
     except Exception as e:
         logger.error(f"Error creating service category: {e}")
         raise HTTPException(
@@ -119,7 +134,21 @@ async def update_service_category(
                 detail="Service category not found"
             )
         
-        return {"success": True, "data": response.data[0]}
+        updated_category = response.data[0]
+        
+        # Log activity
+        try:
+            await ActivityLogger.log(
+                user_id=current_user.user_id,
+                action="service_category_updated",
+                entity_type="service_category",
+                entity_id=category_id,
+                details={"name": updated_category['name'], "updated_fields": list(update_data.keys())}
+            )
+        except Exception as e:
+            logger.error(f"Failed to log activity: {e}")
+        
+        return {"success": True, "data": updated_category}
     except Exception as e:
         logger.error(f"Error updating service category {category_id}: {e}")
         raise HTTPException(
@@ -147,7 +176,21 @@ async def toggle_service_category_status(
                 detail="Service category not found"
             )
         
-        return {"success": True, "data": response.data[0]}
+        updated_category = response.data[0]
+        
+        # Log activity
+        try:
+            await ActivityLogger.log(
+                user_id=current_user.user_id,
+                action="service_category_status_toggled",
+                entity_type="service_category",
+                entity_id=category_id,
+                details={"name": updated_category['name'], "is_active": status_data.is_active}
+            )
+        except Exception as e:
+            logger.error(f"Failed to log activity: {e}")
+        
+        return {"success": True, "data": updated_category}
     except Exception as e:
         logger.error(f"Error toggling service category status {category_id}: {e}")
         raise HTTPException(
@@ -188,6 +231,7 @@ async def delete_service_category(
             )
         
         deleted_order = category_response.data['display_order']
+        deleted_category = category_response.data
         
         # Delete the category
         response = db.table("service_categories").delete().eq("id", category_id).execute()
@@ -197,6 +241,18 @@ async def delete_service_category(
         db.table("service_categories").update({
             "display_order": db.func("display_order - 1")
         }).gt("display_order", deleted_order).execute()
+        
+        # Log activity
+        try:
+            await ActivityLogger.log(
+                user_id=current_user.user_id,
+                action="service_category_deleted",
+                entity_type="service_category",
+                entity_id=category_id,
+                details={"name": deleted_category.get('name', 'Unknown')}
+            )
+        except Exception as e:
+            logger.error(f"Failed to log activity: {e}")
         
         return {"success": True, "message": "Service category deleted successfully"}
     except HTTPException:

@@ -119,7 +119,6 @@ class TestBookingService:
             total_amount=500.0,
             notes="Test booking",
             booking_fee=50.0,
-            gst_amount=45.0,
             payment_status="pending"
         )
 
