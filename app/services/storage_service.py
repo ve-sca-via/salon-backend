@@ -246,26 +246,56 @@ class StorageService:
             HTTPException on failure
         """
         try:
-            signed_url = self.client.storage.from_(bucket).create_signed_url(
+            logger.debug(f"Creating signed URL for bucket={bucket}, path={path}, expires_in={expires_in}")
+            
+            signed_url_response = self.client.storage.from_(bucket).create_signed_url(
                 path=path,
                 expires_in=expires_in
             )
             
-            if hasattr(signed_url, 'error') and signed_url.error:
+            logger.debug(f"Signed URL response type: {type(signed_url_response)}, value: {signed_url_response}")
+            
+            # Handle error responses
+            if hasattr(signed_url_response, 'error') and signed_url_response.error:
+                logger.error(f"Signed URL error: {signed_url_response.error}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to generate signed URL"
                 )
             
-            return signed_url.get('signedURL') or signed_url['signedURL']
+            # Extract signed URL from response
+            # The response can be a dict with 'signedURL' key or have different structures
+            if isinstance(signed_url_response, dict):
+                # Try different possible key names
+                signed_url = (
+                    signed_url_response.get('signedURL') or 
+                    signed_url_response.get('signed_url') or
+                    signed_url_response.get('url') or
+                    signed_url_response.get('data', {}).get('signedURL') or
+                    signed_url_response.get('data', {}).get('signed_url')
+                )
+                
+                if signed_url:
+                    logger.info(f"Successfully generated signed URL for {path}")
+                    return signed_url
+                else:
+                    logger.error(f"Could not find signed URL in response: {signed_url_response}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Signed URL not found in response"
+                    )
+            else:
+                # If response is not a dict, try to return it directly
+                logger.warning(f"Unexpected response type: {type(signed_url_response)}")
+                return str(signed_url_response)
             
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error creating signed URL: {str(e)}")
+            logger.error(f"Error creating signed URL for bucket={bucket}, path={path}: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate download URL"
+                detail=f"Failed to generate download URL: {str(e)}"
             )
     
     def delete_file(self, bucket: str, path: str) -> bool:

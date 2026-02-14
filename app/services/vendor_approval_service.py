@@ -191,15 +191,20 @@ class VendorApprovalService:
         except Exception:
             rm_penalty = 5  # Default fallback
         
-        # Get registration fee (with fallback)
+        # Get registration fee (no fallback - must exist in database)
         try:
             fee_response = self.db.table("system_config").select("config_value").eq(
                 "config_key", "registration_fee_amount"
             ).eq("is_active", True).maybe_single().execute()
             
-            registration_fee = float(fee_response.data.get("config_value", 5000)) if fee_response.data else 5000.0
-        except Exception:
-            registration_fee = 5000.0  # Default fallback
+            if not fee_response.data:
+                logger.error("CRITICAL: registration_fee_amount not found in system_config")
+                raise ValueError("Registration fee configuration missing")
+            
+            registration_fee = float(fee_response.data.get("config_value"))
+        except Exception as e:
+            logger.error(f"Failed to fetch registration fee config: {e}")
+            raise
         
         return {
             "rm_score": rm_score,

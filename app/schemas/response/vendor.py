@@ -78,6 +78,7 @@ class SalonResponse(BaseModel):
     average_rating: float
     total_reviews: int
     registration_fee_paid: bool
+    registration_fee_amount: Optional[float] = None  # Dynamic from system_config
     registration_payment_id: Optional[str] = None
     assigned_rm: Optional[str] = None
     accepting_bookings: bool = True
