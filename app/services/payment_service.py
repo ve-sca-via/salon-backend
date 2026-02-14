@@ -598,9 +598,9 @@ class PaymentService:
                     }).eq("id", old_order["id"]).execute()
                     logger.info(f"Cancelled pending order: {old_order['razorpay_order_id']}")
             
-            # Get registration fee from config
+            # Get registration fee from config (no fallback - must exist in database)
             registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-            registration_fee = float(registration_fee_config.get("config_value", 1000.0))
+            registration_fee = float(registration_fee_config.get("config_value"))
             
             # Create Razorpay order
             order = self.razorpay.create_order(

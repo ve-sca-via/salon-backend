@@ -65,10 +65,17 @@ class VendorService:
             # Add registration fee amount from system config
             try:
                 registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-                salon_data["registration_fee_amount"] = float(registration_fee_config.get("config_value", 1000.0))
+                logger.info(f"DEBUG: registration_fee_config = {registration_fee_config}")
+                config_value = registration_fee_config.get("config_value")
+                logger.info(f"DEBUG: config_value (raw) = {config_value}, type = {type(config_value)}")
+                salon_data["registration_fee_amount"] = float(config_value)
+                logger.info(f"DEBUG: salon_data['registration_fee_amount'] = {salon_data['registration_fee_amount']}")
             except Exception as e:
-                logger.warning(f"Failed to fetch registration fee config: {e}")
-                salon_data["registration_fee_amount"] = 1000.0  # Default fallback
+                logger.error(f"CRITICAL: Failed to fetch registration fee config from database: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to load system configuration. Please contact support."
+                )
             
             return salon_data
             
