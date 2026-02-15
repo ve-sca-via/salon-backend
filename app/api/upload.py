@@ -8,7 +8,7 @@ import logging
 from typing import List
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status
 from fastapi.responses import JSONResponse
-from supabase import Client
+from supabase import Client, create_client
 
 from app.core.auth import get_current_user
 from app.core.auth import TokenData
@@ -23,6 +23,38 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 ALLOWED_MIME_TYPES = {'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+
+# Storage client cache with expiration
+_storage_client: Client = None
+_storage_client_created_at: float = 0
+STORAGE_CLIENT_TTL = 3000  # 50 minutes (before 1-hour token expiry)
+
+
+def get_storage_client() -> Client:
+    """
+    Get storage client with automatic refresh.
+    
+    Storage operations need fresh auth tokens. The Supabase Python library
+    generates internal JWTs from service_role_key that expire after 1 hour.
+    We cache the client and refresh it before expiration.
+    """
+    global _storage_client, _storage_client_created_at
+    
+    import time
+    current_time = time.time()
+    
+    # Create new client if: not exists OR expired
+    if _storage_client is None or (current_time - _storage_client_created_at) > STORAGE_CLIENT_TTL:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage configuration missing"
+            )
+        _storage_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        _storage_client_created_at = current_time
+        logger.info("Storage client refreshed")
+    
+    return _storage_client
 
 
 def validate_image(file: UploadFile) -> None:
@@ -55,8 +87,7 @@ def validate_image(file: UploadFile) -> None:
 async def upload_salon_image(
     file: UploadFile = File(...),
     folder: str = "covers",  # covers, logos, gallery
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Upload a salon image to Supabase Storage.
@@ -70,6 +101,8 @@ async def upload_salon_image(
     Returns:
         JSON with public URL of uploaded image
     """
+    storage_client = get_storage_client()
+    
     # Validate folder name
     if folder not in ['covers', 'logos', 'gallery']:
         raise HTTPException(
@@ -95,36 +128,42 @@ async def upload_salon_image(
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     storage_path = f"{folder}/{unique_filename}"
     
-    # Upload to Supabase Storage
-    response = db.storage.from_('salon-images').upload(
-        path=storage_path,
-        file=file_content,
-        file_options={
-            "content-type": file.content_type,
-            "cache-control": "3600",
-            "upsert": "false"
+    try:
+        # Upload to Supabase Storage
+        storage_client.storage.from_('salon-images').upload(
+            path=storage_path,
+            file=file_content,
+            file_options={
+                "content-type": file.content_type,
+                "cache-control": "3600",
+                "upsert": "false"
+            }
+        )
+        
+        # Get public URL
+        public_url = storage_client.storage.from_('salon-images').get_public_url(storage_path)
+        
+        logger.info(f"Image uploaded by user {current_user.user_id}: {storage_path}")
+        
+        return {
+            "success": True,
+            "url": public_url,
+            "path": storage_path,
+            "filename": unique_filename
         }
-    )
-    
-    # Get public URL
-    public_url = db.storage.from_('salon-images').get_public_url(storage_path)
-    
-    logger.info(f"Image uploaded successfully by user {current_user.user_id}: {storage_path}")
-    
-    return {
-        "success": True,
-        "url": public_url,
-        "path": storage_path,
-        "filename": unique_filename
-    }
+    except Exception as upload_error:
+        logger.error(f"Storage upload failed: {str(upload_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload image"
+        )
 
 
 @router.post("/salon-images/multiple", response_model=MultipleImageUploadResponse, operation_id="upload_multiple_salon_images")
 async def upload_multiple_salon_images(
     files: List[UploadFile] = File(...),
     folder: str = "gallery",
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Upload multiple salon images at once.
@@ -138,6 +177,8 @@ async def upload_multiple_salon_images(
     Returns:
         JSON with list of uploaded image URLs
     """
+    storage_client = get_storage_client()
+    
     if len(files) > 10:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -166,7 +207,7 @@ async def upload_multiple_salon_images(
         storage_path = f"{folder}/{unique_filename}"
         
         # Upload
-        db.storage.from_('salon-images').upload(
+        storage_client.storage.from_('salon-images').upload(
             path=storage_path,
             file=file_content,
             file_options={
@@ -176,7 +217,7 @@ async def upload_multiple_salon_images(
             }
         )
         
-        public_url = db.storage.from_('salon-images').get_public_url(storage_path)
+        public_url = storage_client.storage.from_('salon-images').get_public_url(storage_path)
         
         uploaded_images.append({
             "url": public_url,
@@ -203,8 +244,7 @@ async def upload_multiple_salon_images(
 @router.delete("/salon-image", response_model=ImageDeleteResponse)
 async def delete_salon_image(
     path: str,
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Delete an image from Supabase Storage.
@@ -216,8 +256,10 @@ async def delete_salon_image(
     Returns:
         Success confirmation
     """
+    storage_client = get_storage_client()
+    
     # Delete from storage
-    db.storage.from_('salon-images').remove([path])
+    storage_client.storage.from_('salon-images').remove([path])
     
     logger.info(f"Image deleted by user {current_user.user_id}: {path}")
     

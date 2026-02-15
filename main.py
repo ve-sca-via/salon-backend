@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from dotenv import load_dotenv
-from rich.logging import RichHandler
 
 # Load environment variables from .env file BEFORE importing settings
 load_dotenv(encoding='utf-8')
@@ -28,9 +27,15 @@ from supabase import Client
 from app.schemas.response import ErrorResponse, ValidationErrorResponse, ErrorDetail
 from app.api import location, auth, salons, bookings, admin, rm, vendors, payments, customers, careers, upload
 
-# Configure logging with Rich for colorful output
+# Configure logging
 log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
-handlers = [RichHandler(rich_tracebacks=True, show_time=True, show_path=True)]
+
+# Use Rich logger only in development, standard logger in production
+if settings.is_development:
+    from rich.logging import RichHandler
+    handlers = [RichHandler(rich_tracebacks=True, show_time=True, show_path=True)]
+else:
+    handlers = [logging.StreamHandler(sys.stdout)]
 
 # Add file handler if LOG_FILE is specified
 if settings.LOG_FILE:
@@ -40,7 +45,7 @@ if settings.LOG_FILE:
 
 logging.basicConfig(
     level=log_level,
-    format="%(name)s - %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s" if not settings.is_development else "%(name)s - %(message)s",
     handlers=handlers
 )
 
@@ -306,13 +311,19 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions"""
     logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=ErrorResponse(
             message="An unexpected error occurred",
             error_code="INTERNAL_ERROR"
         ).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 # Include routers
