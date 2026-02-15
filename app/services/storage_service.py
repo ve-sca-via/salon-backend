@@ -8,7 +8,9 @@ from fastapi import UploadFile, HTTPException, status
 import uuid
 import mimetypes
 import magic  # python-magic-bin for Windows
+from supabase import Client, create_client
 from app.core.database import get_db
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,19 @@ class StorageService:
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     }
+    
+    @staticmethod
+    def _get_fresh_storage_client() -> Client:
+        """
+        Get fresh storage client to avoid JWT expiration issues.
+        Storage operations need fresh tokens that expire after ~1 hour.
+        """
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage configuration missing"
+            )
+        return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
     
     def __init__(self, db_client):
         """Initialize storage service"""
@@ -171,64 +186,38 @@ class StorageService:
         # Read file content once
         content = await file.read()
         
-        # Retry logic for token expiration
-        for attempt in range(max_retries + 1):
-            try:
-                # Get fresh client on retry attempts
-                if attempt > 0:
-                    logger.warning(f"Retrying upload (attempt {attempt + 1}/{max_retries + 1}) for {storage_path}")
-                    self.client = get_db()  # Get fresh client with new token
-                
-                # Upload to Supabase Storage
-                result = self.client.storage.from_(bucket).upload(
-                    path=storage_path,
-                    file=content,
-                    file_options={"content-type": file.content_type or "application/octet-stream"}
-                )
-                
-                if hasattr(result, 'error') and result.error:
-                    error_dict = result.error if isinstance(result.error, dict) else {}
-                    error_msg = error_dict.get('message', str(result.error))
-                    
-                    # Check for token expiration error
-                    if 'exp' in error_msg or 'Unauthorized' in error_msg:
-                        if attempt < max_retries:
-                            logger.warning(f"Token expired during upload, retrying... ({error_msg})")
-                            continue  # Retry with fresh client
-                    
-                    logger.error(f"Storage upload error: {result.error}")
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to upload file"
-                    )
-                
-                # Reset file pointer for potential reuse
-                await file.seek(0)
-                
-                logger.info(f"File uploaded successfully: {storage_path}")
-                return storage_path
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                error_str = str(e)
-                
-                # Check for token expiration in exception message
-                if ('exp' in error_str or 'Unauthorized' in error_str) and attempt < max_retries:
-                    logger.warning(f"Token expiration error, retrying... ({error_str})")
-                    continue
-                
-                logger.error(f"Error uploading file: {error_str}")
+        # Get fresh storage client to avoid JWT expiration
+        storage_client = self._get_fresh_storage_client()
+        
+        # Upload to Supabase Storage
+        try:
+            result = storage_client.storage.from_(bucket).upload(
+                path=storage_path,
+                file=content,
+                file_options={"content-type": file.content_type or "application/octet-stream"}
+            )
+            
+            if hasattr(result, 'error') and result.error:
+                logger.error(f"Storage upload error: {result.error}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"File upload failed: {error_str}"
+                    detail="Failed to upload file"
                 )
-        
-        # If all retries failed
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="File upload failed after multiple attempts due to authentication issues"
-        )
+            
+            # Reset file pointer for potential reuse
+            await file.seek(0)
+            
+            logger.info(f"File uploaded successfully: {storage_path}")
+            return storage_path
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error uploading file: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"File upload failed: {str(e)}"
+            )
     
     def create_signed_url(self, bucket: str, path: str, expires_in: int = 3600) -> str:
         """
@@ -246,14 +235,13 @@ class StorageService:
             HTTPException on failure
         """
         try:
-            logger.debug(f"Creating signed URL for bucket={bucket}, path={path}, expires_in={expires_in}")
+            # Get fresh storage client to avoid JWT expiration
+            storage_client = self._get_fresh_storage_client()
             
-            signed_url_response = self.client.storage.from_(bucket).create_signed_url(
+            signed_url_response = storage_client.storage.from_(bucket).create_signed_url(
                 path=path,
                 expires_in=expires_in
             )
-            
-            logger.debug(f"Signed URL response type: {type(signed_url_response)}, value: {signed_url_response}")
             
             # Handle error responses
             if hasattr(signed_url_response, 'error') and signed_url_response.error:
