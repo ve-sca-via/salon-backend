@@ -207,6 +207,36 @@ class StorageService:
             # Reset file pointer for potential reuse
             await file.seek(0)
             
+            # -----------------------------------------------------------------
+            # VERIFICATION STEP: Immediately check if file exists
+            # -----------------------------------------------------------------
+            try:
+                # List files in the folder to verify existence
+                # Note: 'folder' variable is e.g. "applications/uuid"
+                files = storage_client.storage.from_(bucket).list(folder)
+                
+                # Check if our filename is in the list
+                file_exists = any(f.get('name') == filename for f in files)
+                
+                if not file_exists:
+                    logger.error(
+                        f"CRITICAL: File '{storage_path}' reported as uploaded (200 OK) but not found in list. "
+                        f"Files found in '{folder}': {[f.get('name') for f in files]}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="File upload reported success but verification failed."
+                    )
+                else:
+                    logger.debug(f"Verification successful: File '{storage_path}' exists in storage.")
+                    
+            except Exception as verify_error:
+                # Don't let verification error block flow if it's just a listing error, 
+                # but DO block if it's the specific 'not found' error raised above.
+                if isinstance(verify_error, HTTPException):
+                    raise verify_error
+                logger.warning(f"Failed to verify file upload (non-critical): {verify_error}")
+            
             logger.info(f"File uploaded successfully: {storage_path}")
             return storage_path
             
@@ -280,6 +310,20 @@ class StorageService:
         except HTTPException:
             raise
         except Exception as e:
+            # Enhanced debugging for Object Not Found errors
+            if "not_found" in str(e).lower() or "400" in str(e):
+                logger.error(f"Failed to find object '{path}' in bucket '{bucket}'.")
+                try:
+                    # Attempt to list files in the parent folder to help debugging
+                    parent_folder = "/".join(path.split("/")[:-1])
+                    if parent_folder:
+                        logger.info(f"debug: Listing files in parent folder '{parent_folder}'...")
+                        files = self._get_fresh_storage_client().storage.from_(bucket).list(parent_folder)
+                        file_names = [f.get('name') for f in files] if files else []
+                        logger.info(f"debug: Files present in '{parent_folder}': {file_names}")
+                except Exception as debug_err:
+                    logger.warning(f"Failed to list folder contents for debug: {debug_err}")
+
             logger.error(f"Error creating signed URL for bucket={bucket}, path={path}: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
