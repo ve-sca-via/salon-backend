@@ -39,5 +39,5 @@ slowapi==0.1.9  # Rate limiting
 # Utilities
 python-dateutil==2.8.2
 pytz==2023.3
-python-magic==0.4.27  # File type detection from content (Linux compatible)
+
 rich==13.7.0  # Rich terminal output for logging
