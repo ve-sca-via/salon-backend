@@ -190,19 +190,7 @@ class CareerService:
             application_number = f"CA-{created_at.strftime('%Y%m%d')}-{application_id[:8].upper()}"
             folder = f"applications/{application_id}"
             
-            # Validate all required documents
-            for doc_name, doc_file in required_documents.items():
-                if doc_file:
-                    self.storage.validate_file(doc_file)
-            
-            # Validate optional documents
-            if optional_documents.get('educational_certificates'):
-                for cert in optional_documents['educational_certificates']:
-                    self.storage.validate_file(cert)
-            if optional_documents.get('experience_letter'):
-                self.storage.validate_file(optional_documents['experience_letter'])
-            if optional_documents.get('salary_slip'):
-                self.storage.validate_file(optional_documents['salary_slip'])
+
             
             # Upload required documents
             logger.info(f"Uploading documents for application {application_id}")
