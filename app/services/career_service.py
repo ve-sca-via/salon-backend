@@ -6,6 +6,8 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
+from urllib.parse import urlparse
+
 from fastapi import HTTPException, status, UploadFile
 from pydantic import EmailStr, validate_email, ValidationError
 from app.core.database import get_db
@@ -604,6 +606,26 @@ class CareerService:
                     detail=f"Document {document_type} not found"
                 )
             
+            # Debug: Log what we got from the database
+            logger.info(f"document_url from DB: {document_url}")
+            
+            # Extract storage path from URL if it's a full URL
+            # Handle both cases: full URL (old data) and path-only (new data)
+            if document_url.startswith('http://') or document_url.startswith('https://'):
+                parsed = urlparse(document_url)
+                # Extract path after '/object/public/bucket-name/' or '/object/bucket-name/'
+                path_parts = parsed.path.split(f"/object/public/{self.STORAGE_BUCKET}/")
+                if len(path_parts) > 1:
+                    storage_path = path_parts[-1]
+                else:
+                    # Try without 'public' (for private buckets)
+                    path_parts = parsed.path.split(f"/object/{self.STORAGE_BUCKET}/")
+                    storage_path = path_parts[-1] if len(path_parts) > 1 else document_url
+                logger.info(f"Extracted storage path from URL: {storage_path}")
+            else:
+                # Already a storage path
+                storage_path = document_url
+            
             # Log document access for audit trail (important for sensitive documents)
             logger.info(
                 f"Document download requested - Application: {application_id}, "
@@ -613,7 +635,7 @@ class CareerService:
             # Create signed URL (valid for 1 hour)
             signed_url = self.storage.create_signed_url(
                 bucket=self.STORAGE_BUCKET,
-                path=document_url,
+                path=storage_path,
                 expires_in=3600
             )
             
