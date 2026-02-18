@@ -101,6 +101,7 @@ class SalonResponse(BaseModel):
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
     cover_images: Optional[List[str]] = None
+    agreement_document_url: Optional[str] = None
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None

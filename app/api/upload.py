@@ -6,7 +6,7 @@ import os
 import uuid
 import logging
 from typing import List
-from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status, Query
 from fastapi.responses import JSONResponse
 from supabase import Client, create_client
 
@@ -22,7 +22,10 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 # Allowed file extensions and MIME types
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 ALLOWED_MIME_TYPES = {'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
+ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp'}
+ALLOWED_DOCUMENT_MIME_TYPES = {'application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10MB for documents
 
 # Storage client cache with expiration
 _storage_client: Client = None
@@ -241,6 +244,83 @@ async def upload_multiple_salon_images(
     }
 
 
+@router.post("/agreement-document", response_model=ImageUploadResponse)
+async def upload_agreement_document(
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Upload salon agreement document (PDF or image) to Supabase Storage.
+    Requires authentication. For use by Relationship Managers during salon registration.
+    
+    Args:
+        file: Document file to upload (PDF or image)
+        current_user: Authenticated user from JWT
+        
+    Returns:
+        JSON with storage path (use signed URL endpoint to view)
+    """
+    storage_client = get_storage_client()
+    
+    # Validate document file type
+    if file.content_type not in ALLOWED_DOCUMENT_MIME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed types: PDF, JPEG, PNG, WebP"
+        )
+    
+    # Check file extension
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file extension. Allowed: {', '.join(ALLOWED_DOCUMENT_EXTENSIONS)}"
+        )
+    
+    # Read file content
+    file_content = await file.read()
+    
+    # Check file size (10MB for documents)
+    if len(file_content) > MAX_DOCUMENT_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {MAX_DOCUMENT_SIZE / 1024 / 1024}MB"
+        )
+    
+    # Generate unique filename
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    storage_path = f"agreements/{unique_filename}"
+    
+    try:
+        # Upload to salon-agreement bucket
+        storage_client.storage.from_('salon-agreement').upload(
+            path=storage_path,
+            file=file_content,
+            file_options={
+                "content-type": file.content_type,
+                "cache-control": "3600",
+                "upsert": "false"
+            }
+        )
+        
+        logger.info(f"Agreement document uploaded by user {current_user.user_id}: {storage_path}")
+        
+        # Return path as both 'url' and 'path' for backward compatibility with ImageUploadResponse schema
+        # Frontend will use 'path' to generate signed URLs
+        return {
+            "success": True,
+            "url": storage_path,  # Return path here (not actual URL) for schema compatibility
+            "path": storage_path,
+            "filename": unique_filename
+        }
+    except Exception as upload_error:
+        logger.error(f"Agreement document upload failed: {str(upload_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload document: {str(upload_error)}"
+        )
+
+
 @router.delete("/salon-image", response_model=ImageDeleteResponse)
 async def delete_salon_image(
     path: str,
@@ -268,3 +348,56 @@ async def delete_salon_image(
         "message": "Image deleted successfully",
         "path": path
     }
+
+
+@router.get("/agreement-document/signed-url")
+async def get_agreement_document_signed_url(
+    path: str = Query(..., description="Storage path of the agreement document (e.g., 'agreements/abc123.pdf')"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Generate a signed URL for viewing a private agreement document.
+    Documents in salon-agreement bucket are private and require signed URLs.
+    URL expires in 1 hour for security.
+    
+    Args:
+        path: Storage path of the document
+        current_user: Authenticated user (RMs and admins can access)
+        
+    Returns:
+        JSON with signed URL valid for 1 hour
+    """
+    storage_client = get_storage_client()
+    
+    try:
+        # Generate signed URL (valid for 1 hour)
+        signed_url_response = storage_client.storage.from_('salon-agreement').create_signed_url(
+            path,
+            3600  # 1 hour expiration
+        )
+        
+        # Handle response format
+        if isinstance(signed_url_response, dict):
+            signed_url = signed_url_response.get('signedURL') or signed_url_response.get('signedUrl')
+        else:
+            signed_url = str(signed_url_response)
+        
+        if not signed_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate signed URL"
+            )
+        
+        logger.info(f"Signed URL generated for document {path} by user {current_user.user_id}")
+        
+        return {
+            "success": True,
+            "signedUrl": signed_url,
+            "expiresIn": 3600
+        }
+    except Exception as e:
+        logger.error(f"Failed to generate signed URL for {path}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate signed URL: {str(e)}"
+        )
