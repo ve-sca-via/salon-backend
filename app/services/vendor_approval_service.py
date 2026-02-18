@@ -338,6 +338,7 @@ class VendorApprovalService:
             "pan_number": getattr(request_data, "pan_number", None),
             "logo_url": logo_url,
             "cover_images": cover_images_array if cover_images_array else [],
+            "agreement_document_url": getattr(request_data, "registration_certificate", None),  # Agreement document
             "opening_time": opening_time,
             "closing_time": closing_time,
             "working_days": working_days if isinstance(working_days, list) else [],
