@@ -105,6 +105,7 @@ class SalonResponse(BaseModel):
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
+    business_hours: Optional[Dict[str, Any]] = None  # Day-wise hours {"monday": "9:00 AM - 6:00 PM", ...}
     created_at: datetime
     updated_at: datetime
 
