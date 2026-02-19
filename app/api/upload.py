@@ -255,11 +255,12 @@ async def upload_agreement_document(
     
     Args:
         file: Document file to upload (PDF or image)
-        current_user: Authenticated user from JWT
+        current_user: Authenticated user from JWT (already verified by dependency)
         
     Returns:
         JSON with storage path (use signed URL endpoint to view)
     """
+    # Use service role client which bypasses RLS (authentication already done at API level)
     storage_client = get_storage_client()
     
     # Validate document file type
@@ -314,10 +315,22 @@ async def upload_agreement_document(
             "filename": unique_filename
         }
     except Exception as upload_error:
-        logger.error(f"Agreement document upload failed: {str(upload_error)}")
+        error_str = str(upload_error)
+        logger.error(f"Agreement document upload failed: {error_str}")
+        
+        # Check if error is authentication-related (expired token, unauthorized)
+        if any(phrase in error_str.lower() for phrase in ['unauthorized', 'exp', 'token', 'jwt', 'auth']):
+            # Return 401 so frontend interceptor can refresh token and retry
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication expired. Please try again.",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Other errors return 500
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload document: {str(upload_error)}"
+            detail=f"Failed to upload document: {error_str}"
         )
 
 
@@ -362,11 +375,12 @@ async def get_agreement_document_signed_url(
     
     Args:
         path: Storage path of the document
-        current_user: Authenticated user (RMs and admins can access)
+        current_user: Authenticated user (RMs and admins can access, verified at API level)
         
     Returns:
         JSON with signed URL valid for 1 hour
     """
+    # Use service role client to generate signed URLs (authentication already done at API level)
     storage_client = get_storage_client()
     
     try:
@@ -396,8 +410,20 @@ async def get_agreement_document_signed_url(
             "expiresIn": 3600
         }
     except Exception as e:
-        logger.error(f"Failed to generate signed URL for {path}: {str(e)}")
+        error_str = str(e)
+        logger.error(f"Failed to generate signed URL for {path}: {error_str}")
+        
+        # Check if error is authentication-related (expired token, unauthorized)
+        if any(phrase in error_str.lower() for phrase in ['unauthorized', 'exp', 'token', 'jwt', 'auth']):
+            # Return 401 so frontend interceptor can refresh token and retry
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication expired. Please try again.",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Other errors return 500
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate signed URL: {str(e)}"
+            detail=f"Failed to generate signed URL: {error_str}"
         )

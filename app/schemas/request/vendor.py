@@ -122,6 +122,8 @@ class SalonUpdate(BaseModel):
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
     cover_images: Optional[List[str]] = None
+    agreement_document_url: Optional[str] = None
+    business_hours: Optional[Dict[str, Any]] = Field(None, description="Day-wise business hours {monday: '9:00 AM - 6:00 PM', ...}")
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None

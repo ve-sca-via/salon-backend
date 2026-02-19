@@ -9,6 +9,7 @@ from app.services.salon_service import SalonService, SalonSearchParams
 from app.schemas.request.vendor import SalonUpdate
 from app.schemas.admin import StatusToggle
 from app.core.database import get_db_client
+from app.services.email import email_service
 from supabase import Client
 import logging
 
@@ -123,3 +124,80 @@ async def toggle_salon_status(
         "message": f"Salon {'activated' if is_active else 'deactivated'} successfully",
         "data": updated_salon
     }
+
+
+@router.post("/{salon_id}/send-payment-reminder", operation_id="admin_send_payment_reminder")
+async def send_payment_reminder(
+    salon_id: str,
+    current_user: TokenData = Depends(require_admin),
+    salon_service: SalonService = Depends(get_salon_service),
+    db: Client = Depends(get_db_client)
+):
+    """
+    Send payment reminder email to salon owner for pending registration fee
+    
+    Only applicable to salons with registration_fee_paid = false
+    """
+    try:
+        # Get salon details
+        salon_response = db.table('salons').select('*').eq('id', salon_id).single().execute()
+        
+        if not salon_response.data:
+            raise HTTPException(status_code=404, detail="Salon not found")
+        
+        salon = salon_response.data
+        
+        # Check if payment is already completed
+        if salon.get('registration_fee_paid'):
+            raise HTTPException(
+                status_code=400, 
+                detail="Registration fee already paid for this salon"
+            )
+        
+        # Get salon email and business name
+        owner_email = salon.get('email')
+        salon_name = salon.get('business_name')
+        
+        if not owner_email:
+            raise HTTPException(status_code=400, detail="Salon does not have email")
+        if not salon_name:
+            raise HTTPException(status_code=400, detail="Salon does not have business name")
+        
+        # Get registration fee from system config
+        config_response = db.table('system_config').select('config_value').eq('config_key', 'registration_fee_amount').single().execute()
+        registration_fee = float(config_response.data.get('config_value', 999.0)) if config_response.data else 999.0
+        
+        # Send payment reminder email - vendor just needs to login and pay
+        email_sent = await email_service.send_payment_reminder_email(
+            to_email=owner_email,
+            salon_name=salon_name,
+            registration_fee=registration_fee,
+            salon_id=salon_id
+        )
+        
+        if not email_sent:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send payment reminder email"
+            )
+        
+        logger.info(f"Payment reminder sent to {owner_email} for salon {salon_id}")
+        
+        return {
+            "success": True,
+            "message": f"Payment reminder email sent to {owner_email}",
+            "data": {
+                "salon_id": salon_id,
+                "salon_name": salon_name,
+                "owner_email": owner_email
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending payment reminder: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send payment reminder: {str(e)}"
+        )

@@ -680,6 +680,67 @@ class EmailService:
             logger.error(f"Failed to send welcome vendor email: {str(e)}")
             return False
     
+    async def send_payment_reminder_email(
+        self,
+        to_email: str,
+        salon_name: str,
+        registration_fee: float,
+        salon_id: Optional[str] = None
+    ) -> bool:
+        """
+        Send payment reminder email to vendor with pending registration fee
+        Vendor already has account, just needs to login and pay from dashboard
+        
+        Args:
+            to_email: Vendor email
+            salon_name: Salon name
+            registration_fee: Amount to pay for registration
+            salon_id: Salon ID for logging
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            template = self.env.get_template('payment_reminder.html')
+            
+            # Vendor login URL (not dashboard URL, since they need to login first)
+            vendor_login_url = f"http://localhost:3000/vendor-login"
+            
+            # Log reminder
+            logger.info("=" * 100)
+            logger.info(f"PAYMENT REMINDER EMAIL")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Salon: {salon_name}")
+            logger.info(f"Amount: Rs. {registration_fee}")
+            logger.info("=" * 100)
+            
+            html_body = template.render(
+                salon_name=salon_name,
+                vendor_login_url=vendor_login_url,
+                registration_fee=registration_fee,
+                support_email=settings.EMAIL_FROM,
+                current_year=2025
+            )
+            
+            subject = f"Payment Reminder - Complete registration for {salon_name}"
+            
+            return await self._send_email(
+                to_email, 
+                subject, 
+                html_body,
+                email_type="payment_reminder",
+                related_entity_type="salon",
+                related_entity_id=salon_id,
+                email_data={
+                    "salon_name": salon_name,
+                    "registration_fee": registration_fee
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to send payment reminder email: {str(e)}")
+            return False
+    
     async def send_career_application_confirmation(
         self,
         to_email: str,

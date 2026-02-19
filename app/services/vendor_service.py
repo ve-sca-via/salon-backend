@@ -113,6 +113,14 @@ class VendorService:
             # Update salon
             update_data = update.model_dump(exclude_unset=True)
             
+            # Convert time objects to strings for JSON serialization
+            if 'opening_time' in update_data and update_data['opening_time'] is not None:
+                if hasattr(update_data['opening_time'], 'isoformat'):
+                    update_data['opening_time'] = update_data['opening_time'].isoformat()
+            if 'closing_time' in update_data and update_data['closing_time'] is not None:
+                if hasattr(update_data['closing_time'], 'isoformat'):
+                    update_data['closing_time'] = update_data['closing_time'].isoformat()
+            
             response = self.db.table("salons").update(update_data).eq("vendor_id", vendor_id).execute()
             
             logger.info(f"Vendor {vendor_id} updated salon: {list(update_data.keys())}")

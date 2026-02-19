@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # =====================================================
     # EMAIL CONFIGURATION
     # =====================================================
-    EMAIL_FROM: str = Field(default="noreply@salonplatform.com")
+    EMAIL_FROM: str = Field(default="lubist910@gmail.com")
     EMAIL_FROM_NAME: str = Field(default="Salon Management Platform")
     ADMIN_EMAIL: str = Field(default="admin@salonplatform.com")  # Admin notification email
     
