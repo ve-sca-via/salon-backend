@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, status, UploadFile
 from pydantic import EmailStr, validate_email, ValidationError
-from app.core.database import get_db
+from app.core.database import get_db, get_storage_client
 from app.services.storage_service import StorageService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
@@ -635,11 +635,13 @@ class CareerService:
                 signed_url = str(signed_url_response)
             
             if not signed_url:
+                logger.error(f"Failed to extract signed URL from response: {signed_url_response}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to generate signed URL"
                 )
             
+            logger.info(f"Signed URL generated successfully for {storage_path}")
             return signed_url
             
         except HTTPException:
