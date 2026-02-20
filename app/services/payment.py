@@ -33,11 +33,22 @@ class RazorpayService:
         key_secret = razorpay_key_secret or settings.RAZORPAY_KEY_SECRET
         
         if not key_id or not key_secret:
-            logger.warning("Razorpay credentials not configured")
+            logger.warning("Razorpay credentials not configured - both key_id and key_secret are required")
+            logger.warning(f"Razorpay key_id provided: {bool(razorpay_key_id)}, from env: {bool(settings.RAZORPAY_KEY_ID)}")
+            logger.warning(f"Razorpay key_secret provided: {bool(razorpay_key_secret)}, from env: {bool(settings.RAZORPAY_KEY_SECRET)}")
             self.client = None
         else:
-            self.client = razorpay.Client(auth=(key_id, key_secret))
-            logger.info("Razorpay client initialized successfully")
+            try:
+                # Mask credentials for logging (show first 4 and last 4 characters)
+                masked_key_id = f"{key_id[:4]}...{key_id[-4:]}" if len(key_id) > 8 else "***"
+                masked_secret = f"{key_secret[:4]}...{key_secret[-4:]}" if len(key_secret) > 8 else "***"
+                logger.info(f"Initializing Razorpay client with key_id: {masked_key_id}, secret: {masked_secret}")
+                
+                self.client = razorpay.Client(auth=(key_id, key_secret))
+                logger.info("Razorpay client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Razorpay client: {str(e)}")
+                self.client = None
     
     def create_order(
         self,

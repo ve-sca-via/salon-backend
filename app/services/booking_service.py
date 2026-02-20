@@ -350,6 +350,16 @@ class BookingService:
             HTTPException: If validation fails or creation fails
         """
         try:
+            # IDEMPOTENCY CHECK: Check if payment already used for a booking
+            if booking.razorpay_payment_id:
+                existing_booking = self.db.table("bookings").select(
+                    "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
+                ).eq("razorpay_payment_id", booking.razorpay_payment_id).execute()
+                
+                if existing_booking.data:
+                    logger.warning(f"Payment {booking.razorpay_payment_id} already used for booking. Returning existing booking (idempotent).")
+                    return existing_booking.data[0]
+            
             # Validate services array
             if not booking.services or len(booking.services) == 0:
                 from app.core.exceptions import ValidationError
@@ -473,7 +483,8 @@ class BookingService:
                 "convenience_fee": totals["convenience_fee"],
                 "total_amount": totals["total_amount"],
                 "notes": booking.notes,
-                "created_by": current_user_id
+                "created_by": current_user_id,
+                "razorpay_payment_id": booking.razorpay_payment_id  # Store for idempotency checks
             }
 
             # Create booking within transaction
@@ -571,17 +582,10 @@ class BookingService:
                 logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
                 
                 # 2. Send notification to vendor
-                # Get vendor email from salon
-                vendor_response = self.db.table("vendors")\
-                    .select("profiles(email)")\
-                    .eq("user_id", salon_data.get("vendor_id"))\
-                    .single()\
-                    .execute()
-                
-                if vendor_response.data and vendor_response.data.get("profiles"):
-                    vendor_email = vendor_response.data["profiles"].get("email")
-                    if vendor_email:
-                        await email_service.send_new_booking_notification_to_vendor(
+                # Use vendor email from salon_data (already fetched with salon)
+                vendor_email = salon_data.get("vendor_email")
+                if vendor_email:
+                    await email_service.send_new_booking_notification_to_vendor(
                             vendor_email=vendor_email,
                             salon_name=salon_data["business_name"],
                             customer_name=customer_data["full_name"],
@@ -596,11 +600,9 @@ class BookingService:
                             total_amount=totals["total_amount"],
                             booking_id=created_booking.get("id", "")
                         )
-                        logger.info(f"Booking notification email sent to vendor {vendor_email}")
-                    else:
-                        logger.warning(f"No vendor email found for salon {salon_data['id']}")
+                    logger.info(f"Booking notification email sent to vendor {vendor_email}")
                 else:
-                    logger.warning(f"No vendor found for salon {salon_data['id']}")
+                    logger.warning(f"Vendor email not found for salon {booking.salon_id}")
                     
             except Exception as email_error:
                 # Don't fail booking if email fails
@@ -853,11 +855,12 @@ class BookingService:
         }
     
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
-        """Get salon details."""
+        """Get salon details with vendor email."""
         try:
-            response = self.db.table("salons").select("id, business_name").eq(
-                "id", salon_id
-            ).execute()
+            # Get salon details first
+            response = self.db.table("salons").select(
+                "id, business_name, vendor_id"
+            ).eq("id", salon_id).execute()
             
             if not response.data or len(response.data) == 0:
                 raise HTTPException(
@@ -865,7 +868,24 @@ class BookingService:
                     detail="Salon not found"
                 )
             
-            return response.data[0]
+            salon = response.data[0]
+            
+            # Get vendor email separately if vendor_id exists
+            vendor_email = None
+            if salon.get("vendor_id"):
+                try:
+                    vendor_response = self.db.table("profiles").select(
+                        "email"
+                    ).eq("id", salon["vendor_id"]).execute()
+                    
+                    if vendor_response.data and len(vendor_response.data) > 0:
+                        vendor_email = vendor_response.data[0].get("email")
+                except Exception as vendor_error:
+                    logger.warning(f"Could not fetch vendor email for salon {salon_id}: {vendor_error}")
+            
+            salon["vendor_email"] = vendor_email
+            
+            return salon
             
         except HTTPException:
             raise

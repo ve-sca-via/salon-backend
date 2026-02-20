@@ -29,7 +29,13 @@ from app.api import location, auth, salons, bookings, admin, rm, vendors, paymen
 
 # Configure logging
 log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
-handlers = [logging.StreamHandler(sys.stdout)]
+
+# Use Rich logger only in development, standard logger in production
+if settings.is_development:
+    from rich.logging import RichHandler
+    handlers = [RichHandler(rich_tracebacks=True, show_time=True, show_path=True)]
+else:
+    handlers = [logging.StreamHandler(sys.stdout)]
 
 # Add file handler if LOG_FILE is specified
 if settings.LOG_FILE:
@@ -39,9 +45,14 @@ if settings.LOG_FILE:
 
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s" if not settings.is_development else "%(name)s - %(message)s",
     handlers=handlers
 )
+
+# Configure uvicorn loggers for better visibility
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -94,14 +105,15 @@ logger.info("="*60)
 # BACKGROUND TASKS & LIFESPAN
 # =====================================================
 
-async def cleanup_expired_tokens_task():
-    """Background task to cleanup expired tokens periodically"""
+async def cleanup_expired_tokens_task(shutdown_event: "asyncio.Event"):
+    """Background task to cleanup expired tokens periodically with graceful shutdown"""
     from app.core.auth import cleanup_expired_tokens
     from app.core.database import get_db
     import asyncio
     
     db = get_db()
-    while True:
+    
+    while not shutdown_event.is_set():
         try:
             logger.info("Running scheduled token cleanup...")
             cleaned_count = cleanup_expired_tokens(db)
@@ -112,8 +124,16 @@ async def cleanup_expired_tokens_task():
         except Exception as e:
             logger.error(f"Token cleanup task error: {str(e)}")
         
-        # Run every 6 hours
-        await asyncio.sleep(6 * 60 * 60)
+        # Run every 6 hours, but allow graceful shutdown
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=6 * 60 * 60)
+            # If we reach here, shutdown was signaled
+            break
+        except asyncio.TimeoutError:
+            # Timeout means continue the loop (6 hours passed)
+            pass
+    
+    logger.info("Cleanup task shutdown gracefully")
 
 
 @asynccontextmanager
@@ -121,22 +141,33 @@ async def lifespan(app: FastAPI):
     """Application lifespan event handler for startup and shutdown tasks"""
     import asyncio
     
+    # Create shutdown event for graceful task termination
+    shutdown_event = asyncio.Event()
+    
     # Startup: Start background tasks
     logger.info("Starting background tasks")
-    cleanup_task = asyncio.create_task(cleanup_expired_tokens_task())
+    cleanup_task = asyncio.create_task(cleanup_expired_tokens_task(shutdown_event))
     logger.info("Background tasks started")
     
     yield
     
-    # Shutdown: Cancel background tasks gracefully
+    # Shutdown: Signal tasks to stop gracefully
     logger.info("Shutting down background tasks...")
-    cleanup_task.cancel()
+    shutdown_event.set()  # Signal the task to stop
+    
     try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        logger.info("Cleanup task cancelled")
+        # Wait for task to finish gracefully (with timeout)
+        await asyncio.wait_for(cleanup_task, timeout=10.0)
+        logger.info("All background tasks stopped gracefully")
+    except asyncio.TimeoutError:
+        logger.warning("Cleanup task didn't stop in time, forcing cancellation")
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            logger.info("Cleanup task force-cancelled")
     except Exception as e:
-        logger.error(f"Error while cancelling cleanup task: {e}")
+        logger.error(f"Error during task shutdown: {e}")
 
 # Create FastAPI app
 if settings.is_production:
@@ -188,7 +219,7 @@ if settings.ENVIRONMENT.lower() == "production":
     app.add_middleware(HTTPSRedirectMiddleware)
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=settings.ALLOWED_HOSTS
+        allowed_hosts=settings.allowed_hosts_list
     )
 else:
     logger.info("Development mode: HTTPS enforcement disabled")
@@ -280,13 +311,19 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions"""
     logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=ErrorResponse(
             message="An unexpected error occurred",
             error_code="INTERNAL_ERROR"
         ).dict()
     )
+    # Add CORS headers to error responses
+    origin = request.headers.get("origin")
+    if origin and origin in settings.allowed_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 # Include routers

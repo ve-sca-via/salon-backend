@@ -27,7 +27,7 @@ python-multipart==0.0.6
 
 # Payment Gateway
 razorpay==1.4.1
-setuptools==65.5.1
+setuptools==70.0.0  # Updated for Python 3.13 compatibility
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
@@ -39,4 +39,5 @@ slowapi==0.1.9  # Rate limiting
 # Utilities
 python-dateutil==2.8.2
 pytz==2023.3
-python-magic-bin==0.4.14  # File type detection from content (Windows compatible)
+
+rich==13.7.0  # Rich terminal output for logging

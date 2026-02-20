@@ -174,7 +174,38 @@ class EmailService:
     def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
         """
         Synchronous email sending (called from thread pool)
+        
+        ⚠️ TODO: BLOCKING I/O IN ASYNC CONTEXT - Fix when traffic grows
+        
+        CURRENT ISSUE:
+        - Using smtplib (synchronous) with asyncio.to_thread() causes blocking I/O
+        - Each email blocks a thread pool worker for 1-5 seconds
+        - Default thread pool = 32 threads max
+        - 100 concurrent emails = 68 emails queued and waiting
+        
+        WHY IT'S OK FOR NOW:
+        - Low traffic (<10 emails/minute) works fine with current approach
+        - Thread pool sufficient for current load
+        
+        WHEN TO FIX:
+        - Traffic exceeds 50+ emails/minute
+        - Noticeable email delivery delays
+        - Thread pool exhaustion warnings in logs
+        
+        HOW TO FIX:
+        1. Migrate to aiosmtplib for true async email:
+           async def _send_email_async(self, msg, to_email):
+               async with aiosmtplib.SMTP(hostname=settings.SMTP_HOST, port=settings.SMTP_PORT) as smtp:
+                   await smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                   await smtp.send_message(msg)
+        
+        2. Or implement Celery/Redis task queue for production scalability
+        
+        RESOURCES:
+        - aiosmtplib docs: https://aiosmtplib.readthedocs.io/
+        - Current blocking location: Lines 186-192 (SMTP connection & send)
         """
+        server = None
         try:
             # Send email
             if settings.SMTP_SSL:
@@ -189,7 +220,6 @@ class EmailService:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             
             server.send_message(msg)
-            server.quit()
             
             logger.info(f"Email sent successfully to {to_email}: {subject}")
             return True
@@ -197,6 +227,14 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
+            
+        finally:
+            # Always close connection to prevent memory leaks
+            if server:
+                try:
+                    server.quit()
+                except Exception as e:
+                    logger.warning(f"Error closing SMTP connection: {str(e)}")
     
     async def send_vendor_approval_email(
         self,
@@ -640,6 +678,67 @@ class EmailService:
             
         except Exception as e:
             logger.error(f"Failed to send welcome vendor email: {str(e)}")
+            return False
+    
+    async def send_payment_reminder_email(
+        self,
+        to_email: str,
+        salon_name: str,
+        registration_fee: float,
+        salon_id: Optional[str] = None
+    ) -> bool:
+        """
+        Send payment reminder email to vendor with pending registration fee
+        Vendor already has account, just needs to login and pay from dashboard
+        
+        Args:
+            to_email: Vendor email
+            salon_name: Salon name
+            registration_fee: Amount to pay for registration
+            salon_id: Salon ID for logging
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            template = self.env.get_template('payment_reminder.html')
+            
+            # Vendor login URL (not dashboard URL, since they need to login first)
+            vendor_login_url = f"http://localhost:3000/vendor-login"
+            
+            # Log reminder
+            logger.info("=" * 100)
+            logger.info(f"PAYMENT REMINDER EMAIL")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Salon: {salon_name}")
+            logger.info(f"Amount: Rs. {registration_fee}")
+            logger.info("=" * 100)
+            
+            html_body = template.render(
+                salon_name=salon_name,
+                vendor_login_url=vendor_login_url,
+                registration_fee=registration_fee,
+                support_email=settings.EMAIL_FROM,
+                current_year=2025
+            )
+            
+            subject = f"Payment Reminder - Complete registration for {salon_name}"
+            
+            return await self._send_email(
+                to_email, 
+                subject, 
+                html_body,
+                email_type="payment_reminder",
+                related_entity_type="salon",
+                related_entity_id=salon_id,
+                email_data={
+                    "salon_name": salon_name,
+                    "registration_fee": registration_fee
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to send payment reminder email: {str(e)}")
             return False
     
     async def send_career_application_confirmation(

@@ -23,6 +23,8 @@ class CreateUserRequest:
     user_role: str
     password: str
     phone: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
     
     def validate(self) -> None:
         """Validate user creation request"""
@@ -196,7 +198,9 @@ class UserService:
             "full_name": request.full_name,
             "phone": request.phone if request.phone else None,  # Use None instead of empty string
             "user_role": request.user_role,
-            "is_active": True
+            "is_active": True,
+            "age": request.age,
+            "gender": request.gender
         }
         
         # Use direct HTTP request with service_role key to bypass RLS

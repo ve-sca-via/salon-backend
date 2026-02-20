@@ -626,10 +626,13 @@ class RMService:
                     detail="Vendor request not found or access denied"
                 )
             
-            if existing.data[0].get("status") != "draft":
+            current_status = existing.data[0].get("status")
+            
+            # Allow updates for draft and rejected submissions
+            if current_status not in ["draft", "rejected"]:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Only draft requests can be updated"
+                    detail="Only draft or rejected requests can be updated"
                 )
             
             # Prepare update data (mode='json' converts time objects to strings)
@@ -638,6 +641,11 @@ class RMService:
             # Change status if submitting for approval
             if submit_for_approval:
                 update_data["status"] = "pending"
+                # Clear review fields to give fresh start for resubmission
+                if current_status == "rejected":
+                    update_data["admin_notes"] = None
+                    update_data["reviewed_at"] = None
+                    update_data["reviewed_by"] = None
             
             # Update request
             response = self.db.table("vendor_join_requests").update(

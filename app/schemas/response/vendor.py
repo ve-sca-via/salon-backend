@@ -78,6 +78,7 @@ class SalonResponse(BaseModel):
     average_rating: float
     total_reviews: int
     registration_fee_paid: bool
+    registration_fee_amount: Optional[float] = None  # Dynamic from system_config
     registration_payment_id: Optional[str] = None
     assigned_rm: Optional[str] = None
     accepting_bookings: bool = True
@@ -100,9 +101,11 @@ class SalonResponse(BaseModel):
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
     cover_images: Optional[List[str]] = None
+    agreement_document_url: Optional[str] = None
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
+    business_hours: Optional[Dict[str, Any]] = None  # Day-wise hours {"monday": "9:00 AM - 6:00 PM", ...}
     created_at: datetime
     updated_at: datetime
 

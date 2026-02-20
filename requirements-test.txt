@@ -3,3 +3,8 @@ pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0  # For coverage reports
 pytest-mock>=3.11.0  # Additional mocking utilities
+
+# Performance testing
+memory-profiler>=0.61.0  # Memory usage profiling
+psutil>=5.9.0  # System monitoring
+locust>=2.15.0  # Load testing

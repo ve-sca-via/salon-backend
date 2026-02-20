@@ -46,3 +46,5 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: ALLOWED_HOSTS
+        sync: false

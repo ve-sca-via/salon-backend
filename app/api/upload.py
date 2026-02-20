@@ -6,9 +6,9 @@ import os
 import uuid
 import logging
 from typing import List
-from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status, Query
 from fastapi.responses import JSONResponse
-from supabase import Client
+from supabase import Client, create_client
 
 from app.core.auth import get_current_user
 from app.core.auth import TokenData
@@ -22,7 +22,42 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 # Allowed file extensions and MIME types
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
 ALLOWED_MIME_TYPES = {'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
+ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp'}
+ALLOWED_DOCUMENT_MIME_TYPES = {'application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10MB for documents
+
+# Storage client cache with expiration
+_storage_client: Client = None
+_storage_client_created_at: float = 0
+STORAGE_CLIENT_TTL = 3000  # 50 minutes (before 1-hour token expiry)
+
+
+def get_storage_client() -> Client:
+    """
+    Get storage client with automatic refresh.
+    
+    Storage operations need fresh auth tokens. The Supabase Python library
+    generates internal JWTs from service_role_key that expire after 1 hour.
+    We cache the client and refresh it before expiration.
+    """
+    global _storage_client, _storage_client_created_at
+    
+    import time
+    current_time = time.time()
+    
+    # Create new client if: not exists OR expired
+    if _storage_client is None or (current_time - _storage_client_created_at) > STORAGE_CLIENT_TTL:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage configuration missing"
+            )
+        _storage_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        _storage_client_created_at = current_time
+        logger.info("Storage client refreshed")
+    
+    return _storage_client
 
 
 def validate_image(file: UploadFile) -> None:
@@ -55,8 +90,7 @@ def validate_image(file: UploadFile) -> None:
 async def upload_salon_image(
     file: UploadFile = File(...),
     folder: str = "covers",  # covers, logos, gallery
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Upload a salon image to Supabase Storage.
@@ -70,6 +104,8 @@ async def upload_salon_image(
     Returns:
         JSON with public URL of uploaded image
     """
+    storage_client = get_storage_client()
+    
     # Validate folder name
     if folder not in ['covers', 'logos', 'gallery']:
         raise HTTPException(
@@ -95,36 +131,42 @@ async def upload_salon_image(
     unique_filename = f"{uuid.uuid4()}{file_ext}"
     storage_path = f"{folder}/{unique_filename}"
     
-    # Upload to Supabase Storage
-    response = db.storage.from_('salon-images').upload(
-        path=storage_path,
-        file=file_content,
-        file_options={
-            "content-type": file.content_type,
-            "cache-control": "3600",
-            "upsert": "false"
+    try:
+        # Upload to Supabase Storage
+        storage_client.storage.from_('salon-images').upload(
+            path=storage_path,
+            file=file_content,
+            file_options={
+                "content-type": file.content_type,
+                "cache-control": "3600",
+                "upsert": "false"
+            }
+        )
+        
+        # Get public URL
+        public_url = storage_client.storage.from_('salon-images').get_public_url(storage_path)
+        
+        logger.info(f"Image uploaded by user {current_user.user_id}: {storage_path}")
+        
+        return {
+            "success": True,
+            "url": public_url,
+            "path": storage_path,
+            "filename": unique_filename
         }
-    )
-    
-    # Get public URL
-    public_url = db.storage.from_('salon-images').get_public_url(storage_path)
-    
-    logger.info(f"Image uploaded successfully by user {current_user.user_id}: {storage_path}")
-    
-    return {
-        "success": True,
-        "url": public_url,
-        "path": storage_path,
-        "filename": unique_filename
-    }
+    except Exception as upload_error:
+        logger.error(f"Storage upload failed: {str(upload_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload image"
+        )
 
 
 @router.post("/salon-images/multiple", response_model=MultipleImageUploadResponse, operation_id="upload_multiple_salon_images")
 async def upload_multiple_salon_images(
     files: List[UploadFile] = File(...),
     folder: str = "gallery",
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Upload multiple salon images at once.
@@ -138,6 +180,8 @@ async def upload_multiple_salon_images(
     Returns:
         JSON with list of uploaded image URLs
     """
+    storage_client = get_storage_client()
+    
     if len(files) > 10:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -166,7 +210,7 @@ async def upload_multiple_salon_images(
         storage_path = f"{folder}/{unique_filename}"
         
         # Upload
-        db.storage.from_('salon-images').upload(
+        storage_client.storage.from_('salon-images').upload(
             path=storage_path,
             file=file_content,
             file_options={
@@ -176,7 +220,7 @@ async def upload_multiple_salon_images(
             }
         )
         
-        public_url = db.storage.from_('salon-images').get_public_url(storage_path)
+        public_url = storage_client.storage.from_('salon-images').get_public_url(storage_path)
         
         uploaded_images.append({
             "url": public_url,
@@ -200,11 +244,100 @@ async def upload_multiple_salon_images(
     }
 
 
+@router.post("/agreement-document", response_model=ImageUploadResponse)
+async def upload_agreement_document(
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Upload salon agreement document (PDF or image) to Supabase Storage.
+    Requires authentication. For use by Relationship Managers during salon registration.
+    
+    Args:
+        file: Document file to upload (PDF or image)
+        current_user: Authenticated user from JWT (already verified by dependency)
+        
+    Returns:
+        JSON with storage path (use signed URL endpoint to view)
+    """
+    # Use service role client which bypasses RLS (authentication already done at API level)
+    storage_client = get_storage_client()
+    
+    # Validate document file type
+    if file.content_type not in ALLOWED_DOCUMENT_MIME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed types: PDF, JPEG, PNG, WebP"
+        )
+    
+    # Check file extension
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file extension. Allowed: {', '.join(ALLOWED_DOCUMENT_EXTENSIONS)}"
+        )
+    
+    # Read file content
+    file_content = await file.read()
+    
+    # Check file size (10MB for documents)
+    if len(file_content) > MAX_DOCUMENT_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {MAX_DOCUMENT_SIZE / 1024 / 1024}MB"
+        )
+    
+    # Generate unique filename
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    storage_path = f"agreements/{unique_filename}"
+    
+    try:
+        # Upload to salon-agreement bucket
+        storage_client.storage.from_('salon-agreement').upload(
+            path=storage_path,
+            file=file_content,
+            file_options={
+                "content-type": file.content_type,
+                "cache-control": "3600",
+                "upsert": "false"
+            }
+        )
+        
+        logger.info(f"Agreement document uploaded by user {current_user.user_id}: {storage_path}")
+        
+        # Return path as both 'url' and 'path' for backward compatibility with ImageUploadResponse schema
+        # Frontend will use 'path' to generate signed URLs
+        return {
+            "success": True,
+            "url": storage_path,  # Return path here (not actual URL) for schema compatibility
+            "path": storage_path,
+            "filename": unique_filename
+        }
+    except Exception as upload_error:
+        error_str = str(upload_error)
+        logger.error(f"Agreement document upload failed: {error_str}")
+        
+        # Check if error is authentication-related (expired token, unauthorized)
+        if any(phrase in error_str.lower() for phrase in ['unauthorized', 'exp', 'token', 'jwt', 'auth']):
+            # Return 401 so frontend interceptor can refresh token and retry
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication expired. Please try again.",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Other errors return 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload document: {error_str}"
+        )
+
+
 @router.delete("/salon-image", response_model=ImageDeleteResponse)
 async def delete_salon_image(
     path: str,
-    current_user: TokenData = Depends(get_current_user),
-    db: Client = Depends(get_db_client)
+    current_user: TokenData = Depends(get_current_user)
 ):
     """
     Delete an image from Supabase Storage.
@@ -216,8 +349,10 @@ async def delete_salon_image(
     Returns:
         Success confirmation
     """
+    storage_client = get_storage_client()
+    
     # Delete from storage
-    db.storage.from_('salon-images').remove([path])
+    storage_client.storage.from_('salon-images').remove([path])
     
     logger.info(f"Image deleted by user {current_user.user_id}: {path}")
     
@@ -226,3 +361,69 @@ async def delete_salon_image(
         "message": "Image deleted successfully",
         "path": path
     }
+
+
+@router.get("/agreement-document/signed-url")
+async def get_agreement_document_signed_url(
+    path: str = Query(..., description="Storage path of the agreement document (e.g., 'agreements/abc123.pdf')"),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Generate a signed URL for viewing a private agreement document.
+    Documents in salon-agreement bucket are private and require signed URLs.
+    URL expires in 1 hour for security.
+    
+    Args:
+        path: Storage path of the document
+        current_user: Authenticated user (RMs and admins can access, verified at API level)
+        
+    Returns:
+        JSON with signed URL valid for 1 hour
+    """
+    # Use service role client to generate signed URLs (authentication already done at API level)
+    storage_client = get_storage_client()
+    
+    try:
+        # Generate signed URL (valid for 1 hour)
+        signed_url_response = storage_client.storage.from_('salon-agreement').create_signed_url(
+            path,
+            3600  # 1 hour expiration
+        )
+        
+        # Handle response format
+        if isinstance(signed_url_response, dict):
+            signed_url = signed_url_response.get('signedURL') or signed_url_response.get('signedUrl')
+        else:
+            signed_url = str(signed_url_response)
+        
+        if not signed_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate signed URL"
+            )
+        
+        logger.info(f"Signed URL generated for document {path} by user {current_user.user_id}")
+        
+        return {
+            "success": True,
+            "signedUrl": signed_url,
+            "expiresIn": 3600
+        }
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Failed to generate signed URL for {path}: {error_str}")
+        
+        # Check if error is authentication-related (expired token, unauthorized)
+        if any(phrase in error_str.lower() for phrase in ['unauthorized', 'exp', 'token', 'jwt', 'auth']):
+            # Return 401 so frontend interceptor can refresh token and retry
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication expired. Please try again.",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Other errors return 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate signed URL: {error_str}"
+        )

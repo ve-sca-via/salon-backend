@@ -8,6 +8,14 @@ Handles all payment-related database operations and business logic:
 - Payment history tracking
 
 Follows service layer pattern - no direct DB calls in API layer
+
+PERFORMANCE OPTIMIZATION:
+- Razorpay credentials are cached with 6-hour TTL
+- Prevents redundant database queries on every request
+- First request: fetches from DB and caches
+- Subsequent requests: use cached credentials (instant)
+- Cache auto-expires after 6 hours
+- Manual cache clear available via admin endpoint
 """
 
 from typing import Dict, Any, Optional, List
@@ -20,6 +28,7 @@ from app.services.payment import RazorpayService
 from app.services.config_service import ConfigService
 from app.services.email import email_service
 from app.core.config import settings
+from app.core.cache import get_cached_razorpay_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -34,28 +43,31 @@ class PaymentService:
         self._razorpay_initialized = False
     
     async def _initialize_razorpay(self):
-        """Initialize Razorpay client with credentials from database"""
+        """
+        Initialize Razorpay client with credentials from database.
+        
+        Uses 6-hour TTL cache to avoid repeated database queries.
+        First request fetches from DB, subsequent requests use cache.
+        """
         if self._razorpay_initialized:
             return
         
         try:
-            # Get Razorpay credentials from database
-            key_id_config = await self.config_service.get_config("razorpay_key_id")
-            key_secret_config = await self.config_service.get_config("razorpay_key_secret")
+            # Get Razorpay credentials from cache (fetches from DB only if expired)
+            razorpay_key_id, razorpay_key_secret = await get_cached_razorpay_credentials(
+                self.config_service
+            )
             
-            razorpay_key_id = key_id_config.get("config_value")
-            razorpay_key_secret = key_secret_config.get("config_value")
-            
-            # Initialize Razorpay service with database credentials
+            # Initialize Razorpay service with cached credentials
             self.razorpay = RazorpayService(
                 razorpay_key_id=razorpay_key_id,
                 razorpay_key_secret=razorpay_key_secret
             )
             self._razorpay_initialized = True
-            logger.info("Razorpay initialized from database configuration")
+            logger.info("Razorpay initialized with cached credentials")
             
         except Exception as e:
-            logger.error(f"Failed to initialize Razorpay from database: {e}")
+            logger.error(f"Failed to initialize Razorpay from cached credentials: {e}")
             # Fallback to environment variables
             self.razorpay = RazorpayService()
             self._razorpay_initialized = True
@@ -108,7 +120,7 @@ class PaymentService:
                     detail="This booking has already been paid"
                 )
             
-            # Calculate payment amount (convenience_fee already includes GST if applicable)
+            # Calculate payment amount (convenience_fee only, no GST)
             convenience_fee = float(booking_data.get("convenience_fee", 0))
             total_payment = convenience_fee
             
@@ -245,7 +257,12 @@ class PaymentService:
         user_id: str
     ) -> Dict[str, Any]:
         """
-        Verify Razorpay payment signature and complete booking payment
+        Verify Razorpay payment signature and complete booking payment.
+        
+        Implements idempotency and race condition protection through:
+        1. Atomic UPDATE with status check (prevents double-processing)
+        2. Database UNIQUE constraint on razorpay_order_id
+        3. Idempotency check for already-completed payments
         
         Args:
             razorpay_order_id: Order ID from Razorpay
@@ -270,71 +287,83 @@ class PaymentService:
                     detail="Invalid payment signature"
                 )
             
-            # Use transaction to prevent race conditions
-            async with self.db.transaction():
-                # Lock the payment record to prevent concurrent updates
-                payment_record = self.db.table("booking_payments").select(
-                    "*, bookings(id, customer_id, booking_date, booking_time, total_amount, salon_id, salons(business_name))"
-                ).eq("razorpay_order_id", razorpay_order_id).with_for_update().single().execute()
-                
-                if not payment_record.data:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Payment record not found"
-                    )
-                
-                payment_data = payment_record.data
-                booking_data = payment_data["bookings"]
-                
-                # Check if payment is already processed
-                if payment_data.get("status") == "completed":
-                    logger.warning(f"Payment already processed: {razorpay_order_id}")
-                    return {
-                        "success": True,
-                        "message": "Payment already verified.",
-                        "payment_id": payment_data.get("razorpay_payment_id"),
-                        "booking_id": booking_data["id"],
-                        "salon_name": booking_data["salons"]["business_name"],
-                        "booking_date": booking_data["booking_date"],
-                        "time_slots": booking_data.get("time_slots", []),
-                        "amount_paid": payment_data["amount"]
-                    }
-                
-                # Verify user owns this booking
-                if booking_data["customer_id"] != user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Not authorized to verify this payment"
-                    )
-                
-                # Update payment record atomically
-                self.db.table("booking_payments").update({
-                    "razorpay_payment_id": razorpay_payment_id,
-                    "razorpay_signature": razorpay_signature,
-                    "status": "completed",
-                    "paid_at": "now()"
-                }).eq("razorpay_order_id", razorpay_order_id).execute()
-                
-                # Update booking status atomically
-                self.db.table("bookings").update({
-                    "convenience_fee_paid": True,
-                    "status": "confirmed",
-                    "confirmed_at": "now()"
-                }).eq("id", booking_data["id"]).execute()
+            # IDEMPOTENCY CHECK: Fetch payment record first
+            payment_record = self.db.table("booking_payments").select(
+                "*, bookings(id, customer_id, booking_date, booking_time, total_amount, salon_id, salons(business_name))"
+            ).eq("razorpay_order_id", razorpay_order_id).single().execute()
             
-            logger.info(f"Payment verified: {razorpay_payment_id} for booking {booking_data['id']}")
+            if not payment_record.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Payment record not found"
+                )
+            
+            payment_data = payment_record.data
+            booking_data = payment_data["bookings"]
+            
+            # Check if payment is already processed (idempotent behavior)
+            if payment_data.get("status") == "completed":
+                logger.warning(f"Payment already processed (idempotent return): {razorpay_order_id}")
+                return {
+                    "success": True,
+                    "message": "Payment already verified.",
+                    "payment_id": payment_data.get("razorpay_payment_id"),
+                    "booking_id": booking_data["id"],
+                    "salon_name": booking_data["salons"]["business_name"],
+                    "booking_date": booking_data["booking_date"],
+                    "time_slots": booking_data.get("time_slots", []),
+                    "amount_paid": payment_data["amount"]
+                }
+            
+            # Verify user owns this booking
+            if booking_data["customer_id"] != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to verify this payment"
+                )
+            
+            # ========================================================================
+            # ATOMIC TRANSACTION: Use database function to prevent data inconsistency
+            # ========================================================================
+            # Previously: Two separate UPDATE calls (payment, then booking)
+            # Problem: If server crashes between updates, payment is marked complete
+            #          but booking remains pending (data inconsistency)
+            # Solution: Database function wraps both updates in single transaction
+            #          Both succeed together or both fail together (atomicity guaranteed)
+            # ========================================================================
+            
+            result = self.db.rpc('verify_payment_and_confirm_booking', {
+                'p_razorpay_order_id': razorpay_order_id,
+                'p_razorpay_payment_id': razorpay_payment_id,
+                'p_razorpay_signature': razorpay_signature
+            }).execute()
+            
+            if not result.data or len(result.data) == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment verification failed - no data returned"
+                )
+            
+            verification_result = result.data[0]
+            
+            # Check if already verified (idempotent behavior)
+            if verification_result.get('was_already_verified'):
+                logger.warning(f"Payment already processed (idempotent return): {razorpay_order_id}")
+            else:
+                logger.info(f"Payment verified successfully: {razorpay_payment_id} for booking {verification_result['booking_id']}")
             
             # TODO: Send booking confirmation email with payment receipt
             
             return {
                 "success": True,
-                "message": "Payment successful! Your booking is confirmed.",
-                "payment_id": razorpay_payment_id,
-                "booking_id": booking_data["id"],
-                "salon_name": booking_data["salons"]["business_name"],
-                "booking_date": booking_data["booking_date"],
-                "time_slots": booking_data.get("time_slots", []),
-                "amount_paid": payment_data["amount"]
+                "message": "Payment already verified." if verification_result.get('was_already_verified') 
+                          else "Payment successful! Your booking is confirmed.",
+                "payment_id": verification_result['payment_id'],
+                "booking_id": str(verification_result['booking_id']),
+                "salon_name": verification_result['salon_name'],
+                "booking_date": verification_result['booking_date'],
+                "time_slots": verification_result.get('time_slots', []),
+                "amount_paid": float(verification_result['amount_paid'])
             }
         
         except HTTPException:
@@ -358,10 +387,9 @@ class PaymentService:
         Process:
         1. Fetches all cart items for user
         2. Calculates total service price from cart
-        3. Calculates booking_fee (config: booking_fee_percentage, default 10%)
-        4. Calculates GST (18% of booking_fee)
-        5. Creates Razorpay order for total payment (booking_fee + GST)
-        6. Returns order details for frontend to open Razorpay modal
+        3. Calculates booking_fee (config: convenience_fee_percentage)
+        4. Creates Razorpay order for convenience fee
+        5. Returns order details for frontend to open Razorpay modal
         
         Important: This does NOT create a booking or payment record.
         It only initiates the payment process with Razorpay.
@@ -378,7 +406,7 @@ class PaymentService:
                 - amount_paise: Payment amount in paise (for Razorpay)
                 - currency: Currency code (INR)
                 - key_id: Razorpay public key for frontend
-                - breakdown: Dict with service_price, booking_fee, gst_amount, totals
+                - breakdown: Dict with service_price, booking_fee, totals
                 
         Raises:
             HTTPException 400: Cart is empty or invalid amount
@@ -403,9 +431,10 @@ class PaymentService:
                     detail="Cart is empty"
                 )
             
-            # Calculate totals
+            # Calculate totals and create cart snapshot
             total_service_price = 0.0
             salon_id = None
+            cart_snapshot = []  # Store cart state for validation
             
             for item in cart_response.data:
                 service = item.get("services", {})
@@ -415,6 +444,13 @@ class PaymentService:
                 unit_price = float(service.get("price", 0))
                 quantity = item.get("quantity", 1)
                 total_service_price += unit_price * quantity
+                
+                # Add to cart snapshot for idempotency validation
+                cart_snapshot.append({
+                    "service_id": item.get("service_id"),
+                    "quantity": quantity,
+                    "unit_price": unit_price
+                })
             
             # Get convenience fee percentage from config (dynamically set by admin)
             convenience_fee_percentage = None
@@ -438,8 +474,7 @@ class PaymentService:
                 )
             
             booking_fee = total_service_price * (convenience_fee_percentage / 100)
-            gst_amount = booking_fee * 0.18  # 18% GST
-            total_payment = booking_fee + gst_amount
+            total_payment = booking_fee
             
             if total_payment <= 0:
                 raise HTTPException(
@@ -447,7 +482,8 @@ class PaymentService:
                     detail="Invalid payment amount"
                 )
             
-            # Create Razorpay order
+            # Create Razorpay order with cart snapshot for validation
+            import json
             order = self.razorpay.create_order(
                 amount=total_payment,
                 currency="INR",
@@ -458,7 +494,8 @@ class PaymentService:
                     "type": "cart_checkout",
                     "service_total": total_service_price,
                     "booking_fee": booking_fee,
-                    "gst_amount": gst_amount
+                    "cart_snapshot": json.dumps(cart_snapshot),  # Store cart state
+                    "cart_item_count": len(cart_snapshot)
                 }
             )
             
@@ -477,7 +514,6 @@ class PaymentService:
                 "breakdown": {
                     "service_price": total_service_price,
                     "booking_fee": booking_fee,
-                    "gst_amount": gst_amount,
                     "total_to_pay_now": total_payment,
                     "pay_at_salon": total_service_price
                 }
@@ -535,9 +571,36 @@ class PaymentService:
                     detail="Vendor request must be approved before payment"
                 )
             
-            # Get registration fee from config
+            # Check if payment already completed for this vendor request
+            existing_payment = self.db.table("vendor_registration_payments").select(
+                "id, razorpay_order_id, status"
+            ).eq("vendor_request_id", vendor_request_id).eq("status", "success").execute()
+            
+            if existing_payment.data and len(existing_payment.data) > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Registration fee already paid for this request"
+                )
+            
+            # Cancel any existing pending orders for this vendor request (prevent duplicates)
+            pending_orders = self.db.table("vendor_registration_payments").select(
+                "id, razorpay_order_id"
+            ).eq("vendor_request_id", vendor_request_id).eq("vendor_id", user_id).eq("status", "pending").execute()
+            
+            if pending_orders.data and len(pending_orders.data) > 0:
+                # Mark old pending orders as failed
+                for old_order in pending_orders.data:
+                    self.db.table("vendor_registration_payments").update({
+                        "status": "failed",
+                        "payment_failed_at": "now()",
+                        "failure_reason": "Replaced by new payment attempt",
+                        "updated_at": "now()"
+                    }).eq("id", old_order["id"]).execute()
+                    logger.info(f"Cancelled pending order: {old_order['razorpay_order_id']}")
+            
+            # Get registration fee from config (no fallback - must exist in database)
             registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-            registration_fee = float(registration_fee_config.get("config_value", 1000.0))
+            registration_fee = float(registration_fee_config.get("config_value"))
             
             # Create Razorpay order
             order = self.razorpay.create_order(
@@ -554,12 +617,10 @@ class PaymentService:
             # Store payment record
             payment_data = {
                 "vendor_id": user_id,
-                "salon_id": None,  # Salon will be created after payment
-                "registration_type": "vendor_onboarding",
+                "vendor_request_id": vendor_request_id,  # Direct column, not metadata
                 "amount": registration_fee,
                 "razorpay_order_id": order["order_id"],
                 "status": "pending",
-                "metadata": {"vendor_request_id": vendor_request_id},
                 "created_at": "now()"
             }
             
@@ -596,7 +657,11 @@ class PaymentService:
         user_id: str
     ) -> Dict[str, Any]:
         """
-        Verify vendor registration payment and activate salon
+        Verify vendor registration payment and activate salon.
+        
+        Implements idempotency and race condition protection through:
+        1. Atomic UPDATE with status check (prevents double-processing)
+        2. Idempotency check for already-completed payments
         
         Args:
             razorpay_order_id: Order ID from Razorpay
@@ -607,6 +672,9 @@ class PaymentService:
         Returns:
             Success message with salon activation details
         """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+        
         try:
             # Verify signature
             is_valid = self.razorpay.verify_payment_signature(
@@ -621,71 +689,55 @@ class PaymentService:
                     detail="Invalid payment signature"
                 )
             
-            # Use transaction to prevent race conditions
-            async with self.db.transaction():
-                # Lock the payment record to prevent concurrent updates
-                payment_record = self.db.table("vendor_registration_payments").select(
-                    "*, vendor_id, salon_id, metadata"
-                ).eq("razorpay_order_id", razorpay_order_id).with_for_update().single().execute()
+            # IDEMPOTENCY CHECK: Fetch payment record first
+            payment_record = self.db.table("vendor_registration_payments").select(
+                "*, vendor_id, salon_id, vendor_request_id"
+            ).eq("razorpay_order_id", razorpay_order_id).single().execute()
+            
+            if not payment_record.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Payment record not found"
+                )
+            
+            payment_data = payment_record.data
+            
+            # Check if payment is already processed (idempotent behavior)
+            if payment_data.get("status") == "success":
+                logger.warning(f"Vendor registration payment already processed (idempotent return): {razorpay_order_id}")
+                return {
+                    "success": True,
+                    "message": "Payment already verified.",
+                    "payment_id": payment_data.get("razorpay_payment_id"),
+                    "salon_id": payment_data.get("salon_id")
+                }
+            
+            vendor_request_id = payment_data.get("vendor_request_id")  # Direct column access
+            
+            # ATOMIC UPDATE with status check to prevent race conditions
+            # Only update if status is still 'pending' (optimistic locking pattern)
+            payment_update = self.db.table("vendor_registration_payments").update({
+                "razorpay_payment_id": razorpay_payment_id,
+                "razorpay_signature": razorpay_signature,
+                "status": "success",
+                "payment_completed_at": "now()",
+                "updated_at": "now()"
+            }).eq("razorpay_order_id", razorpay_order_id).eq("status", "pending").execute()
+            
+            # Check if update succeeded (no rows affected = payment already processed by concurrent request)
+            if not payment_update.data or len(payment_update.data) == 0:
+                logger.warning(f"Vendor registration payment already processed by concurrent request: {razorpay_order_id}")
+                # Re-fetch the completed payment data
+                completed_payment = self.db.table("vendor_registration_payments").select(
+                    "*, salon_id"
+                ).eq("razorpay_order_id", razorpay_order_id).single().execute()
                 
-                if not payment_record.data:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Payment record not found"
-                    )
-                
-                payment_data = payment_record.data
-                
-                # Check if payment is already processed
-                if payment_data.get("status") == "completed":
-                    logger.warning(f"Vendor registration payment already processed: {razorpay_order_id}")
-                    return {
-                        "success": True,
-                        "message": "Payment already verified.",
-                        "payment_id": payment_data.get("razorpay_payment_id"),
-                        "salon_id": payment_data.get("salon_id")
-                    }
-                
-                vendor_request_id = payment_data.get("metadata", {}).get("vendor_request_id")
-                
-                # Update payment record atomically
-                self.db.table("vendor_registration_payments").update({
-                    "razorpay_payment_id": razorpay_payment_id,
-                    "razorpay_signature": razorpay_signature,
-                    "status": "completed",
-                    "paid_at": "now()"
-                }).eq("razorpay_order_id", razorpay_order_id).execute()
-                
-                # Get vendor join request to find salon
-                salon_data = None
-                if vendor_request_id:
-                    vendor_request = self.db.table("vendor_join_requests").select(
-                        "id, owner_name, owner_email"
-                    ).eq("id", vendor_request_id).single().execute()
-                    
-                    if vendor_request.data:
-                        # Find salon created from this request
-                        salon_response = self.db.table("salons").select(
-                            "id, business_name, vendor_id"
-                        ).eq("join_request_id", vendor_request_id).single().execute()
-                        
-                        if salon_response.data:
-                            salon_data = salon_response.data
-                            salon_id = salon_data["id"]
-                            
-                            # Activate salon and update registration payment atomically
-                            self.db.table("salons").update({
-                                "is_active": True,
-                                "registration_fee_paid": True,
-                                "registration_paid_at": "now()"
-                            }).eq("id", salon_id).execute()
-                            
-                            # Link payment to salon
-                            self.db.table("vendor_registration_payments").update({
-                                "salon_id": salon_id
-                            }).eq("razorpay_order_id", razorpay_order_id).execute()
-                            
-                            logger.info(f"Vendor registration payment verified: {razorpay_payment_id}, salon activated: {salon_id}")
+                return {
+                    "success": True,
+                    "message": "Payment already verified.",
+                    "payment_id": completed_payment.data.get("razorpay_payment_id"),
+                    "salon_id": completed_payment.data.get("salon_id")
+                }
             
             # Get vendor join request to find salon
             salon_data = None
@@ -708,7 +760,7 @@ class PaymentService:
                         self.db.table("salons").update({
                             "is_active": True,
                             "registration_fee_paid": True,
-                            "registration_paid_at": "now()"
+                            "updated_at": "now()"
                         }).eq("id", salon_id).execute()
                         
                         # Link payment to salon

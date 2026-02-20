@@ -18,6 +18,7 @@ from app.schemas import (
     SalonUpdate
 )
 from app.services.activity_log_service import ActivityLogService
+from app.services.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class VendorService:
     def __init__(self, db_client):
         """Initialize service with database client"""
         self.db = db_client
+        self.config_service = ConfigService(db_client=db_client)
     
     # =====================================================
     # SALON OPERATIONS
@@ -44,7 +46,7 @@ class VendorService:
             vendor_id: Vendor user ID
             
         Returns:
-            Salon data
+            Salon data with registration_fee_amount from system_config
             
         Raises:
             HTTPException: If salon not found
@@ -58,7 +60,24 @@ class VendorService:
                     detail="Salon not found"
                 )
             
-            return response.data[0]
+            salon_data = response.data[0]
+            
+            # Add registration fee amount from system config
+            try:
+                registration_fee_config = await self.config_service.get_config("registration_fee_amount")
+                logger.info(f"DEBUG: registration_fee_config = {registration_fee_config}")
+                config_value = registration_fee_config.get("config_value")
+                logger.info(f"DEBUG: config_value (raw) = {config_value}, type = {type(config_value)}")
+                salon_data["registration_fee_amount"] = float(config_value)
+                logger.info(f"DEBUG: salon_data['registration_fee_amount'] = {salon_data['registration_fee_amount']}")
+            except Exception as e:
+                logger.error(f"CRITICAL: Failed to fetch registration fee config from database: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to load system configuration. Please contact support."
+                )
+            
+            return salon_data
             
         except HTTPException:
             raise
@@ -93,6 +112,14 @@ class VendorService:
             
             # Update salon
             update_data = update.model_dump(exclude_unset=True)
+            
+            # Convert time objects to strings for JSON serialization
+            if 'opening_time' in update_data and update_data['opening_time'] is not None:
+                if hasattr(update_data['opening_time'], 'isoformat'):
+                    update_data['opening_time'] = update_data['opening_time'].isoformat()
+            if 'closing_time' in update_data and update_data['closing_time'] is not None:
+                if hasattr(update_data['closing_time'], 'isoformat'):
+                    update_data['closing_time'] = update_data['closing_time'].isoformat()
             
             response = self.db.table("salons").update(update_data).eq("vendor_id", vendor_id).execute()
             
@@ -667,7 +694,9 @@ class VendorService:
         self,
         user_id: str,
         email: str,
-        full_name: str
+        full_name: str,
+        age: int,
+        gender: str
     ) -> Dict[str, Any]:
         """
         Create vendor profile in profiles table.
@@ -676,14 +705,25 @@ class VendorService:
             user_id: User ID from Supabase auth
             email: Vendor email
             full_name: Vendor full name
+            age: Vendor age (18-120)
+            gender: Vendor gender (male, female, other)
             
         Returns:
             Created profile data
         """
+        # Validate gender
+        if gender.lower() not in ['male', 'female', 'other']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid gender. Must be 'male', 'female', or 'other'."
+            )
+        
         profile_data = {
             "id": user_id,
             "email": email,
             "full_name": full_name,
+            "age": age,
+            "gender": gender.lower(),
             "user_role": "vendor",
             "is_active": True
         }
@@ -771,7 +811,9 @@ class VendorService:
         token: str,
         full_name: str,
         password: str,
-        confirm_password: str
+        confirm_password: str,
+        age: int,
+        gender: str
     ) -> Dict[str, Any]:
         """
         Complete vendor registration after admin approval.
@@ -781,6 +823,8 @@ class VendorService:
             full_name: Vendor's full name
             password: Password for the account
             confirm_password: Password confirmation
+            age: Vendor's age (18-120)
+            gender: Vendor's gender (male, female, other)
             
         Returns:
             Registration completion data with tokens
@@ -867,7 +911,9 @@ class VendorService:
             await self.create_vendor_profile(
                 user_id=user_id,
                 email=vendor_email,
-                full_name=vendor_full_name
+                full_name=vendor_full_name,
+                age=age,
+                gender=gender
             )
             logger.info("Vendor profile created successfully")
         except Exception as profile_error:
