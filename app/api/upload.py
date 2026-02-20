@@ -13,7 +13,7 @@ from supabase import Client, create_client
 from app.core.auth import get_current_user
 from app.core.auth import TokenData
 from app.core.config import settings
-from app.core.database import get_db_client
+from app.core.database import get_db_client, get_storage_client
 from app.schemas import ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
 
 logger = logging.getLogger(__name__)
@@ -26,38 +26,6 @@ ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.jpg', '.jpeg', '.png', '.webp'}
 ALLOWED_DOCUMENT_MIME_TYPES = {'application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10MB for documents
-
-# Storage client cache with expiration
-_storage_client: Client = None
-_storage_client_created_at: float = 0
-STORAGE_CLIENT_TTL = 3000  # 50 minutes (before 1-hour token expiry)
-
-
-def get_storage_client() -> Client:
-    """
-    Get storage client with automatic refresh.
-    
-    Storage operations need fresh auth tokens. The Supabase Python library
-    generates internal JWTs from service_role_key that expire after 1 hour.
-    We cache the client and refresh it before expiration.
-    """
-    global _storage_client, _storage_client_created_at
-    
-    import time
-    current_time = time.time()
-    
-    # Create new client if: not exists OR expired
-    if _storage_client is None or (current_time - _storage_client_created_at) > STORAGE_CLIENT_TTL:
-        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Storage configuration missing"
-            )
-        _storage_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
-        _storage_client_created_at = current_time
-        logger.info("Storage client refreshed")
-    
-    return _storage_client
 
 
 def validate_image(file: UploadFile) -> None:

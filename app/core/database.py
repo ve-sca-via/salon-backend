@@ -304,3 +304,46 @@ def get_db_client() -> Client:
     - AFTER:  0ms overhead
     """
     return get_db()
+
+
+# =====================================================
+# STORAGE CLIENT (with token refresh)
+# =====================================================
+_storage_client: Client = None
+_storage_client_created_at: float = 0
+STORAGE_CLIENT_TTL = 3000  # 50 minutes (before 1-hour token expiry)
+
+
+def get_storage_client() -> Client:
+    """
+    Get storage client with automatic refresh.
+    
+    Storage operations need fresh auth tokens. The Supabase Python library
+    generates internal JWTs from service_role_key that expire after 1 hour.
+    We cache the client and refresh it before expiration.
+    
+    This centralized client ensures all storage operations (uploads, downloads,
+    signed URLs) use the same properly-refreshed client.
+    
+    Returns:
+        Supabase Client with SERVICE_ROLE key (refreshed as needed)
+    """
+    global _storage_client, _storage_client_created_at
+    
+    import time
+    from fastapi import HTTPException, status
+    
+    current_time = time.time()
+    
+    # Create new client if: not exists OR expired
+    if _storage_client is None or (current_time - _storage_client_created_at) > STORAGE_CLIENT_TTL:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Storage configuration missing"
+            )
+        _storage_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        _storage_client_created_at = current_time
+        logger.info("Storage client refreshed")
+    
+    return _storage_client
