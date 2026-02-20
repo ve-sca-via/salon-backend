@@ -14,6 +14,7 @@ from app.core.database import get_db, get_storage_client
 from app.services.storage_service import StorageService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
+from app.api.upload import get_storage_client
 
 logger = logging.getLogger(__name__)
 
