@@ -1,6 +1,9 @@
 """
 Storage Service - File Upload & Management
 Handles Supabase Storage operations for file uploads
+
+NOTE: For signed URL generation, prefer using get_storage_client() directly
+from app.core.database for better token refresh handling.
 """
 import logging
 from typing import Optional
@@ -9,7 +12,7 @@ import uuid
 import mimetypes
 
 from supabase import Client, create_client
-from app.core.database import get_db
+from app.core.database import get_db, get_storage_client
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
