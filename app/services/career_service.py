@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.services.storage_service import StorageService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
+from app.api.upload import get_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -620,12 +621,24 @@ class CareerService:
                 f"Document: {document_type}, Admin: {admin_user_id or 'unknown'}"
             )
             
-            # Create signed URL (valid for 1 hour)
-            signed_url = self.storage.create_signed_url(
-                bucket=self.STORAGE_BUCKET,
-                path=storage_path,
-                expires_in=3600
+            # Create signed URL (valid for 1 hour) using refreshable storage client
+            storage_client = get_storage_client()
+            signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
+                storage_path,
+                3600  # 1 hour expiration
             )
+            
+            # Handle response format (same as agreement API)
+            if isinstance(signed_url_response, dict):
+                signed_url = signed_url_response.get('signedURL') or signed_url_response.get('signedUrl')
+            else:
+                signed_url = str(signed_url_response)
+            
+            if not signed_url:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to generate signed URL"
+                )
             
             return signed_url
             
