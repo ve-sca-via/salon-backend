@@ -4,6 +4,7 @@ Handles all customer-facing operations: cart, bookings, salons, favorites, revie
 Separated from HTTP layer for better testability and reusability
 """
 import logging
+import html
 from typing import Dict, Any, Optional, List
 from app.schemas.request.customer import CartItemCreate, ReviewCreate, ReviewUpdate
 from datetime import datetime
@@ -1015,7 +1016,7 @@ class CustomerService:
             logger.error(f"Failed to get favorites for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve favorites: {str(e)}"
+                detail="Failed to retrieve favorites"
             )
     
     async def add_favorite(
@@ -1103,7 +1104,7 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            response = db.table("favorites")\
+            response = self.db.table("favorites")\
                 .delete()\
                 .eq("user_id", customer_id)\
                 .eq("salon_id", salon_id)\
@@ -1141,9 +1142,9 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = db.table("reviews")\
-                .select("*, salons(name)")\
-                .eq("user_id", customer_id)\
+            response = self.db.table("reviews")\
+                .select("*, salons(business_name)")\
+                .eq("customer_id", customer_id)\
                 .order("created_at", desc=True)\
                 .execute()
             
@@ -1151,7 +1152,7 @@ class CustomerService:
             reviews = []
             if response.data:
                 for review in response.data:
-                    review["salon_name"] = review.get("salons", {}).get("name", "Unknown Salon")
+                    review["salon_name"] = review.get("salons", {}).get("business_name", "Unknown Salon")
                     reviews.append(review)
             
             logger.info(f"Retrieved {len(reviews)} reviews for customer {customer_id}")
@@ -1166,7 +1167,7 @@ class CustomerService:
             logger.error(f"Failed to get reviews for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve reviews: {str(e)}"
+                detail="Failed to retrieve reviews"
             )
     
     async def create_review(
@@ -1189,20 +1190,21 @@ class CustomerService:
         """
         try:
             review = {
-                "user_id": customer_id,
+                "customer_id": customer_id,
                 "salon_id": review_data.salon_id,
                 "booking_id": getattr(review_data, 'booking_id', None),
                 "rating": review_data.rating,
-                "comment": review_data.comment,
+                # Sanitise comment to prevent stored XSS
+                "comment": html.escape(review_data.comment.strip()) if review_data.comment else None,
                 "status": "pending",  # Reviews need approval
                 "created_at": datetime.utcnow().isoformat()
             }
             
-            response = db.table("reviews")\
+            response = self.db.table("reviews")\
                 .insert(review)\
                 .execute()
             
-            logger.info(f"Created review for salon {review_data['salon_id']} by customer {customer_id}")
+            logger.info(f"Created review for salon {review_data.salon_id} by customer {customer_id}")
             
             if response.data:
                 return {
@@ -1222,7 +1224,7 @@ class CustomerService:
             logger.error(f"Failed to create review for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create review: {str(e)}"
+                detail="Failed to create review"
             )
     
     async def update_review(
@@ -1247,10 +1249,10 @@ class CustomerService:
         """
         try:
             # Verify review belongs to user
-            review_response = db.table("reviews")\
+            review_response = self.db.table("reviews")\
                 .select("*")\
                 .eq("id", review_id)\
-                .eq("user_id", customer_id)\
+                .eq("customer_id", customer_id)\
                 .single()\
                 .execute()
             
@@ -1267,13 +1269,17 @@ class CustomerService:
                 update_data["rating"] = review_data.rating
             
             if getattr(review_data, 'comment', None) is not None:
-                update_data["comment"] = review_data.comment
+                # Sanitise comment to prevent stored XSS
+                update_data["comment"] = html.escape(review_data.comment.strip())
                 update_data["status"] = "pending"  # Re-approval needed after edit
             
-            # Update review
-            response = db.table("reviews")\
+            # Update review — filter by BOTH review_id AND customer_id to enforce ownership
+            # at the DB level (prevents TOCTOU race condition between the ownership check above
+            # and this UPDATE)
+            response = self.db.table("reviews")\
                 .update(update_data)\
                 .eq("id", review_id)\
+                .eq("customer_id", customer_id)\
                 .execute()
             
             logger.info(f"Updated review {review_id} for customer {customer_id}")
@@ -1296,7 +1302,7 @@ class CustomerService:
             logger.error(f"Failed to update review {review_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update review: {str(e)}"
+                detail="Failed to update review"
             )
     
     # =====================================================

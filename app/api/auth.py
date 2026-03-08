@@ -13,7 +13,9 @@ from app.schemas import (
     PasswordResetRequest,
     PasswordResetResponse,
     PasswordResetConfirm,
-    PasswordResetConfirmResponse
+    PasswordResetConfirmResponse,
+    ProfileUpdateRequest,
+    ChangePasswordRequest,
 )
 from app.services.auth_service import AuthService
 from app.core.database import get_db_client, get_auth_client
@@ -213,3 +215,47 @@ async def resend_verification_email(
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.resend_verification_email(current_user.user_id, current_user.email)
+
+
+@router.put("/me")
+@limiter.limit("20/minute")          # Prevent mass profile scraping/spamming
+async def update_profile(
+    request: Request,                  # Required for rate limiter
+    update_data: ProfileUpdateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Update the current user's profile details.
+    Allows updating full_name, phone, age, and gender.
+    Only provided fields are updated (PATCH semantics).
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.update_user_profile(
+        user_id=current_user.user_id,
+        update_data=update_data.dict(exclude_none=True)
+    )
+
+
+@router.post("/change-password")
+@limiter.limit(RateLimits.AUTH_PASSWORD_RESET)  # 3/hour — prevent brute-force via this endpoint
+async def change_password(
+    request: Request,                  # Required for rate limiter
+    password_data: ChangePasswordRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Change the current user's password.
+    Requires the current password for verification before updating.
+    Rate limited to 3/hour to prevent brute-force.
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.change_user_password(
+        user_id=current_user.user_id,
+        email=current_user.email,
+        current_password=password_data.current_password,
+        new_password=password_data.new_password
+    )

@@ -787,3 +787,142 @@ class AuthService:
                 "success": True,
                 "message": "If your email is registered and unverified, you will receive a verification email shortly."
             }
+
+    async def update_user_profile(self, user_id: str, update_data: Dict) -> Dict:
+        """
+        Update customer profile details (full_name, phone, age, gender)
+
+        Args:
+            user_id: User's unique identifier
+            update_data: Dict of fields to update (only non-None values)
+
+        Returns:
+            Dict containing updated user profile
+
+        Raises:
+            HTTPException: If update fails or profile not found
+        """
+        try:
+            # Build patch dict — only include fields that were actually sent
+            patch = {}
+            if update_data.get("full_name") is not None:
+                patch["full_name"] = html.escape(update_data["full_name"].strip())
+            if update_data.get("phone") is not None:
+                patch["phone"] = html.escape(update_data["phone"].strip())
+            if update_data.get("age") is not None:
+                patch["age"] = int(update_data["age"])
+            if update_data.get("gender") is not None:
+                patch["gender"] = update_data["gender"].lower().strip()
+
+            if not patch:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No valid fields provided for update"
+                )
+
+            response = self.db.table("profiles").update(patch).eq("id", user_id).execute()
+
+            if not response.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Profile not found"
+                )
+
+            profile = response.data[0]
+            profile["role"] = profile.get("user_role", "customer")
+
+            logger.info(f"Profile updated for user: {user_id}")
+
+            return {
+                "success": True,
+                "message": "Profile updated successfully",
+                "user": profile
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Profile update error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update profile"
+            )
+
+    async def change_user_password(
+        self, user_id: str, email: str, current_password: str, new_password: str
+    ) -> Dict:
+        """
+        Change a user's password after verifying their current password.
+
+        Args:
+            user_id: User's unique identifier
+            email: User's email (needed to re-authenticate)
+            current_password: User's current password for verification
+            new_password: The new password to set
+
+        Returns:
+            Dict with success message
+
+        Raises:
+            HTTPException: If current password is wrong or update fails
+        """
+        try:
+            # Step 1: Verify current password by attempting sign-in
+            try:
+                auth_response = self.auth_client.auth.sign_in_with_password({
+                    "email": email,
+                    "password": current_password
+                })
+                if not auth_response.user:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Current password is incorrect"
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "invalid" in error_msg or "credentials" in error_msg:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Current password is incorrect"
+                    )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Could not verify current password"
+                )
+
+            # Step 2: Update the password using the authenticated session
+            try:
+                update_response = self.auth_client.auth.update_user({
+                    "password": new_password
+                })
+                if not update_response.user:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to update password"
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Password update error: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to update password"
+                )
+
+            logger.info(f"Password changed successfully for user: {user_id}")
+
+            return {
+                "success": True,
+                "message": "Password changed successfully"
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Change password error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to change password"
+            )

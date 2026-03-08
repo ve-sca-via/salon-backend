@@ -267,4 +267,81 @@ async def create_booking(
 
 
 
+# =====================================================
+# FAVORITES
+# =====================================================
 
+class FavoriteAddRequest(BaseModel):
+    salon_id: int
+
+@router.get("/favorites")
+async def get_favorites(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Get all favourite salons for the current customer."""
+    return await customer_service.get_favorites(current_user.user_id)
+
+
+@router.post("/favorites")
+async def add_favorite(
+    favorite: FavoriteAddRequest,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Add a salon to favourites."""
+    return await customer_service.add_favorite(current_user.user_id, favorite.salon_id)
+
+
+@router.delete("/favorites/{salon_id}")
+async def remove_favorite(
+    salon_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Remove a salon from favourites."""
+    return await customer_service.remove_favorite(current_user.user_id, salon_id)
+
+
+# =====================================================
+# REVIEWS
+# =====================================================
+
+class ReviewCreateRequest(BaseModel):
+    salon_id: int
+    rating: float = Field(..., ge=1, le=5)
+    comment: Optional[str] = None
+
+class ReviewUpdateRequest(BaseModel):
+    rating: Optional[float] = Field(None, ge=1, le=5)
+    comment: Optional[str] = None
+
+
+@router.get("/reviews/my-reviews")
+async def get_my_reviews(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Get all reviews posted by the current customer."""
+    return await customer_service.get_customer_reviews(current_user.user_id)
+
+
+@router.post("/reviews")
+async def create_review(
+    review: ReviewCreateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Post a new review for a salon."""
+    return await customer_service.create_review(current_user.user_id, review)
+
+
+@router.put("/reviews/{review_id}")
+async def update_review(
+    review_id: int,
+    review: ReviewUpdateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Update an existing review (only the owner can update)."""
+    return await customer_service.update_review(review_id, current_user.user_id, review)

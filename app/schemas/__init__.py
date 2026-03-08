@@ -24,6 +24,8 @@ from .request.auth import (
     LoginRequest, SignupRequest, LogoutAllRequest, RefreshTokenRequest,
     PasswordResetRequest, PasswordResetConfirm
 )
+from .user import ProfileUpdateRequest, ChangePasswordRequest
+
 from .request.customer import (
     ReviewCreate, ReviewUpdate, CartItemCreate, CartItemUpdate, FavoriteCreate
 )
