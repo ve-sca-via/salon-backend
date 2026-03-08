@@ -39,3 +39,10 @@ class PasswordResetConfirm(BaseModel):
     """Request to confirm password reset with token"""
     token: str
     new_password: str = Field(..., min_length=8)
+
+class UserProfileUpdate(BaseModel):
+    """Request to update user profile details"""
+    full_name: Optional[str] = Field(None, min_length=2, max_length=100)
+    phone: Optional[str] = None
+    age: Optional[int] = Field(None, ge=13, le=120)
+    gender: Optional[str] = Field(None, description="male, female, or other")
