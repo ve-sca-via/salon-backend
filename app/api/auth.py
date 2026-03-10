@@ -13,7 +13,8 @@ from app.schemas import (
     PasswordResetRequest,
     PasswordResetResponse,
     PasswordResetConfirm,
-    PasswordResetConfirmResponse
+    PasswordResetConfirmResponse,
+    UserProfileUpdate
 )
 from app.services.auth_service import AuthService
 from app.core.database import get_db_client, get_auth_client
@@ -112,6 +113,34 @@ async def get_current_user_profile(
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.get_user_profile(current_user.user_id)
+
+
+@router.put("/me")
+async def update_current_user_profile(
+    profile_data: UserProfileUpdate,
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Update current authenticated user profile
+    - Requires valid JWT token
+    - Restricted to 'customer' role
+    - Returns updated user data
+    """
+    if current_user.user_role != 'customer':
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only customers can update their profile via this endpoint"
+        )
+        
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.update_user_profile(
+        user_id=current_user.user_id,
+        profile_data=profile_data.model_dump(exclude_unset=True)
+    )
+
 
 
 @router.post("/logout")
