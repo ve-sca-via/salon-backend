@@ -434,6 +434,76 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch profile"
             )
+            
+    async def update_user_profile(self, user_id: str, profile_data: dict) -> Dict:
+        """
+        Update user profile by ID
+        
+        Args:
+            user_id: User's unique identifier
+            profile_data: Dictionary of fields to update
+            
+        Returns:
+            Dict containing updated user profile data
+            
+        Raises:
+            HTTPException: If profile not found or update fails
+        """
+        try:
+            # First verify the user exists
+            existing = self.db.table("profiles").select("id").eq("id", user_id).execute()
+            
+            if not existing.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Profile not found"
+                )
+                
+            # Sanitize inputs if present
+            update_data = {}
+            if "full_name" in profile_data and profile_data["full_name"] is not None:
+                update_data["full_name"] = html.escape(profile_data["full_name"].strip())
+            if "phone" in profile_data and profile_data["phone"] is not None:
+                update_data["phone"] = html.escape(profile_data["phone"].strip())
+            if "age" in profile_data and profile_data["age"] is not None:
+                update_data["age"] = profile_data["age"]
+            if "gender" in profile_data and profile_data["gender"] is not None:
+                gender_lower = profile_data["gender"].lower().strip()
+                if gender_lower in ['male', 'female', 'other']:
+                    update_data["gender"] = gender_lower
+            
+            if not update_data:
+                return await self.get_user_profile(user_id)
+                
+            # Perform update
+            response = self.db.table("profiles").update(update_data).eq("id", user_id).execute()
+            
+            if not response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update profile"
+                )
+            
+            profile = response.data[0]
+            # Add 'role' field for frontend backward compatibility
+            profile['role'] = profile.get('user_role', 'customer')
+            
+            logger.info(f"User profile updated: {user_id}")
+            
+            return {
+                "success": True,
+                "message": "Profile updated successfully",
+                "user": profile
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Update profile error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update profile"
+            )
     
     async def logout_user(
         self,
