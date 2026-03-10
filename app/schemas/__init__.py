@@ -22,7 +22,7 @@ from .domain.rm import (
 # =====================================================
 from .request.auth import (
     LoginRequest, SignupRequest, LogoutAllRequest, RefreshTokenRequest,
-    PasswordResetRequest, PasswordResetConfirm
+    PasswordResetRequest, PasswordResetConfirm, UserProfileUpdate
 )
 from .request.customer import (
     ReviewCreate, ReviewUpdate, CartItemCreate, CartItemUpdate, FavoriteCreate
