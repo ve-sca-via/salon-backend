@@ -48,6 +48,8 @@ class BusinessType(str, Enum):
     UNISEX_SALON = "unisex_salon"
     BARBER_SHOP = "barber_shop"
     BEAUTY_PARLOR = "beauty_parlor"
+    COMPANY_OWNED = "company_owned"
+    FRANCHISE = "franchise"
 
 
 # =====================================================
