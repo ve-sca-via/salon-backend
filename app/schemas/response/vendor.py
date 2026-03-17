@@ -44,6 +44,8 @@ class VendorJoinRequestResponse(BaseModel):
     pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    outlet: Optional[str] = None
+    is_gst: Optional[bool] = False
     gst_number: Optional[str] = Field(None, max_length=50)
     pan_number: Optional[str] = Field(None, max_length=10)
     business_license: Optional[str] = None
@@ -97,6 +99,8 @@ class SalonResponse(BaseModel):
     pincode: str = Field(..., max_length=6)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    outlet: Optional[str] = None
+    is_gst: Optional[bool] = False
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
