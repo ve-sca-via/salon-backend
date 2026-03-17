@@ -39,6 +39,8 @@ class VendorJoinRequestBase(BaseModel):
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     
     # Legal & Compliance
+    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    is_gst: Optional[bool] = Field(False, description="Whether the business has GST registration")
     gst_number: Optional[str] = Field(None, max_length=50)
     pan_number: Optional[str] = Field(None, pattern=r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$', description="PAN format: ABCDE1234F")
     business_license: Optional[str] = Field(None, description="Business license document URL")
@@ -96,6 +98,8 @@ class SalonBase(BaseModel):
     pincode: str = Field(..., max_length=6)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    is_gst: Optional[bool] = Field(False, description="Whether the salon has GST registration")
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
