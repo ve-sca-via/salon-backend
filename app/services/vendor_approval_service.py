@@ -326,6 +326,7 @@ class VendorApprovalService:
             "join_request_id": request_id,  # Link salon to original vendor request
             "business_name": request_data.business_name,
             "description": documents.get("description"),
+            "outlet": getattr(request_data, "outlet", None) or documents.get("outlet", None),
             "phone": request_data.owner_phone,
             "email": request_data.owner_email,
             "address": request_data.business_address,
@@ -335,6 +336,7 @@ class VendorApprovalService:
             "latitude": coordinates["latitude"],
             "longitude": coordinates["longitude"],
             "gst_number": getattr(request_data, "gst_number", None),
+            "is_gst": getattr(request_data, "is_gst", False) or documents.get("is_gst", False),
             "pan_number": getattr(request_data, "pan_number", None),
             "logo_url": logo_url,
             "cover_images": cover_images_array if cover_images_array else [],
