@@ -122,6 +122,8 @@ class SalonUpdate(BaseModel):
     pincode: Optional[str] = Field(None, max_length=6)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    is_gst: Optional[bool] = Field(None, description="Whether the salon has GST registration")
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)
     logo_url: Optional[str] = None
