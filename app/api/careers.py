@@ -39,13 +39,14 @@ async def submit_career_application(
     full_name: str = Form(...),
     email: EmailStr = Form(...),
     phone: str = Form(...),
-    current_city: Optional[str] = Form(None),
+    age: Optional[int] = Form(None),
+    permanent_address: Optional[str] = Form(None),
     current_address: Optional[str] = Form(None),
     willing_to_relocate: bool = Form(False),
     
     # Job Details
     position: str = Form("Relationship Manager"),
-    experience_years: int = Form(0, ge=0, le=50, description="Years of experience (0-50)"),
+    experience_years: int = Form(0, ge=0, le=50),
     previous_company: Optional[str] = Form(None),
     current_salary: Optional[float] = Form(None),
     expected_salary: Optional[float] = Form(None),
@@ -64,9 +65,9 @@ async def submit_career_application(
     # Required Documents
     resume: UploadFile = File(...),
     aadhaar_card: UploadFile = File(...),
-    pan_card: UploadFile = File(...),
+    pan_card: Optional[UploadFile] = File(None),
     photo: UploadFile = File(...),
-    address_proof: UploadFile = File(...),
+    address_proof: Optional[UploadFile] = File(None),
     
     # Optional Documents
     educational_certificates: Optional[List[UploadFile]] = File(None),
@@ -92,7 +93,8 @@ async def submit_career_application(
         "full_name": full_name,
         "email": email,
         "phone": phone,
-        "current_city": current_city,
+        "age": age,
+        "permanent_address": permanent_address,
         "current_address": current_address,
         "willing_to_relocate": willing_to_relocate
     }
