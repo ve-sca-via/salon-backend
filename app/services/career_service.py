@@ -14,7 +14,6 @@ from app.core.database import get_db, get_storage_client
 from app.services.storage_service import StorageService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
-from app.api.upload import get_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,7 @@ class CareerService:
     }
     
     # Required document fields that must be present
-    REQUIRED_DOCUMENTS = {'resume', 'aadhaar_card', 'pan_card', 'photo', 'address_proof'}
+    REQUIRED_DOCUMENTS = {'resume', 'aadhaar_card', 'photo'}
     
     def __init__(
         self, 
@@ -256,17 +255,36 @@ class CareerService:
                 column_name = self._get_db_column_name('salary_slip')
                 document_urls[column_name] = url
             
-            # Prepare application data by merging dicts
+            # List of columns that currently exist in the DB (schema source of truth)
+            EXISTING_DB_COLUMNS = {
+                "id", "application_number", "full_name", "email", "phone", 
+                "current_city", "current_address", "willing_to_relocate",
+                "position", "experience_years", "previous_company", 
+                "current_salary", "expected_salary", "notice_period_days",
+                "highest_qualification", "university_name", "graduation_year",
+                "cover_letter", "linkedin_url", "portfolio_url",
+                "resume_url", "aadhaar_url", "pan_url", "photo_url", 
+                "address_proof_url", "educational_certificates_url",
+                "experience_letter_url", "salary_slip_url", "status"
+            }
+            
+            # Filter application data to ONLY include columns that exist in DB
             application_data = {
                 "id": application_id,
                 "application_number": application_number,
-                **{k: v for k, v in personal_info.items() if v is not None},
-                **{k: v for k, v in job_details.items() if v is not None},
-                **{k: v for k, v in education.items() if v is not None},
-                **{k: v for k, v in additional_info.items() if v is not None},
-                **document_urls,
+                **{k: v for k, v in personal_info.items() if k in EXISTING_DB_COLUMNS and v is not None},
+                **{k: v for k, v in job_details.items() if k in EXISTING_DB_COLUMNS and v is not None},
+                **{k: v for k, v in education.items() if k in EXISTING_DB_COLUMNS and v is not None},
+                **{k: v for k, v in additional_info.items() if k in EXISTING_DB_COLUMNS and v is not None},
+                **{k: v for k, v in document_urls.items() if k in EXISTING_DB_COLUMNS and v is not None},
                 "status": "pending"
             }
+            
+            # Placeholder for required DB columns (since they are NOT NULL)
+            # If they are NOT in your current document_urls (meaning user didn't upload them)
+            # we need to put an empty string so the DB insert doesn't fail but UI knows it's empty.
+            if "pan_url" not in application_data: application_data["pan_url"] = ""
+            if "address_proof_url" not in application_data: application_data["address_proof_url"] = ""
             
             # Insert into database
             result = self.db.table("career_applications").insert(application_data).execute()
@@ -600,26 +618,34 @@ class CareerService:
             
             # Extract storage path from URL if it's a full URL
             # Handle both cases: full URL (old data) and path-only (new data)
+            if not document_url or document_url in ["", "N/A"]:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Document {document_type} was not uploaded or is missing"
+                )
+
+            storage_path = document_url
             if document_url.startswith('http://') or document_url.startswith('https://'):
                 parsed = urlparse(document_url)
-                # Extract path after '/object/public/bucket-name/' or '/object/bucket-name/'
-                path_parts = parsed.path.split(f"/object/public/{self.STORAGE_BUCKET}/")
-                if len(path_parts) > 1:
-                    storage_path = path_parts[-1]
+                # Robust extraction: find bucket name in path and take everything after it
+                # URL format is usually .../object/[public/]{bucket-name}/{path}
+                marker = f"/{self.STORAGE_BUCKET}/"
+                if marker in parsed.path:
+                    storage_path = parsed.path.split(marker, 1)[1]
                 else:
-                    # Try without 'public' (for private buckets)
-                    path_parts = parsed.path.split(f"/object/{self.STORAGE_BUCKET}/")
-                    storage_path = path_parts[-1] if len(path_parts) > 1 else document_url
-                logger.info(f"Extracted storage path from URL: {storage_path}")
-            else:
-                # Already a storage path
-                storage_path = document_url
+                    # Fallback to older split logic if marker not found
+                    path_parts = parsed.path.split(f"/object/public/{self.STORAGE_BUCKET}/")
+                    if len(path_parts) > 1:
+                        storage_path = path_parts[-1]
+                    else:
+                        path_parts = parsed.path.split(f"/object/{self.STORAGE_BUCKET}/")
+                        storage_path = path_parts[-1] if len(path_parts) > 1 else document_url
+
+            # Remove leading slash if present (Supabase storage.from().create_signed_url expects no leading slash)
+            if storage_path.startswith('/'):
+                storage_path = storage_path[1:]
             
-            # Log document access for audit trail (important for sensitive documents)
-            logger.info(
-                f"Document download requested - Application: {application_id}, "
-                f"Document: {document_type}, Admin: {admin_user_id or 'unknown'}"
-            )
+            logger.info(f"Final storage_path for signed URL: {storage_path} (Bucket: {self.STORAGE_BUCKET})")
             
             # Create signed URL (valid for 1 hour) using refreshable storage client
             storage_client = get_storage_client()
