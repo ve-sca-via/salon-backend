@@ -489,7 +489,7 @@ class SalonService:
         # Build query with all three required conditions
         query = (
             self.db.table("salons")
-            .select("*")
+            .select("*, vendor_join_requests(business_type)")
             .eq("is_active", True)
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
@@ -508,6 +508,12 @@ class SalonService:
         
         response = query.execute()
         salons = response.data or []
+        
+        # Extract business_type from joined table
+        for salon in salons:
+            vjr = salon.pop("vendor_join_requests", None)
+            if vjr and isinstance(vjr, dict):
+                salon["business_type"] = vjr.get("business_type")
         
         logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
         
@@ -573,7 +579,7 @@ class SalonService:
         # Start with public salons filter
         query = (
             self.db.table("salons")
-            .select("*")
+            .select("*, vendor_join_requests(business_type)")
             .eq("is_active", True)
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
@@ -598,6 +604,12 @@ class SalonService:
         
         response = query.execute()
         salons = response.data or []
+        
+        # Extract business_type from joined table
+        for salon in salons:
+            vjr = salon.pop("vendor_join_requests", None)
+            if vjr and isinstance(vjr, dict):
+                salon["business_type"] = vjr.get("business_type")
         
         logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")
         
