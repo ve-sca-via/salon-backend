@@ -122,7 +122,18 @@ class Settings(BaseSettings):
     # =====================================================
     LOG_LEVEL: str = Field(default="INFO")
     LOG_FILE: str = Field(default="logs/app.log")
-    
+
+    # =====================================================
+    # OTP SERVICE (MESSAGECENTRAL)
+    # =====================================================
+    MESSAGECENTRAL_CUSTOMER_ID: str = Field(default="")
+    MESSAGECENTRAL_KEY: str = Field(default="")
+    MESSAGECENTRAL_EMAIL: str = Field(default="")
+    MESSAGECENTRAL_BASE_URL: str = Field(default="https://cpaas.messagecentral.com")
+    MESSAGECENTRAL_DEFAULT_COUNTRY_CODE: str = Field(default="91")
+    MESSAGECENTRAL_OTP_LENGTH: int = Field(default=6)
+    MESSAGECENTRAL_OTP_EXPIRY_SECONDS: int = Field(default=300)  # 5 minutes
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
