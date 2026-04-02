@@ -134,7 +134,8 @@ class AuthService:
         phone: Optional[str] = None,
         age: int = None,
         gender: str = None,
-        user_role: str = "customer"
+        user_role: str = "customer",
+        verification_token: Optional[str] = None
     ) -> Dict:
         """
         Register a new user (customer only)
@@ -155,9 +156,29 @@ class AuthService:
             HTTPException: If registration fails or email exists
         """
         try:
+            # Verify and extract phone if token is provided
+            phone_verified = False
+            verified_phone = None
+            if verification_token:
+                from app.core.auth import verify_phone_verification_token
+                verified_phone = verify_phone_verification_token(verification_token)
+                phone_verified = True
+                
             # Sanitize inputs (XSS protection)
             sanitized_full_name = html.escape(full_name.strip())
-            sanitized_phone = html.escape(phone.strip()) if phone else None
+            
+            # Use verified phone if available, otherwise use provided phone
+            target_phone = verified_phone if phone_verified else phone
+            sanitized_phone = html.escape(target_phone.strip()) if target_phone else None
+
+            # Normalize phone to E.164 format if provided
+            if sanitized_phone:
+                from app.utils.phone import normalize_phone
+                normalized_phone = normalize_phone(sanitized_phone)
+                if normalized_phone:
+                    sanitized_phone = normalized_phone
+                # If normalization fails, keep original (user can verify later)
+
             
             # Validate and sanitize gender (REQUIRED)
             if not gender:
@@ -215,6 +236,7 @@ class AuthService:
                     "data": {
                         "full_name": sanitized_full_name,
                         "phone": sanitized_phone,
+                        "phone_verified": phone_verified,
                         "user_role": user_role
                     }
                 }
@@ -236,11 +258,16 @@ class AuthService:
                 "email": email,
                 "full_name": sanitized_full_name,
                 "phone": sanitized_phone,
+                "phone_verified": phone_verified,
                 "age": age,
                 "gender": sanitized_gender,
                 "user_role": user_role,
                 "is_active": True
             }
+            
+            if phone_verified:
+                profile_data["phone_verification_method"] = "otp"
+                profile_data["phone_verified_at"] = datetime.utcnow().isoformat()
             
             try:
                 # Try insert first
@@ -256,13 +283,13 @@ class AuthService:
                         detail="Email already registered"
                     )
                 
-                logger.warning(f"Profile insert failed, trying upsert: {insert_error}")
+                logger.warning(f"Profile insert failed, trying update: {insert_error}")
                 
-                # Try upsert if insert fails (trigger might have created it)
+                # Try update if insert fails (trigger might have created it)
                 try:
-                    profile_response = self.db.table("profiles").upsert(profile_data).execute()
-                except Exception as upsert_error:
-                    logger.error(f"Profile upsert also failed: {upsert_error}")
+                    profile_response = self.db.table("profiles").update(profile_data).eq("id", user.id).execute()
+                except Exception as update_error:
+                    logger.error(f"Profile update also failed: {update_error}")
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="Unable to create account. Please try again."
@@ -286,6 +313,7 @@ class AuthService:
                 "user_role": user_role,
                 "role": user_role,  # Backward compatibility for frontend
                 "phone": sanitized_phone,
+                "phone_verified": phone_verified,
                 "age": age,
                 "gender": sanitized_gender,
                 "is_active": True
@@ -326,6 +354,121 @@ class AuthService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Registration failed: {str(e)}"
+            )
+            
+    async def send_phone_signup_otp(self, phone: str, country_code: str = "91") -> Dict:
+        """
+        Send OTP for unauthenticated phone signup
+        """
+        from app.utils.phone import normalize_phone, mask_phone
+        from app.services.otp_service import OTPService
+
+        try:
+            normalized_phone = normalize_phone(phone, country_code)
+            if not normalized_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid phone number format"
+                )
+
+            # Check if phone is already registered and verified
+            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
+            if existing_phone.data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This phone number is already registered to an account. Please sign in."
+                )
+
+            country_code_clean = country_code.lstrip("+")
+            normalized_digits = normalized_phone.lstrip("+")
+            if normalized_digits.startswith(country_code_clean):
+                clean_phone = normalized_digits[len(country_code_clean):]
+            else:
+                clean_phone = normalized_digits
+
+            logger.info(f"Sending phone signup OTP to unauthenticated user")
+            otp_result = await OTPService.send_otp(
+                phone=clean_phone,
+                country_code=country_code_clean
+            )
+
+            return {
+                "success": True,
+                "message": f"OTP sent to {mask_phone(normalized_phone)}",
+                "verification_id": otp_result["verification_id"],
+                "expires_in": otp_result["expires_in"],
+                "phone": otp_result["phone"]
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error sending phone signup OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP. Please try again."
+            )
+
+    async def verify_phone_signup_otp(self, phone: str, otp: str, verification_id: str, country_code: str = "91") -> Dict:
+        """
+        Verify phone OTP for signup and return a verification token
+        """
+        from app.utils.phone import normalize_phone
+        from app.services.otp_service import OTPService
+        from app.core.auth import create_phone_verification_token
+
+        try:
+            if not otp.isdigit() or len(otp) != 6:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid OTP format. Please enter 6 digits."
+                )
+
+            logger.info(f"Verifying phone signup OTP for phone: {phone}")
+            is_valid = await OTPService.verify_otp(
+                verification_id=verification_id,
+                otp_code=otp
+            )
+
+            if not is_valid:
+                logger.warning(f"Invalid signup OTP attempt")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired OTP. Please try again."
+                )
+
+            normalized_phone = normalize_phone(phone, country_code)
+            if not normalized_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid phone number format"
+                )
+
+            # Optional: check again if registered
+            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
+            if existing_phone.data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This phone number is already registered to an account. Please sign in."
+                )
+
+            # Generate verification token
+            verification_token = create_phone_verification_token(normalized_phone)
+
+            return {
+                "success": True,
+                "message": "Phone number verified successfully",
+                "verification_token": verification_token,
+                "phone": normalized_phone
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying phone signup OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify phone number. Please try again."
             )
     
     async def refresh_user_session(self, refresh_token: str) -> Dict:
@@ -857,3 +1000,212 @@ class AuthService:
                 "success": True,
                 "message": "If your email is registered and unverified, you will receive a verification email shortly."
             }
+
+    async def send_phone_verification_otp(self, user_id: str, phone: str, country_code: str = "91") -> Dict:
+        """
+        Send OTP to verify phone number (for authenticated users updating their phone)
+
+        Args:
+            user_id: User's unique identifier
+            phone: Phone number to verify
+            country_code: Country code (default: 91 for India)
+
+        Returns:
+            Dict with verification_id and masked phone
+
+        Raises:
+            HTTPException: If user not found or OTP sending fails
+        """
+        from app.utils.phone import normalize_phone, mask_phone
+        from app.services.otp_service import OTPService
+
+        try:
+            # Verify user exists
+            profile_response = self.db.table("profiles").select("id, email").eq("id", user_id).execute()
+            if not profile_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+
+            # Normalize phone to E.164 format
+            normalized_phone = normalize_phone(phone, country_code)
+            if not normalized_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid phone number format"
+                )
+
+            # Check if phone is already registered by another verified user
+            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
+            if existing_phone.data:
+                # Check if it's not the same user
+                if existing_phone.data[0]["id"] != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="This phone number is already registered"
+                    )
+
+            # Extract country code and local phone number from normalized E.164.
+            # Important: only strip country code if it appears as a prefix.
+            country_code_clean = country_code.lstrip("+")
+            normalized_digits = normalized_phone.lstrip("+")
+            if normalized_digits.startswith(country_code_clean):
+                clean_phone = normalized_digits[len(country_code_clean):]
+            else:
+                clean_phone = normalized_digits
+
+            # Send OTP via MessageCentral
+            logger.info(f"Sending phone verification OTP for user: {user_id}")
+            otp_result = await OTPService.send_otp(
+                phone=clean_phone,
+                country_code=country_code_clean
+            )
+
+            return {
+                "success": True,
+                "message": f"OTP sent to {mask_phone(normalized_phone)}",
+                "verification_id": otp_result["verification_id"],
+                "expires_in": otp_result["expires_in"],
+                "phone": otp_result["phone"]
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error sending phone verification OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP. Please try again."
+            )
+
+    async def verify_phone_otp(
+        self,
+        user_id: str,
+        phone: str,
+        otp: str,
+        verification_id: str,
+        country_code: str = "91"
+    ) -> Dict:
+        """
+        Verify phone number with OTP and update profile
+
+        Args:
+            user_id: User's unique identifier
+            phone: Phone number being verified
+            otp: 6-digit OTP code
+            verification_id: Verification ID from send_otp
+            country_code: Country code (default: 91 for India)
+
+        Returns:
+            Dict with updated phone and phone_verified status
+
+        Raises:
+            HTTPException: If verification fails or OTP invalid
+        """
+        from app.utils.phone import normalize_phone
+        from app.services.otp_service import OTPService
+
+        try:
+            # Verify user exists
+            profile_response = self.db.table("profiles").select("id, email").eq("id", user_id).execute()
+            if not profile_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found"
+                )
+
+            # Validate OTP format
+            if not otp.isdigit() or len(otp) != 6:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid OTP format. Please enter 6 digits."
+                )
+
+            # Verify OTP with MessageCentral
+            logger.info(f"Verifying phone OTP for user: {user_id}")
+            is_valid = await OTPService.verify_otp(
+                verification_id=verification_id,
+                otp_code=otp
+            )
+
+            if not is_valid:
+                logger.warning(f"Invalid OTP attempt for user: {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired OTP. Please try again."
+                )
+
+            # Normalize phone to E.164 format
+            normalized_phone = normalize_phone(phone, country_code)
+            if not normalized_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid phone number format"
+                )
+
+            # Check if phone is already registered by another verified user
+            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
+            if existing_phone.data:
+                # Check if it's not the same user
+                if existing_phone.data[0]["id"] != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="This phone number is already registered by another user"
+                    )
+
+            # Update user profile with verified phone
+            now = datetime.utcnow()
+            update_response = self.db.table("profiles").update({
+                "phone": normalized_phone,
+                "phone_verified": True,
+                "phone_verified_at": now.isoformat(),
+                "phone_verification_method": "otp"
+            }).eq("id", user_id).execute()
+
+            if not update_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update phone number"
+                )
+
+            profile = update_response.data[0]
+
+            logger.info(f"Phone verified for user: {user_id}")
+
+            # Log activity
+            try:
+                await ActivityLogService.log(
+                    user_id=user_id,
+                    action="phone_verified",
+                    entity_type="auth",
+                    entity_id=user_id,
+                    details={
+                        "phone": normalized_phone[-4:]  # Last 4 digits only
+                    }
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to log phone verification: {log_error}")
+
+            return {
+                "success": True,
+                "message": "Phone number verified successfully",
+                "phone_verified": True,
+                "phone": normalized_phone,
+                "user": {
+                    "id": profile["id"],
+                    "email": profile["email"],
+                    "phone": profile.get("phone"),
+                    "phone_verified": profile.get("phone_verified", False),
+                    "phone_verified_at": profile.get("phone_verified_at")
+                }
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying phone OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify phone number. Please try again."
+            )
