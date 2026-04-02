@@ -290,6 +290,81 @@ def verify_refresh_token(token: str, db) -> dict:
 
 
 # =====================================================
+# PHONE VERIFICATION TOKEN FUNCTIONS
+# =====================================================
+
+def create_phone_verification_token(phone: str) -> str:
+    """
+    Create a short-lived JWT token verifying a phone number
+    
+    Args:
+        phone: Verified phone number
+        
+    Returns:
+        Encoded JWT token
+    """
+    to_encode = {
+        "sub": phone,
+        "type": "phone_verification"
+    }
+    
+    # 15 minute expiry is plenty for signup flow
+    expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM
+    )
+    
+    return encoded_jwt
+
+
+def verify_phone_verification_token(token: str) -> str:
+    """
+    Verify the phone verification token and return the phone number
+    
+    Args:
+        token: JWT verification token
+        
+    Returns:
+        Verified phone number (str)
+        
+    Raises:
+        HTTPException: If token is invalid or expired
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+        
+        if payload.get("type") != "phone_verification":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token type"
+            )
+            
+        phone = payload.get("sub")
+        if not phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token payload"
+            )
+            
+        return phone
+        
+    except JWTError as e:
+        logger.error(f"Phone verification token validation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token"
+        )
+
+
+# =====================================================
 # TOKEN REVOCATION FUNCTIONS
 # =====================================================
 

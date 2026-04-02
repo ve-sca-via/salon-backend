@@ -22,7 +22,10 @@ from .domain.rm import (
 # =====================================================
 from .request.auth import (
     LoginRequest, SignupRequest, LogoutAllRequest, RefreshTokenRequest,
-    PasswordResetRequest, PasswordResetConfirm, UserProfileUpdate
+    PasswordResetRequest, PasswordResetConfirm, UserProfileUpdate,
+    PhoneLoginSendOTPRequest, PhoneLoginVerifyOTPRequest,
+    PhoneVerificationSendOTPRequest, PhoneVerificationConfirmRequest,
+    PhoneSignupSendOTPRequest, PhoneSignupVerifyOTPRequest
 )
 from .request.customer import (
     ReviewCreate, ReviewUpdate, CartItemCreate, CartItemUpdate, FavoriteCreate
@@ -55,7 +58,9 @@ from .response.common import (
     SuccessResponse, ErrorResponse, ValidationErrorResponse
 )
 from .response.auth import (
-    LoginResponse, SignupResponse, PasswordResetResponse, PasswordResetConfirmResponse
+    LoginResponse, SignupResponse, PasswordResetResponse, PasswordResetConfirmResponse,
+    PhoneLoginSendOTPResponse, PhoneLoginVerifyOTPResponse,
+    PhoneVerificationSendOTPResponse, PhoneVerificationConfirmResponse
 )
 from .response.vendor import (
     VendorJoinRequestResponse, SalonResponse, SalonListResponse,
