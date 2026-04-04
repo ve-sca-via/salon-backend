@@ -68,7 +68,7 @@ from .response.vendor import (
     CompleteRegistrationResponse, VendorDashboardResponse, VendorAnalyticsResponse,
     PublicSalonsResponse, SalonDetailResponse, AvailableSlotsResponse,
     NearbySalonsResponse, SearchSalonsResponse, SalonServicesResponse,
-    PublicConfigResponse, CommissionConfigResponse, ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
+    PublicConfigResponse, ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
 )
 from .response.booking import (
     BookingResponse, BookingListResponse
