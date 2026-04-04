@@ -711,29 +711,3 @@ class SalonService:
         except Exception as e:
             logger.error(f"Failed to delete service {service_id} from salon {salon_id}: {e}")
             raise
-    
-    async def get_platform_commission_config(self) -> float:
-        """
-        Get the platform commission percentage from system config.
-        
-        Returns:
-            Commission percentage (defaults to 10.0 if not found)
-        """
-        try:
-            response = self.db.table("system_config").select("config_value").eq(
-                "config_key", "platform_commission_percentage"
-            ).eq("is_active", True).single().execute()
-            
-            if not response.data:
-                logger.warning("Platform commission config not found, using default 10%")
-                return 10.0
-            
-            commission = float(response.data["config_value"])
-            logger.info(f"Platform commission: {commission}%")
-            
-            return commission
-            
-        except Exception as e:
-            logger.error(f"Error fetching platform commission: {e}, using default 10%")
-            return 10.0
-

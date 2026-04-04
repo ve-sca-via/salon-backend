@@ -27,7 +27,6 @@ from app.schemas import (
     SalonResponse,
     SuccessResponse,
     PublicConfigResponse,
-    CommissionConfigResponse,
     PopularCitiesResponse
 )
 
@@ -668,7 +667,6 @@ async def get_public_configs(db: Client = Depends(get_db_client)):
         # Define which configs are safe to expose publicly
         public_config_keys = [
             "convenience_fee_percentage",
-            "platform_commission_percentage",
             "cancellation_window_hours",
             "max_booking_advance_days",
             "registration_fee_amount"  # Vendor registration fee
@@ -705,7 +703,6 @@ async def get_public_configs(db: Client = Depends(get_db_client)):
             "success": False,
             "configs": {
                 "convenience_fee_percentage": 10,
-                "platform_commission_percentage": 10,
                 "cancellation_window_hours": 24,
                 "max_booking_advance_days": 30
             },
@@ -713,19 +710,6 @@ async def get_public_configs(db: Client = Depends(get_db_client)):
         }
 
 
-@router.get("/config/booking-fee-percentage", response_model=CommissionConfigResponse)
-async def get_booking_fee_percentage(
-    salon_service: SalonService = Depends(get_salon_service)
-):
-    """
-    Get the platform commission percentage used for calculating booking fees
-    
-    This is a public endpoint that returns the booking fee percentage
-    from system_config table
-    
-    DEPRECATED: Use /salons/config/public instead
-    """
-    commission = await salon_service.get_platform_commission_config()
-    return {"commission_percentage": commission}
+
 
 

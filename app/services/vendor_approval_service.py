@@ -184,7 +184,7 @@ class VendorApprovalService:
         # Get RM penalty for rejection (with fallback)
         try:
             penalty_response = self.db.table("system_config").select("config_value").eq(
-                "config_key", "rm_score_penalty_rejection"
+                "config_key", "rm_rejection_penalty"
             ).eq("is_active", True).maybe_single().execute()
             
             rm_penalty = abs(int(penalty_response.data.get("config_value", 5))) if penalty_response.data else 5
@@ -208,7 +208,7 @@ class VendorApprovalService:
         
         return {
             "rm_score": rm_score,
-            "rm_score_penalty_rejection": rm_penalty,
+            "rm_rejection_penalty": rm_penalty,
             "registration_fee": registration_fee
         }
     
@@ -495,43 +495,6 @@ class VendorApprovalService:
             logger.exception("Full traceback:")
             return 0
     
-    async def _penalize_rm_for_rejection(
-        self,
-        rm_id: str,
-        salon_name: str,
-        rejection_reason: str
-    ) -> None:
-        """Deduct RM score for rejected vendor request (quality incentive)"""
-        # Get penalty from system config (default -5 points)
-        config_response = self.db.table("system_config").select("value").eq(
-            "key", "rm_rejection_penalty"
-        ).single().execute()
-        
-        penalty = int(config_response.data.get("value", -5)) if config_response.data else -5
-        
-        # Get current RM performance_score
-        rm_response = self.db.table("rm_profiles").select(
-            "performance_score"
-        ).eq("id", rm_id).single().execute()
-        
-        current_score = rm_response.data.get("performance_score", 0) if rm_response.data else 0
-        new_score = max(0, current_score + penalty)  # Don't go below 0
-        
-        # Update RM profile
-        self.db.table("rm_profiles").update({
-            "performance_score": new_score
-        }).eq("id", rm_id).execute()
-        
-        logger.info(f"RM score penalized: {penalty} points (Total: {new_score})")
-        
-        # Add score history
-        self.db.table("rm_score_history").insert({
-            "rm_id": rm_id,
-            "action": "salon_rejected",
-            "points": penalty,
-            "description": f"Salon rejected: {salon_name} - {rejection_reason[:100]}"
-        }).execute()
-    
     async def _send_approval_email(
         self,
         request_id: str,
@@ -656,42 +619,6 @@ class VendorApprovalService:
             logger.error(f"Failed to update RM score: {result.error}")
             raise Exception(result.error or "Failed to update RM score")
     
-    async def _penalize_rm_for_rejection(
-        self,
-        rm_id: str,
-        salon_name: str,
-        rejection_reason: str
-    ) -> None:
-        """
-        Deduct points from RM when their vendor request is rejected.
-        Encourages quality submissions.
-        """
-        from app.services.rm_service import RMService
-        
-        # Get penalty from config (default -5 points)
-        config_response = self.db.table("system_config").select(
-            "rejection_penalty"
-        ).eq("id", 1).single().execute()
-        
-        penalty = -5  # Default
-        if config_response.data and "rejection_penalty" in config_response.data:
-            penalty = -abs(config_response.data["rejection_penalty"])  # Ensure negative
-        
-        rm_service = RMService(db_client=self.db)
-        
-        result = await rm_service.update_rm_score(
-            rm_id=rm_id,
-            score_change=penalty,
-            reason=f"Vendor request rejected: '{salon_name}' - {rejection_reason[:50]}",
-            salon_id=None,
-            admin_id=None
-        )
-        
-        if result.success:
-            logger.info(f"RM {rm_id} penalized {penalty} points (new total: {result.new_total_score})")
-        else:
-            logger.warning(f"Failed to penalize RM: {result.error}")
-    
     async def reject_vendor_request(
         self,
         request_id: str,
@@ -730,7 +657,7 @@ class VendorApprovalService:
         # Penalize RM score for rejection
         try:
             config = await self._get_approval_config()
-            score_penalty = config.get("rm_score_penalty_rejection", 5)  # Default 5 points penalty
+            score_penalty = config.get("rm_rejection_penalty", 5)  # Default 5 points penalty
             await self._penalize_rm_score(
                 rm_id=request_data["rm_id"],
                 score_penalty=score_penalty,

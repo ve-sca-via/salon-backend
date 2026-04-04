@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 from fastapi import HTTPException, status, UploadFile
 from pydantic import EmailStr, validate_email, ValidationError
@@ -59,6 +59,17 @@ class CareerService:
     
     # Required document fields that must be present
     REQUIRED_DOCUMENTS = {'resume', 'aadhaar_card', 'photo'}
+
+    # Map API document type to storage filename prefix used at upload time.
+    DOCUMENT_FILENAME_PREFIX = {
+        'resume': 'resume',
+        'aadhaar': 'aadhaar_card',
+        'pan': 'pan_card',
+        'photo': 'photo',
+        'address_proof': 'address_proof',
+        'experience_letter': 'experience_letter',
+        'salary_slip': 'salary_slip'
+    }
     
     def __init__(
         self, 
@@ -130,6 +141,62 @@ class CareerService:
             )
         
         return ext
+
+    def _normalize_storage_path(self, raw_document_url: str) -> str:
+        """Normalize DB value into a Supabase object path without bucket prefix."""
+        document_url = (raw_document_url or '').strip().strip('"\'')
+        storage_path = document_url
+
+        if document_url.startswith('http://') or document_url.startswith('https://'):
+            parsed = urlparse(document_url)
+            parsed_path = unquote(parsed.path)
+            marker = f"/{self.STORAGE_BUCKET}/"
+
+            if marker in parsed_path:
+                storage_path = parsed_path.split(marker, 1)[1]
+            elif '/object/public/' in parsed_path or '/object/sign/' in parsed_path or '/object/' in parsed_path:
+                path_parts = parsed_path.split('/object/', 1)
+                storage_path = path_parts[-1] if len(path_parts) > 1 else parsed_path
+                storage_path = storage_path.replace(f'public/{self.STORAGE_BUCKET}/', '')
+                storage_path = storage_path.replace(f'sign/{self.STORAGE_BUCKET}/', '')
+                storage_path = storage_path.replace(f'{self.STORAGE_BUCKET}/', '', 1)
+            else:
+                storage_path = parsed_path
+
+        storage_path = unquote(storage_path).replace('\\', '/').split('?', 1)[0].split('#', 1)[0].strip()
+
+        if storage_path.startswith('/'):
+            storage_path = storage_path[1:]
+
+        if storage_path.startswith(f"{self.STORAGE_BUCKET}/"):
+            storage_path = storage_path[len(self.STORAGE_BUCKET) + 1:]
+
+        return storage_path
+
+    def _resolve_storage_path_from_folder(self, application_id: str, document_type: str) -> Optional[str]:
+        """Fallback resolver: inspect application folder and pick file by expected prefix."""
+        expected_prefix = self.DOCUMENT_FILENAME_PREFIX.get(document_type)
+        if not expected_prefix:
+            return None
+
+        folder = f"applications/{application_id}"
+        try:
+            storage_client = get_storage_client()
+            objects = storage_client.storage.from_(self.STORAGE_BUCKET).list(folder)
+            if not isinstance(objects, list):
+                return None
+
+            for obj in objects:
+                name = obj.get('name', '') if isinstance(obj, dict) else ''
+                if name and name.startswith(expected_prefix):
+                    return f"{folder}/{name}"
+        except Exception as e:
+            logger.warning(
+                f"Fallback folder inspection failed for application {application_id}, "
+                f"document {document_type}: {str(e)}"
+            )
+
+        return None
     
     async def submit_application(
         self,
@@ -624,35 +691,36 @@ class CareerService:
                     detail=f"Document {document_type} was not uploaded or is missing"
                 )
 
-            storage_path = document_url
-            if document_url.startswith('http://') or document_url.startswith('https://'):
-                parsed = urlparse(document_url)
-                # Robust extraction: find bucket name in path and take everything after it
-                # URL format is usually .../object/[public/]{bucket-name}/{path}
-                marker = f"/{self.STORAGE_BUCKET}/"
-                if marker in parsed.path:
-                    storage_path = parsed.path.split(marker, 1)[1]
-                else:
-                    # Fallback to older split logic if marker not found
-                    path_parts = parsed.path.split(f"/object/public/{self.STORAGE_BUCKET}/")
-                    if len(path_parts) > 1:
-                        storage_path = path_parts[-1]
-                    else:
-                        path_parts = parsed.path.split(f"/object/{self.STORAGE_BUCKET}/")
-                        storage_path = path_parts[-1] if len(path_parts) > 1 else document_url
-
-            # Remove leading slash if present (Supabase storage.from().create_signed_url expects no leading slash)
-            if storage_path.startswith('/'):
-                storage_path = storage_path[1:]
+            storage_path = self._normalize_storage_path(document_url)
             
             logger.info(f"Final storage_path for signed URL: {storage_path} (Bucket: {self.STORAGE_BUCKET})")
             
             # Create signed URL (valid for 1 hour) using refreshable storage client
             storage_client = get_storage_client()
-            signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
-                storage_path,
-                3600  # 1 hour expiration
-            )
+            try:
+                signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
+                    storage_path,
+                    3600  # 1 hour expiration
+                )
+            except Exception as sign_error:
+                # Self-heal stale/mismatched DB paths by inspecting actual folder object names.
+                error_text = str(sign_error).lower()
+                if 'not_found' in error_text or 'object not found' in error_text:
+                    fallback_path = self._resolve_storage_path_from_folder(application_id, document_type)
+                    if fallback_path and fallback_path != storage_path:
+                        logger.warning(
+                            f"Storage path mismatch detected for application {application_id}, "
+                            f"document {document_type}. DB path='{storage_path}', fallback path='{fallback_path}'"
+                        )
+                        storage_path = fallback_path
+                        signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
+                            storage_path,
+                            3600
+                        )
+                    else:
+                        raise
+                else:
+                    raise
             
             # Handle response format (same as agreement API)
             if isinstance(signed_url_response, dict):
