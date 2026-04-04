@@ -6,8 +6,8 @@ BASE_URL = "http://localhost:8000/api/v1"
 def get_admin_token():
     """Login as admin and get access token"""
     login_data = {
-        "email": "admin@salonhub.com",
-        "password": "12345678"
+        "email": "admin@lubist.com",
+        "password": "Safdar@1234"
     }
     
     try:
