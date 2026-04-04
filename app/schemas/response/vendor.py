@@ -254,11 +254,6 @@ class PublicConfigResponse(BaseModel):
     error: Optional[str] = None
 
 
-class CommissionConfigResponse(BaseModel):
-    """Response for commission configuration"""
-    commission_percentage: float
-
-
 class ImageUploadResponse(BaseModel):
     """Response for single image upload"""
     success: bool = True

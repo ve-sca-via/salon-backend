@@ -23,6 +23,58 @@ SENSITIVE_CONFIG_KEYS = {
     'google_maps_api_key'
 }
 
+# Predefined platform-native configuration schema available for admins to set
+AVAILABLE_SYSTEM_CONFIGS = [
+    {
+        "config_key": "registration_fee_amount",
+        "label": "Vendor Registration Fee",
+        "config_type": "number",
+        "description": "The one-time registration fee charged to vendors when joining the platform. Used during checkout."
+    },
+    {
+        "config_key": "convenience_fee_percentage",
+        "label": "Convenience Fee Percentage",
+        "config_type": "number",
+        "description": "The additional platform fee percentage charged to the customer at booking checkout."
+    },
+    {
+        "config_key": "rm_score_per_approval",
+        "label": "RM Score Per Approval",
+        "config_type": "number",
+        "description": "Score increment applied when a Relationship Manager approves a vendor."
+    },
+    {
+        "config_key": "rm_rejection_penalty",
+        "label": "RM Rejection Penalty",
+        "config_type": "number",
+        "description": "Score decrement applied when a Relationship Manager rejects a vendor."
+    },
+    {
+        "config_key": "max_booking_advance_days",
+        "label": "Max Booking Advance Days",
+        "config_type": "number",
+        "description": "Maximum days in advance a customer can book exactly."
+    },
+    {
+        "config_key": "cancellation_window_hours",
+        "label": "Cancellation Window Hours",
+        "config_type": "number",
+        "description": "Hours before appointment time that cancellation is allowed without penalty."
+    },
+    {
+        "config_key": "razorpay_key_id",
+        "label": "Razorpay Key ID",
+        "config_type": "string",
+        "description": "Public Key ID for Razorpay payments. Sent to frontend."
+    },
+    {
+        "config_key": "razorpay_key_secret",
+        "label": "Razorpay Key Secret",
+        "config_type": "string",
+        "description": "Private Key Secret for Razorpay signature verification. Protected and encrypted."
+    }
+]
+
 
 class ConfigService:
     """Service for system configuration management"""

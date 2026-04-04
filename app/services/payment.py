@@ -33,9 +33,8 @@ class RazorpayService:
         key_secret = razorpay_key_secret or settings.RAZORPAY_KEY_SECRET
         
         if not key_id or not key_secret:
-            logger.warning("Razorpay credentials not configured - both key_id and key_secret are required")
-            logger.warning(f"Razorpay key_id provided: {bool(razorpay_key_id)}, from env: {bool(settings.RAZORPAY_KEY_ID)}")
-            logger.warning(f"Razorpay key_secret provided: {bool(razorpay_key_secret)}, from env: {bool(settings.RAZORPAY_KEY_SECRET)}")
+            # Silently tolerate missing credentials until payment operations are invoked
+            logger.debug("Razorpay credentials not configured. Payment operations will fail if called.")
             self.client = None
         else:
             try:

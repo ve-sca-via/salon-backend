@@ -11,7 +11,7 @@ from app.schemas import (
     SystemConfigUpdate
 )
 from app.schemas.request.admin import SystemConfigCreate
-from app.services.config_service import ConfigService
+from app.services.config_service import ConfigService, AVAILABLE_SYSTEM_CONFIGS
 from app.services.activity_log_service import ActivityLogger
 from app.core.cache import clear_razorpay_credentials_cache
 import logging
@@ -39,6 +39,17 @@ async def get_all_configs(
     configs = await config_service.get_all_configs()
 
     return configs
+
+
+@router.get("/available-keys")
+async def get_available_config_keys(
+    current_user: TokenData = Depends(require_admin)
+):
+    """
+    Get predefined configuration keys available for admins to set.
+    Filters out sensitive keys (e.g. API keys) which should remain in .env
+    """
+    return AVAILABLE_SYSTEM_CONFIGS
 
 
 @router.get("/{config_key}", response_model=SystemConfigResponse)
