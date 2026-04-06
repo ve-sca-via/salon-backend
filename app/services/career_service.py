@@ -6,12 +6,11 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import uuid
-from urllib.parse import urlparse, unquote
 
 from fastapi import HTTPException, status, UploadFile
-from pydantic import EmailStr, validate_email, ValidationError
-from app.core.database import get_db, get_storage_client
-from app.services.storage_service import StorageService
+from pydantic import validate_email, ValidationError
+from app.core.config import settings
+from app.services.cloudinary_service import CloudinaryService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
 
@@ -42,51 +41,25 @@ class CareerService:
         'educational_certificates': 'educational_certificates_url'
     }
     
-    STORAGE_BUCKET = 'career-documents'
-    
-    # Document field name mappings (centralized for consistency)
-    DOCUMENT_FIELD_MAPPING = {
-        # Form field name -> Database column name
-        'resume': 'resume_url',
-        'aadhaar_card': 'aadhaar_url',
-        'pan_card': 'pan_url',
-        'photo': 'photo_url',
-        'address_proof': 'address_proof_url',
-        'experience_letter': 'experience_letter_url',
-        'salary_slip': 'salary_slip_url',
-        'educational_certificates': 'educational_certificates_url'
-    }
-    
     # Required document fields that must be present
     REQUIRED_DOCUMENTS = {'resume', 'aadhaar_card', 'photo'}
-
-    # Map API document type to storage filename prefix used at upload time.
-    DOCUMENT_FILENAME_PREFIX = {
-        'resume': 'resume',
-        'aadhaar': 'aadhaar_card',
-        'pan': 'pan_card',
-        'photo': 'photo',
-        'address_proof': 'address_proof',
-        'experience_letter': 'experience_letter',
-        'salary_slip': 'salary_slip'
-    }
     
     def __init__(
         self, 
         db_client, 
-        storage_service: Optional[StorageService] = None,
+        cloudinary_service: Optional[CloudinaryService] = None,
         email_service: Optional[EmailService] = None
     ):
         """
-        Initialize career service with storage and email services
+        Initialize career service with media and email services
         
         Args:
             db_client: Database client (Supabase client)
-            storage_service: Optional StorageService instance (creates new if None)
+            cloudinary_service: Optional CloudinaryService instance (creates new if None)
             email_service: Optional EmailService instance (uses global singleton if None)
         """
         self.db = db_client
-        self.storage = storage_service or StorageService(db_client=db_client)
+        self.cloudinary = cloudinary_service or CloudinaryService()
         self.email = email_service or globals()['email_service']
     
     @staticmethod
@@ -142,62 +115,6 @@ class CareerService:
         
         return ext
 
-    def _normalize_storage_path(self, raw_document_url: str) -> str:
-        """Normalize DB value into a Supabase object path without bucket prefix."""
-        document_url = (raw_document_url or '').strip().strip('"\'')
-        storage_path = document_url
-
-        if document_url.startswith('http://') or document_url.startswith('https://'):
-            parsed = urlparse(document_url)
-            parsed_path = unquote(parsed.path)
-            marker = f"/{self.STORAGE_BUCKET}/"
-
-            if marker in parsed_path:
-                storage_path = parsed_path.split(marker, 1)[1]
-            elif '/object/public/' in parsed_path or '/object/sign/' in parsed_path or '/object/' in parsed_path:
-                path_parts = parsed_path.split('/object/', 1)
-                storage_path = path_parts[-1] if len(path_parts) > 1 else parsed_path
-                storage_path = storage_path.replace(f'public/{self.STORAGE_BUCKET}/', '')
-                storage_path = storage_path.replace(f'sign/{self.STORAGE_BUCKET}/', '')
-                storage_path = storage_path.replace(f'{self.STORAGE_BUCKET}/', '', 1)
-            else:
-                storage_path = parsed_path
-
-        storage_path = unquote(storage_path).replace('\\', '/').split('?', 1)[0].split('#', 1)[0].strip()
-
-        if storage_path.startswith('/'):
-            storage_path = storage_path[1:]
-
-        if storage_path.startswith(f"{self.STORAGE_BUCKET}/"):
-            storage_path = storage_path[len(self.STORAGE_BUCKET) + 1:]
-
-        return storage_path
-
-    def _resolve_storage_path_from_folder(self, application_id: str, document_type: str) -> Optional[str]:
-        """Fallback resolver: inspect application folder and pick file by expected prefix."""
-        expected_prefix = self.DOCUMENT_FILENAME_PREFIX.get(document_type)
-        if not expected_prefix:
-            return None
-
-        folder = f"applications/{application_id}"
-        try:
-            storage_client = get_storage_client()
-            objects = storage_client.storage.from_(self.STORAGE_BUCKET).list(folder)
-            if not isinstance(objects, list):
-                return None
-
-            for obj in objects:
-                name = obj.get('name', '') if isinstance(obj, dict) else ''
-                if name and name.startswith(expected_prefix):
-                    return f"{folder}/{name}"
-        except Exception as e:
-            logger.warning(
-                f"Fallback folder inspection failed for application {application_id}, "
-                f"document {document_type}: {str(e)}"
-            )
-
-        return None
-    
     async def submit_application(
         self,
         personal_info: Dict[str, Any],
@@ -274,9 +191,8 @@ class CareerService:
             for doc_type, doc_file in required_documents.items():
                 if doc_file:
                     ext = self._get_file_extension(doc_file.filename)
-                    url = await self.storage.upload_file(
+                    url = await self.cloudinary.upload_file(
                         file=doc_file,
-                        bucket=self.STORAGE_BUCKET,
                         folder=folder,
                         custom_filename=f"{doc_type}{ext}"
                     )
@@ -289,9 +205,8 @@ class CareerService:
             if optional_documents.get('educational_certificates'):
                 for idx, cert in enumerate(optional_documents['educational_certificates']):
                     ext = self._get_file_extension(cert.filename)
-                    url = await self.storage.upload_file(
+                    url = await self.cloudinary.upload_file(
                         file=cert,
-                        bucket=self.STORAGE_BUCKET,
                         folder=folder,
                         custom_filename=f"educational_cert_{idx}{ext}"
                     )
@@ -302,9 +217,8 @@ class CareerService:
             
             if optional_documents.get('experience_letter'):
                 ext = self._get_file_extension(optional_documents['experience_letter'].filename)
-                url = await self.storage.upload_file(
+                url = await self.cloudinary.upload_file(
                     file=optional_documents['experience_letter'],
-                    bucket=self.STORAGE_BUCKET,
                     folder=folder,
                     custom_filename=f"experience_letter{ext}"
                 )
@@ -313,9 +227,8 @@ class CareerService:
             
             if optional_documents.get('salary_slip'):
                 ext = self._get_file_extension(optional_documents['salary_slip'].filename)
-                url = await self.storage.upload_file(
+                url = await self.cloudinary.upload_file(
                     file=optional_documents['salary_slip'],
-                    bucket=self.STORAGE_BUCKET,
                     folder=folder,
                     custom_filename=f"salary_slip{ext}"
                 )
@@ -655,7 +568,7 @@ class CareerService:
         admin_user_id: Optional[str] = None
     ) -> str:
         """
-        Generate a signed URL for document download
+        Get a document download URL from Cloudinary.
         
         Args:
             application_id: UUID of the application
@@ -663,7 +576,7 @@ class CareerService:
             admin_user_id: ID of the admin downloading the document (for audit logging)
         
         Returns:
-            Signed download URL
+            Download URL (signed for private assets)
         
         Raises:
             HTTPException if application or document not found
@@ -680,63 +593,27 @@ class CareerService:
                     detail=f"Document {document_type} not found"
                 )
             
-            # Debug: Log what we got from the database
-            logger.info(f"document_url from DB: {document_url}")
-            
-            # Extract storage path from URL if it's a full URL
-            # Handle both cases: full URL (old data) and path-only (new data)
             if not document_url or document_url in ["", "N/A"]:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Document {document_type} was not uploaded or is missing"
                 )
 
-            storage_path = self._normalize_storage_path(document_url)
-            
-            logger.info(f"Final storage_path for signed URL: {storage_path} (Bucket: {self.STORAGE_BUCKET})")
-            
-            # Create signed URL (valid for 1 hour) using refreshable storage client
-            storage_client = get_storage_client()
-            try:
-                signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
-                    storage_path,
-                    3600  # 1 hour expiration
-                )
-            except Exception as sign_error:
-                # Self-heal stale/mismatched DB paths by inspecting actual folder object names.
-                error_text = str(sign_error).lower()
-                if 'not_found' in error_text or 'object not found' in error_text:
-                    fallback_path = self._resolve_storage_path_from_folder(application_id, document_type)
-                    if fallback_path and fallback_path != storage_path:
-                        logger.warning(
-                            f"Storage path mismatch detected for application {application_id}, "
-                            f"document {document_type}. DB path='{storage_path}', fallback path='{fallback_path}'"
-                        )
-                        storage_path = fallback_path
-                        signed_url_response = storage_client.storage.from_(self.STORAGE_BUCKET).create_signed_url(
-                            storage_path,
-                            3600
-                        )
-                    else:
-                        raise
-                else:
-                    raise
-            
-            # Handle response format (same as agreement API)
-            if isinstance(signed_url_response, dict):
-                signed_url = signed_url_response.get('signedURL') or signed_url_response.get('signedUrl')
-            else:
-                signed_url = str(signed_url_response)
-            
-            if not signed_url:
-                logger.error(f"Failed to extract signed URL from response: {signed_url_response}")
+            # Keep backward compatibility for existing non-Cloudinary links.
+            if "res.cloudinary.com" not in document_url and not document_url.startswith("cloudinary://"):
+                return document_url
+
+            download_url = self.cloudinary.generate_download_url(
+                document_url,
+                expires_in=settings.CAREER_CLOUDINARY_SIGNED_URL_TTL
+            )
+            if not download_url:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to generate signed URL"
+                    detail="Failed to generate download URL"
                 )
-            
-            logger.info(f"Signed URL generated successfully for {storage_path}")
-            return signed_url
+
+            return download_url
             
         except HTTPException:
             raise
