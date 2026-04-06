@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
@@ -134,6 +134,43 @@ class Settings(BaseSettings):
     MESSAGECENTRAL_OTP_LENGTH: int = Field(default=6)
     MESSAGECENTRAL_OTP_EXPIRY_SECONDS: int = Field(default=300)  # 5 minutes
 
+    # =====================================================
+    # CLOUDINARY SETTINGS
+    # =====================================================
+    CLOUDINARY_CLOUD_NAME: str = Field(default="")
+    CLOUDINARY_API_KEY: str = Field(default="")
+    CLOUDINARY_API_SECRET: str = Field(default="")
+    CAREER_CLOUDINARY_UPLOAD_TYPE: str = Field(default="private")
+    CAREER_CLOUDINARY_SIGNED_URL_TTL: int = Field(default=3600)
+
+    @field_validator("CAREER_CLOUDINARY_UPLOAD_TYPE")
+    @classmethod
+    def validate_career_cloudinary_upload_type(cls, value: str) -> str:
+        upload_type = (value or "private").strip().lower()
+        if upload_type not in {"private", "public"}:
+            raise ValueError("CAREER_CLOUDINARY_UPLOAD_TYPE must be either 'private' or 'public'")
+        return upload_type
+
+    @field_validator("CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET", "CLOUDINARY_CLOUD_NAME")
+    @classmethod
+    def validate_cloudinary_credential_set(cls, value: str, info):
+        # Normalize to avoid mixed whitespace-only values.
+        return (value or "").strip()
+
+    @model_validator(mode="after")
+    def validate_cloudinary_credentials_consistency(self):
+        creds = [
+            bool(self.CLOUDINARY_CLOUD_NAME),
+            bool(self.CLOUDINARY_API_KEY),
+            bool(self.CLOUDINARY_API_SECRET),
+        ]
+        if any(creds) and not all(creds):
+            raise ValueError(
+                "Cloudinary configuration is partial. Set CLOUDINARY_CLOUD_NAME, "
+                "CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET together."
+            )
+        return self
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -148,6 +185,14 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT.lower() == "production"
+
+    @property
+    def cloudinary_is_configured(self) -> bool:
+        return all([
+            bool(self.CLOUDINARY_CLOUD_NAME),
+            bool(self.CLOUDINARY_API_KEY),
+            bool(self.CLOUDINARY_API_SECRET),
+        ])
 
 # Create settings instance
 settings = Settings()

@@ -41,3 +41,6 @@ python-dateutil==2.8.2
 pytz==2023.3
 
 rich==13.7.0  # Rich terminal output for logging
+
+# Cloudinary Storage
+cloudinary==1.41.0
