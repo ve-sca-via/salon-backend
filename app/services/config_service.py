@@ -16,11 +16,7 @@ SENSITIVE_CONFIG_KEYS = {
     'razorpay_key_secret',
     'razorpay_key_id',
     'razorpay_webhook_secret',
-    'stripe_secret_key',
-    'stripe_webhook_secret',
     'smtp_password',
-    'resend_api_key',
-    'google_maps_api_key'
 }
 
 # Predefined platform-native configuration schema available for admins to set
