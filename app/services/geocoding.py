@@ -12,9 +12,8 @@ Best Practices (Nominatim):
 - Enable addressdetails for structured address data
 """
 
-from geopy.geocoders import GoogleV3, Nominatim
+from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-from app.core.config import settings
 from typing import Optional, Tuple, Dict
 import asyncio
 import time
@@ -34,35 +33,12 @@ CACHE_TTL_SECONDS = 3600  # 1 hour
 
 class GeocodingService:
     def __init__(self):
-        # Initialize rate limiting attributes (needed for both providers)
+        # Initialize rate limiting attributes
         self._last_request_time = 0
         self._rate_limit_delay = 1.0
         
-        # Log the API key status
-        api_key = settings.GOOGLE_MAPS_API_KEY
-        logger.info(f"Geocoding initialization:")
-        logger.info(f"   Google Maps API key present: {bool(api_key)}")
-        logger.info(f"   Google Maps API key length: {len(api_key) if api_key else 0}")
-        
-        # Reject placeholder values
-        placeholder_values = ["your-google-maps-api-key", "YOUR_API_KEY", "xxx", ""]
-        is_placeholder = any(api_key == placeholder for placeholder in placeholder_values) if api_key else True
-        
-        # Try Google Maps first if API key is provided AND not a placeholder
-        if api_key and api_key.strip() and len(api_key) > 30 and not is_placeholder:
-            try:
-                self.geocoder = GoogleV3(api_key=api_key)
-                self.provider = "google"
-                logger.info("Geocoding: Using Google Maps API")
-            except Exception as e:
-                logger.warning(f"Google Maps API initialization failed: {e}")
-                logger.info("Falling back to Nominatim (OpenStreetMap)")
-                self._init_nominatim()
-        else:
-            if api_key and not is_placeholder:
-                logger.warning(f"Google Maps API key is invalid (too short): '{api_key[:20]}...'")
-            logger.info("Using Nominatim (OpenStreetMap) - FREE geocoding, no API key needed")
-            self._init_nominatim()
+        logger.info("Initializing Geocoding Service using Nominatim (OpenStreetMap)")
+        self._init_nominatim()
     
     def _init_nominatim(self):
         """Initialize Nominatim (free OpenStreetMap geocoder)"""
