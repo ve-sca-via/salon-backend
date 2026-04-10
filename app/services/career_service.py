@@ -237,8 +237,8 @@ class CareerService:
             
             # List of columns that currently exist in the DB (schema source of truth)
             EXISTING_DB_COLUMNS = {
-                "id", "application_number", "full_name", "email", "phone", 
-                "current_city", "current_address", "willing_to_relocate",
+                "id", "application_number", "full_name", "email", "phone",
+                "age", "permanent_address", "current_city", "current_address", "willing_to_relocate",
                 "position", "experience_years", "previous_company", 
                 "current_salary", "expected_salary", "notice_period_days",
                 "highest_qualification", "university_name", "graduation_year",
@@ -585,7 +585,10 @@ class CareerService:
             # Get application to retrieve document URL
             application = self.get_application_by_id(application_id)
             
-            document_url = application.get(f"{document_type}_url")
+            # Use DOCUMENT_FIELD_MAPPING to resolve DB column name
+            # e.g. 'aadhaar_card' -> 'aadhaar_url' (not 'aadhaar_card_url')
+            db_column = self.DOCUMENT_FIELD_MAPPING.get(document_type, f"{document_type}_url")
+            document_url = application.get(db_column)
             
             if not document_url:
                 raise HTTPException(
