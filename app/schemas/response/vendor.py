@@ -121,18 +121,22 @@ class SalonListResponse(BaseModel):
     id: str
     business_name: str
     business_type: Optional[BusinessType] = None  # Optional as not stored in salons table
+    address: Optional[str] = None  # Street address — shown on listing cards
     city: str
     state: str
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     logo_url: Optional[str] = None
-    average_rating: float
-    total_reviews: int
+    cover_images: Optional[List[str]] = None
+    average_rating: Optional[float] = None
+    total_reviews: Optional[int] = None
     is_active: bool
     distance_km: Optional[float] = None  # Calculated field for nearby search
+    accepting_bookings: Optional[bool] = True
 
     class Config:
         from_attributes = True
+        extra = "allow"  # Pass through any extra fields from DB
 
 # =====================================================
 # SERVICE RESPONSE SCHEMAS
