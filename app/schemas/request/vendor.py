@@ -145,6 +145,7 @@ class ServiceCreate(BaseModel):
     description: Optional[str] = None
     duration_minutes: int = Field(..., gt=0)
     price: float = Field(..., ge=0)
+    discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     image_url: Optional[str] = None
 
@@ -153,6 +154,7 @@ class ServiceUpdate(BaseModel):
     description: Optional[str] = None
     duration_minutes: Optional[int] = Field(None, gt=0)
     price: Optional[float] = Field(None, ge=0)
+    discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     image_url: Optional[str] = None
     is_active: Optional[bool] = None
