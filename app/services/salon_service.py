@@ -48,6 +48,36 @@ class SalonService:
     def __init__(self, db_client):
         """Initialize service with database client"""
         self.db = db_client
+
+    async def _attach_discount_flags(self, salons: List[Dict[str, Any]]) -> None:
+        """
+        Enrich salons with `has_discounted_services`.
+
+        This flag is true when at least one active service for the salon has
+        either discounted_price set or discount_percentage > 0.
+        """
+        if not salons:
+            return
+
+        salon_ids = [s.get("id") for s in salons if s.get("id")]
+        if not salon_ids:
+            return
+
+        discounted_response = self.db.table("services").select(
+            "salon_id, discounted_price, discount_percentage"
+        ).in_("salon_id", salon_ids).eq("is_active", True).execute()
+
+        discounted_salon_ids = set()
+        for service in (discounted_response.data or []):
+            has_discount = (
+                service.get("discounted_price") is not None
+                or (service.get("discount_percentage") is not None and float(service.get("discount_percentage") or 0) > 0)
+            )
+            if has_discount:
+                discounted_salon_ids.add(service.get("salon_id"))
+
+        for salon in salons:
+            salon["has_discounted_services"] = salon.get("id") in discounted_salon_ids
     
     async def get_salon(
         self,
@@ -215,6 +245,7 @@ class SalonService:
             # Note: business_type column doesn't exist in salons table
             # Removed filter for business_type
         
+        await self._attach_discount_flags(salons)
         return salons
     
     async def update_salon(
@@ -514,6 +545,8 @@ class SalonService:
             vjr = salon.pop("vendor_join_requests", None)
             if vjr and isinstance(vjr, dict):
                 salon["business_type"] = vjr.get("business_type")
+
+        await self._attach_discount_flags(salons)
         
         logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
         
@@ -610,6 +643,8 @@ class SalonService:
             vjr = salon.pop("vendor_join_requests", None)
             if vjr and isinstance(vjr, dict):
                 salon["business_type"] = vjr.get("business_type")
+
+        await self._attach_discount_flags(salons)
         
         logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")
         
