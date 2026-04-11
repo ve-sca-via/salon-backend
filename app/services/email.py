@@ -704,7 +704,11 @@ class EmailService:
             template = self.env.get_template('payment_reminder.html')
             
             # Vendor login URL (not dashboard URL, since they need to login first)
-            vendor_login_url = f"{settings.VENDOR_PORTAL_URL.rstrip('/')}/vendor-login"
+            # Normalize common misconfiguration where VENDOR_PORTAL_URL ends with /vendor.
+            vendor_portal_base = settings.VENDOR_PORTAL_URL.rstrip('/')
+            if vendor_portal_base.endswith('/vendor'):
+                vendor_portal_base = vendor_portal_base[:-7]
+            vendor_login_url = f"{vendor_portal_base}/vendor-login"
             
             # Log reminder
             logger.info("=" * 100)
