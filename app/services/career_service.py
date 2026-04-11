@@ -237,15 +237,13 @@ class CareerService:
             
             # List of columns that currently exist in the DB (schema source of truth)
             EXISTING_DB_COLUMNS = {
-                "id", "application_number", "full_name", "email", "phone", 
-                "current_city", "current_address", "willing_to_relocate",
-                "position", "experience_years", "previous_company", 
-                "current_salary", "expected_salary", "notice_period_days",
-                "highest_qualification", "university_name", "graduation_year",
-                "cover_letter", "linkedin_url", "portfolio_url",
-                "resume_url", "aadhaar_url", "pan_url", "photo_url", 
-                "address_proof_url", "educational_certificates_url",
-                "experience_letter_url", "salary_slip_url", "status"
+                "id", "application_number", "full_name", "email", "phone",
+                "age", "permanent_address", "current_address",
+                "position", "experience_years",
+                "highest_qualification",
+                "cover_letter",
+                "resume_url", "aadhaar_url", "photo_url",
+                "status"
             }
             
             # Filter application data to ONLY include columns that exist in DB
@@ -260,11 +258,7 @@ class CareerService:
                 "status": "pending"
             }
             
-            # Placeholder for required DB columns (since they are NOT NULL)
-            # If they are NOT in your current document_urls (meaning user didn't upload them)
-            # we need to put an empty string so the DB insert doesn't fail but UI knows it's empty.
-            if "pan_url" not in application_data: application_data["pan_url"] = ""
-            if "address_proof_url" not in application_data: application_data["address_proof_url"] = ""
+            # No nullable placeholder overrides needed — all remaining document columns are optional.
             
             # Insert into database
             result = self.db.table("career_applications").insert(application_data).execute()
@@ -585,7 +579,10 @@ class CareerService:
             # Get application to retrieve document URL
             application = self.get_application_by_id(application_id)
             
-            document_url = application.get(f"{document_type}_url")
+            # Use DOCUMENT_FIELD_MAPPING to resolve DB column name
+            # e.g. 'aadhaar_card' -> 'aadhaar_url' (not 'aadhaar_card_url')
+            db_column = self.DOCUMENT_FIELD_MAPPING.get(document_type, f"{document_type}_url")
+            document_url = application.get(db_column)
             
             if not document_url:
                 raise HTTPException(
