@@ -46,7 +46,7 @@ class CustomerService:
             response = self.db.table("cart_items")\
                 .select(
                     "id, service_id, salon_id, quantity, metadata, created_at, "
-                    "services(id, name, price, duration_minutes, image_url, is_active), "
+                    "services(id, name, price, discounted_price, discount_percentage, duration_minutes, image_url, is_active), "
                     "salons(id, business_name, city, state)"
                 )\
                 .eq("user_id", customer_id)\
@@ -1334,7 +1334,7 @@ class CustomerService:
     def _get_effective_service_price(self, service_details: Dict[str, Any]) -> float:
         """
         Get the effective price for a service.
-        Currently returns the base price, but can be extended for discounts/promotions.
+        Uses discounted_price when present, otherwise returns the base price.
         
         Args:
             service_details: Service data from database
@@ -1342,4 +1342,7 @@ class CustomerService:
         Returns:
             Effective price as float
         """
+        discounted_price = service_details.get('discounted_price')
+        if discounted_price is not None:
+            return float(discounted_price)
         return float(service_details.get('price', 0.0))

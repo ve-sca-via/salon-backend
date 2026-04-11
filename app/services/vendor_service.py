@@ -4,6 +4,7 @@ Handles vendor salon management, services CRUD
 """
 import logging
 from typing import Dict, Any, Optional, List
+from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
 
 from app.core.database import get_db
@@ -235,6 +236,7 @@ class VendorService:
             # Create service with auto-assigned salon_id
             service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
+            service_data = self._apply_discount_fields(service_data)
             
             response = self.db.table("services").insert(service_data).execute()
             
@@ -295,6 +297,26 @@ class VendorService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="No fields provided for update"
                 )
+
+            # Recalculate discounted_price when price or discount_percentage changes
+            if "price" in update_data or "discount_percentage" in update_data:
+                existing_service_response = self.db.table("services").select(
+                    "price, discount_percentage"
+                ).eq("id", service_id).single().execute()
+
+                if not existing_service_response.data:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Service not found"
+                    )
+
+                existing_service = existing_service_response.data
+                effective_data = {
+                    "price": update_data.get("price", existing_service.get("price", 0)),
+                    "discount_percentage": update_data.get("discount_percentage", existing_service.get("discount_percentage"))
+                }
+
+                update_data.update(self._apply_discount_fields(effective_data))
             
             # Update service
             response = self.db.table("services").update(update_data).eq("id", service_id).execute()
@@ -483,11 +505,6 @@ class VendorService:
             
             # Update status
             update_data = {"status": new_status}
-            
-            if new_status == "confirmed":
-                update_data["confirmed_at"] = "now()"
-            elif new_status == "completed":
-                update_data["completed_at"] = "now()"
             
             response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
             
@@ -1017,3 +1034,62 @@ class VendorService:
         logger.info(f" Retrieved {len(categories)} service categories")
         
         return categories
+
+    def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compute discounted_price from price and discount_percentage.
+
+        Business rules:
+        - discount_percentage is optional
+        - if discount_percentage is None or 0, remove discount fields
+        - if price is 0, discount cannot be applied
+        """
+        price_raw = data.get("price", 0)
+        discount_raw = data.get("discount_percentage")
+
+        try:
+            price = Decimal(str(price_raw or 0))
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid price value"
+            )
+
+        if discount_raw is None:
+            data["discount_percentage"] = None
+            data["discounted_price"] = None
+            return data
+
+        try:
+            discount_percentage = Decimal(str(discount_raw))
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid discount percentage"
+            )
+
+        if discount_percentage < 0 or discount_percentage > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Discount percentage must be between 0 and 100"
+            )
+
+        if discount_percentage == 0:
+            data["discount_percentage"] = None
+            data["discounted_price"] = None
+            return data
+
+        if price <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Discount can only be applied to services with price greater than 0"
+            )
+
+        discounted_price = (price * (Decimal("100") - discount_percentage) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+        normalized_discount = discount_percentage.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        data["discount_percentage"] = float(normalized_discount)
+        data["discounted_price"] = float(discounted_price)
+        return data

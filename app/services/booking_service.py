@@ -408,8 +408,11 @@ class BookingService:
                     from app.core.exceptions import NotFoundError
                     raise NotFoundError("Service", service_id)
 
-                # Calculate pricing
-                unit_price = service_details.get("price", 0.0)
+                # Calculate pricing (use discounted price when available)
+                unit_price = service_details.get("discounted_price")
+                if unit_price is None:
+                    unit_price = service_details.get("price", 0.0)
+                unit_price = float(unit_price)
                 line_total = unit_price * quantity
                 line_duration = service_details.get("duration_minutes", 30) * quantity
 
@@ -455,6 +458,9 @@ class BookingService:
                     "service_name": svc["service_details"].get("name", "Service"),
                     "quantity": svc["quantity"],
                     "unit_price": svc["unit_price"],
+                    "original_price": svc["service_details"].get("price", 0.0),
+                    "discounted_price": svc["service_details"].get("discounted_price"),
+                    "discount_percentage": svc["service_details"].get("discount_percentage"),
                     "line_total": svc["line_total"],
                     "duration_minutes": svc["duration_minutes"]
                 }
