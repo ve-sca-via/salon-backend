@@ -344,6 +344,7 @@ class VendorApprovalService:
             "opening_time": opening_time,
             "closing_time": closing_time,
             "working_days": working_days if isinstance(working_days, list) else [],
+            "facilities": getattr(request_data, "facilities", None) or documents.get("facilities", None),
             "registration_fee_paid": False,
             "is_active": False,
             "is_verified": False
