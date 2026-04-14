@@ -56,6 +56,7 @@ class VendorJoinRequestResponse(BaseModel):
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
+    facilities: Optional[Dict[str, bool]] = None
     documents: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
@@ -110,6 +111,7 @@ class SalonResponse(BaseModel):
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
     business_hours: Optional[Dict[str, Any]] = None  # Day-wise hours {"monday": "9:00 AM - 6:00 PM", ...}
+    facilities: Optional[Dict[str, bool]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -133,6 +135,7 @@ class SalonListResponse(BaseModel):
     is_active: bool
     distance_km: Optional[float] = None  # Calculated field for nearby search
     accepting_bookings: Optional[bool] = True
+    facilities: Optional[Dict[str, bool]] = None
 
     class Config:
         from_attributes = True
