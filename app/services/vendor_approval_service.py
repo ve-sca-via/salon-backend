@@ -4,6 +4,7 @@ Handles vendor join request approval workflow
 """
 import uuid
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from app.core.database import get_db
@@ -307,16 +308,51 @@ class VendorApprovalService:
         # Extract logo from documents
         logo_url = documents.get("logo")
         
-        # Extract business hours from direct columns (primary) or documents (fallback)
-        opening_time = getattr(request_data, "opening_time", None) or documents.get("opening_time")
-        closing_time = getattr(request_data, "closing_time", None) or documents.get("closing_time")
-        working_days = getattr(request_data, "working_days", None) or documents.get("working_days", [])
+        # Extract business hours from documents (primary source now)
+        # Format in documents.business_hours: {"monday": "9:00 AM - 6:00 PM", ...}
+        business_hours = documents.get("business_hours", {})
+        opening_time = None
+        closing_time = None
+        working_days = []
         
-        # Convert time objects to strings if needed (fix JSON serialization)
-        if opening_time and hasattr(opening_time, 'strftime'):
-            opening_time = opening_time.strftime('%H:%M:%S')
-        if closing_time and hasattr(closing_time, 'strftime'):
-            closing_time = closing_time.strftime('%H:%M:%S')
+        if business_hours and isinstance(business_hours, dict):
+            opening_times = []
+            closing_times = []
+            
+            # Map day names to ensure consistent order if needed, but here we just need all times
+            for day, hours_str in business_hours.items():
+                if hours_str and hours_str != 'Closed' and ' - ' in hours_str:
+                    try:
+                        working_days.append(day.capitalize())
+                        open_str, close_str = hours_str.split(' - ')
+                        
+                        # Parse "9:00 AM" to time object
+                        open_dt = datetime.strptime(open_str.strip(), '%I:%M %p')
+                        close_dt = datetime.strptime(close_str.strip(), '%I:%M %p')
+                        
+                        opening_times.append(open_dt.time())
+                        closing_times.append(close_dt.time())
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Failed to parse hours for {day}: {hours_str}. Error: {e}")
+            
+            if opening_times:
+                opening_time = min(opening_times).strftime('%H:%M:%S')
+            if closing_times:
+                closing_time = max(closing_times).strftime('%H:%M:%S')
+        
+        # Fallback to direct columns if documents parsing failed or returned nothing
+        if not opening_time:
+            opening_time = getattr(request_data, "opening_time", None)
+            if opening_time and hasattr(opening_time, 'strftime'):
+                opening_time = opening_time.strftime('%H:%M:%S')
+                
+        if not closing_time:
+            closing_time = getattr(request_data, "closing_time", None)
+            if closing_time and hasattr(closing_time, 'strftime'):
+                closing_time = closing_time.strftime('%H:%M:%S')
+                
+        if not working_days:
+            working_days = getattr(request_data, "working_days", [])
         
         # Note: vendor_id will be set when vendor completes registration
         # assigned_rm should be the RM user_id from request (not rm_id column)
@@ -344,6 +380,8 @@ class VendorApprovalService:
             "opening_time": opening_time,
             "closing_time": closing_time,
             "working_days": working_days if isinstance(working_days, list) else [],
+            "business_hours": business_hours,
+            "facilities": getattr(request_data, "facilities", None) or documents.get("facilities", None),
             "registration_fee_paid": False,
             "is_active": False,
             "is_verified": False
