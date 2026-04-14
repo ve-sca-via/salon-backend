@@ -56,6 +56,7 @@ class VendorJoinRequestBase(BaseModel):
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = Field(default_factory=list)
+    facilities: Optional[Dict[str, bool]] = Field(default_factory=dict, description="Salon facilities availability")
 
 class VendorJoinRequestCreate(VendorJoinRequestBase):
     pass
@@ -107,6 +108,7 @@ class SalonBase(BaseModel):
     opening_time: Optional[time] = None
     closing_time: Optional[time] = None
     working_days: Optional[List[str]] = None
+    facilities: Optional[Dict[str, bool]] = Field(default_factory=dict, description="Salon facilities availability")
 
 class SalonCreate(SalonBase):
     pass
@@ -136,6 +138,7 @@ class SalonUpdate(BaseModel):
     accepting_bookings: Optional[bool] = None
     is_active: Optional[bool] = None
     is_verified: Optional[bool] = None
+    facilities: Optional[Dict[str, bool]] = None
 # =====================================================
 # SERVICE REQUEST SCHEMAS
 # =====================================================
