@@ -168,6 +168,7 @@ class ServiceResponse(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     discounted_price: Optional[float] = Field(None, ge=0)
     category_id: Optional[str] = None
+    gender_category: str = "both"
     image_url: Optional[str] = None
     is_active: bool
     created_at: datetime
