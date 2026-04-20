@@ -483,6 +483,7 @@ class VendorApprovalService:
                     "price": float(service.get("price", 0)),
                     "duration_minutes": int(service.get("duration_minutes", 30)),
                     "category_id": category_id,
+                    "gender_category": service.get("gender_category", "both"),
                     "is_active": True,
                     "is_featured": False
                 }
