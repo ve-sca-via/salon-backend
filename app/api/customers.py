@@ -15,13 +15,15 @@ from supabase import Client
 from app.core.auth import get_current_user, TokenData
 from app.core.database import get_db_client
 from app.services.customer_service import CustomerService
+from app.services.booking_service import BookingService
 from app.schemas import (
     CartResponse, CartOperationResponse, SuccessResponse, CartClearResponse,
     CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
     SalonsSearchResponse, SalonDetailsResponse, BookingResponse,
+    FavoritesResponse, FavoriteOperationResponse,
     CartItemCreate, CartItemUpdate,
     BookingCreate, BookingCancellation,
-    CartCheckoutCreate
+    CartCheckoutCreate, FavoriteCreate
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -230,7 +232,7 @@ async def search_salons(
 
 @router.get("/salons/{salon_id}", response_model=SalonDetailsResponse)
 async def get_salon_details(
-    salon_id: int,
+    salon_id: str,
     customer_service: CustomerService = Depends(get_customer_service)
 ):
     """
@@ -239,6 +241,51 @@ async def get_salon_details(
     Public endpoint - no authentication required
     """
     return await customer_service.get_salon_details(salon_id)
+
+
+# =====================================================
+# FAVORITES
+# =====================================================
+
+@router.get("/favorites", response_model=FavoritesResponse)
+async def get_favorites(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Get all favorite salons for the current customer.
+    """
+    return await customer_service.get_favorites(current_user.user_id)
+
+
+@router.post("/favorites", response_model=FavoriteOperationResponse)
+async def add_favorite(
+    favorite_data: FavoriteCreate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Add a salon to the current customer's favorites.
+    """
+    return await customer_service.add_favorite(
+        customer_id=current_user.user_id,
+        salon_id=favorite_data.salon_id
+    )
+
+
+@router.delete("/favorites/{salon_id}", response_model=FavoriteOperationResponse)
+async def remove_favorite(
+    salon_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Remove a salon from the current customer's favorites.
+    """
+    return await customer_service.remove_favorite(
+        customer_id=current_user.user_id,
+        salon_id=salon_id
+    )
 
 
 # =====================================================
