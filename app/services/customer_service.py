@@ -841,11 +841,11 @@ class CustomerService:
             if min_rating:
                 query = query.gte("rating", min_rating)
             
-            # Only show active salons
-            query = query.eq("status", "active")
+            # Only show publicly visible salons
+            query = query.eq("is_active", True).eq("is_verified", True).eq("registration_fee_paid", True)
             
             # Order by rating
-            query = query.order("rating", desc=True)
+            query = query.order("average_rating", desc=True)
             
             response = query.execute()
             
@@ -899,11 +899,11 @@ class CustomerService:
                     f"city.ilike.%{location}%,state.ilike.%{location}%,address.ilike.%{location}%"
                 )
             
-            # Only active salons
-            salon_query = salon_query.eq("status", "active")
+            # Only show publicly visible salons
+            salon_query = salon_query.eq("is_active", True).eq("is_verified", True).eq("registration_fee_paid", True)
             
             # Order by rating
-            salon_query = salon_query.order("rating", desc=True)
+            salon_query = salon_query.order("average_rating", desc=True)
             
             response = salon_query.execute()
             
@@ -924,7 +924,7 @@ class CustomerService:
                 detail=f"Failed to search salons: {str(e)}"
             )
     
-    async def get_salon_details(self, salon_id: int) -> Dict[str, Any]:
+    async def get_salon_details(self, salon_id: str) -> Dict[str, Any]:
         """
         Get detailed information about a specific salon.
         
@@ -998,7 +998,9 @@ class CustomerService:
             salons_response = self.db.table("salons")\
                 .select("*")\
                 .in_("id", salon_ids)\
-                .eq("status", "active")\
+                .eq("is_active", True)\
+                .eq("is_verified", True)\
+                .eq("registration_fee_paid", True)\
                 .execute()
             
             favorites = salons_response.data or []
@@ -1021,7 +1023,7 @@ class CustomerService:
     async def add_favorite(
         self,
         customer_id: str,
-        salon_id: int
+        salon_id: str
     ) -> Dict[str, Any]:
         """
         Add salon to favorites (idempotent).
@@ -1087,7 +1089,7 @@ class CustomerService:
     async def remove_favorite(
         self,
         customer_id: str,
-        salon_id: int
+        salon_id: str
     ) -> Dict[str, Any]:
         """
         Remove salon from favorites.
@@ -1103,7 +1105,7 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            response = db.table("favorites")\
+            response = self.db.table("favorites")\
                 .delete()\
                 .eq("user_id", customer_id)\
                 .eq("salon_id", salon_id)\
