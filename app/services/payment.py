@@ -40,8 +40,7 @@ class RazorpayService:
             try:
                 # Mask credentials for logging (show first 4 and last 4 characters)
                 masked_key_id = f"{key_id[:4]}...{key_id[-4:]}" if len(key_id) > 8 else "***"
-                masked_secret = f"{key_secret[:4]}...{key_secret[-4:]}" if len(key_secret) > 8 else "***"
-                logger.info(f"Initializing Razorpay client with key_id: {masked_key_id}, secret: {masked_secret}")
+                logger.info(f"Initializing Razorpay client with key_id: {masked_key_id}")
                 
                 self.client = razorpay.Client(auth=(key_id, key_secret))
                 logger.info("Razorpay client initialized successfully")
@@ -98,10 +97,18 @@ class RazorpayService:
             }
             
         except razorpay.errors.BadRequestError as e:
-            logger.error(f"Razorpay bad request: {str(e)}")
+            error_message = str(e).strip()
+            if "authentication failed" in error_message.lower():
+                logger.error("Razorpay authentication failed while creating order")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Payment service authentication failed. Please verify Razorpay credentials."
+                )
+
+            logger.error(f"Razorpay bad request: {error_message}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid payment request: {str(e)}"
+                detail=f"Invalid payment request: {error_message}"
             )
         except Exception as e:
             logger.error(f"Razorpay order creation failed: {str(e)}")

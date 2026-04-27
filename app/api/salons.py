@@ -27,8 +27,13 @@ from app.schemas import (
     SalonResponse,
     SuccessResponse,
     PublicConfigResponse,
-    PopularCitiesResponse
+    PopularCitiesResponse,
+    FeedbackReviewCreate,
+    ReviewFeedbackContextResponse,
+    PublicSalonReviewsResponse,
+    ReviewOperationResponse
 )
+from app.services.customer_service import CustomerService
 
 router = APIRouter(prefix="/salons", tags=["salons"])
 
@@ -44,6 +49,11 @@ def get_salon_service(db: Client = Depends(get_db_client)) -> SalonService:
     Allows for easy mocking in tests and follows SOLID principles.
     """
     return SalonService(db_client=db)
+
+
+def get_customer_service(db: Client = Depends(get_db_client)) -> CustomerService:
+    """Dependency injection for public review-related customer operations."""
+    return CustomerService(db_client=db)
 
 
 # ========================================
@@ -226,6 +236,40 @@ async def get_salon(
         "salon": salon_data,
         "services": services
     }
+
+
+@router.get("/{salon_id}/reviews", response_model=PublicSalonReviewsResponse)
+async def get_salon_reviews(
+    salon_id: str,
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Get publicly visible reviews for a salon."""
+    return await customer_service.get_public_salon_reviews(salon_id)
+
+
+@router.get("/{salon_id}/feedback", response_model=ReviewFeedbackContextResponse)
+async def get_salon_feedback_context(
+    salon_id: str,
+    token: str = Query(..., description="Signed review link token"),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Validate a signed review link and return the feedback page context."""
+    return await customer_service.get_feedback_context(salon_id, token)
+
+
+@router.post("/{salon_id}/feedback", response_model=ReviewOperationResponse)
+async def submit_salon_feedback(
+    salon_id: str,
+    payload: FeedbackReviewCreate,
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Submit a salon review from the public feedback flow."""
+    return await customer_service.submit_feedback_review(
+        salon_id=salon_id,
+        token=payload.token,
+        rating=payload.rating,
+        comment=payload.comment
+    )
 
 
 @router.get("/{salon_id}/services", response_model=SalonServicesResponse)

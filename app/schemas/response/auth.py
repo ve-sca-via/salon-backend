@@ -42,6 +42,7 @@ class PhoneLoginSendOTPResponse(BaseModel):
     verification_id: str
     expires_in: int = 300  # Seconds until OTP expires
     phone: str  # Masked phone number for display
+    customer_name: Optional[str] = None
 
 class PhoneLoginVerifyOTPResponse(BaseModel):
     """Response after successful OTP verification and login"""

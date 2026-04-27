@@ -706,6 +706,62 @@ def verify_registration_token(token: str) -> dict:
         )
 
 
+def create_review_feedback_token(
+    booking_id: str,
+    salon_id: str,
+    customer_id: str,
+    customer_email: str
+) -> str:
+    """Create a signed feedback token for post-service review links."""
+    data = {
+        "sub": "review_feedback",
+        "booking_id": booking_id,
+        "salon_id": salon_id,
+        "customer_id": customer_id,
+        "email": customer_email,
+        "type": "review_feedback"
+    }
+
+    expire = datetime.utcnow() + timedelta(days=30)
+    data.update({"exp": expire})
+
+    return jwt.encode(
+        data,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM
+    )
+
+
+def verify_review_feedback_token(token: str) -> dict:
+    """Verify a review feedback token and return its booking context."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+
+        if payload.get("type") != "review_feedback":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token type"
+            )
+
+        return {
+            "booking_id": payload.get("booking_id"),
+            "salon_id": payload.get("salon_id"),
+            "customer_id": payload.get("customer_id"),
+            "email": payload.get("email")
+        }
+
+    except JWTError as e:
+        logger.error(f"Review feedback token verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired feedback token"
+        )
+
+
 # =====================================================
 # UTILITY FUNCTIONS
 # =====================================================

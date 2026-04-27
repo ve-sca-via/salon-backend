@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Share Your Feedback</title>
+</head>
+<body style="margin:0;padding:0;background:#f7f7f7;font-family:Arial,sans-serif;color:#1f2937;">
+    <div style="max-width:640px;margin:0 auto;padding:32px 16px;">
+        <div style="background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,0.08);">
+            <div style="background:linear-gradient(135deg,#f89c02,#f97316);padding:32px 28px;color:#ffffff;">
+                <h1 style="margin:0 0 10px;font-size:28px;line-height:1.2;">Thanks for choosing {{ salon_name }}</h1>
+                <p style="margin:0;font-size:16px;line-height:1.6;opacity:0.95;">We hope your visit went beautifully. Your feedback helps other customers choose with confidence.</p>
+            </div>
+
+            <div style="padding:28px;">
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.7;">Hi {{ customer_name }},</p>
+                <p style="margin:0 0 20px;font-size:16px;line-height:1.7;">
+                    Thank you for booking with <strong>{{ salon_name }}</strong>. Your appointment
+                    <strong>{{ booking_number }}</strong> on <strong>{{ booking_date }}</strong> has been marked as completed.
+                </p>
+
+                <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:20px;margin:0 0 24px;">
+                    <p style="margin:0 0 10px;font-size:15px;line-height:1.6;">
+                        If you have a minute, please leave a quick rating and a short review.
+                    </p>
+                    <p style="margin:0;font-size:15px;line-height:1.6;">
+                        Your review will be saved against this salon and shown on its page.
+                    </p>
+                </div>
+
+                <div style="text-align:center;margin:28px 0;">
+                    <a href="{{ feedback_url }}" style="display:inline-block;background:#f97316;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:999px;font-size:16px;font-weight:700;">
+                        Share Feedback
+                    </a>
+                </div>
+
+                <p style="margin:0 0 10px;font-size:14px;line-height:1.7;color:#6b7280;">
+                    If the button does not work, open this link in your browser:
+                </p>
+                <p style="margin:0 0 24px;font-size:14px;line-height:1.7;word-break:break-all;">
+                    <a href="{{ feedback_url }}" style="color:#f97316;">{{ feedback_url }}</a>
+                </p>
+
+                <p style="margin:0;font-size:14px;line-height:1.7;color:#6b7280;">
+                    Need help? Contact us at <a href="mailto:{{ support_email }}" style="color:#f97316;">{{ support_email }}</a>.
+                </p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
