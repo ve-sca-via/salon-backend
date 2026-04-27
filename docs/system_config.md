@@ -15,8 +15,8 @@ These keys represent values that we query dynamically, rather than hardcoding th
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `razorpay_key_id` | string | Used to initialize the Razorpay SDK to generate orders. **[Cached: 6 Hours]** |
-| `razorpay_key_secret` | string | Used to validate signatures on incoming Razorpay payments. Should be updated via Admin Panel. **[Cached: 6 Hours]** |
+| `razorpay_key_id` | string | Used to initialize the Razorpay SDK to generate orders. |
+| `razorpay_key_secret` | string | Used to validate signatures on incoming Razorpay payments. Changes take effect immediately on the next payment request. |
 | `max_booking_advance_days` | string/number | Public configuration limits how many days in advance a user can book a service. |
 | `cancellation_window_hours` | string/number | Public configuration determining the cutoff for allowing cancellations. |
 

@@ -161,3 +161,24 @@ class ReviewOperationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ReviewFeedbackContextResponse(BaseModel):
+    """Public feedback page context loaded from a signed email token"""
+    success: bool
+    booking: Dict[str, Any]
+    salon: Dict[str, Any]
+    existing_review: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PublicSalonReviewsResponse(BaseModel):
+    """Public salon reviews response"""
+    success: bool
+    reviews: List[Dict[str, Any]]
+    count: int
+
+    class Config:
+        from_attributes = True
