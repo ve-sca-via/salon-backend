@@ -11,6 +11,7 @@ from .customer import (
     SalonFilters,
     ReviewCreate,
     ReviewUpdate,
+    FeedbackReviewCreate,
     CartItemCreate,
     CartItemUpdate,
     FavoriteCreate,
@@ -57,7 +58,7 @@ __all__ = [
     # Auth
     "LoginRequest", "SignupRequest", "LogoutAllRequest", "RefreshTokenRequest",
     # Customer
-    "SalonFilters", "ReviewCreate", "ReviewUpdate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
+    "SalonFilters", "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
     # Vendor
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate",
     "VendorJoinRequestUpdate", "VendorApprovalRequest", "VendorRejectionRequest",

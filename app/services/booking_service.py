@@ -8,6 +8,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from fastapi import HTTPException, status
 
+from app.core.auth import create_review_feedback_token
+from app.core.config import settings
 from app.core.database import get_db
 from app.schemas import BookingCreate, BookingUpdate, BookingResponse
 from app.schemas.request.booking import ServiceSummary, Totals, BookingForUpdate, BookingForCancellation
@@ -824,8 +826,12 @@ class BookingService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to complete booking"
                 )
-            
+
             logger.info(f"Booking {booking_id} completed by user {current_user_id}")
+            try:
+                await self._send_review_request_email(booking_id)
+            except Exception as email_error:
+                logger.error(f"Failed to send review request email for booking {booking_id}: {email_error}")
             
             return {"success": True, "message": "Booking completed"}
         
@@ -859,6 +865,43 @@ class BookingService:
             "email": response.data.get("email", ""),
             "phone": response.data.get("phone", "")
         }
+
+    async def _send_review_request_email(self, booking_id: str) -> None:
+        """Send a review invitation email for a completed booking."""
+        booking_response = self.db.table("bookings").select(
+            "id, booking_number, booking_date, customer_id, salon_id, "
+            "profiles!customer_id(full_name, email), salons(business_name)"
+        ).eq("id", booking_id).single().execute()
+
+        booking = booking_response.data
+        if not booking:
+            logger.warning(f"Review request email skipped: booking {booking_id} not found")
+            return
+
+        customer = booking.get("profiles") or {}
+        salon = booking.get("salons") or {}
+        customer_email = customer.get("email")
+        if not customer_email:
+            logger.warning(f"Review request email skipped: booking {booking_id} has no customer email")
+            return
+
+        token = create_review_feedback_token(
+            booking_id=booking["id"],
+            salon_id=booking["salon_id"],
+            customer_id=booking["customer_id"],
+            customer_email=customer_email
+        )
+        feedback_url = f"{settings.FRONTEND_URL.rstrip('/')}/salons/{booking['salon_id']}/feedback?token={token}"
+
+        await email_service.send_review_request_email(
+            customer_email=customer_email,
+            customer_name=customer.get("full_name") or "Customer",
+            salon_name=salon.get("business_name") or "your salon",
+            booking_number=booking.get("booking_number") or booking["id"],
+            booking_date=str(booking.get("booking_date") or ""),
+            feedback_url=feedback_url,
+            booking_id=booking["id"]
+        )
     
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
         """Get salon details with vendor email."""

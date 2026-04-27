@@ -18,6 +18,7 @@ from app.schemas import (
     ServiceUpdate,
     SalonUpdate
 )
+from app.services.booking_service import BookingService
 from app.services.activity_log_service import ActivityLogService
 from app.services.config_service import ConfigService
 
@@ -509,6 +510,15 @@ class VendorService:
             response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
             
             logger.info(f"Vendor {vendor_id} updated booking {booking_id} status to {new_status}")
+            
+            # Send review request email if booking was marked completed
+            if new_status == "completed":
+                try:
+                    booking_service = BookingService(db_client=self.db)
+                    await booking_service._send_review_request_email(booking_id)
+                except Exception as email_error:
+                    logger.error(f"Failed to send review request email for booking {booking_id}: {email_error}")
+                    # Don't fail the request, just log the error
             
             return {
                 "success": True,

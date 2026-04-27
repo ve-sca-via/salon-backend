@@ -1043,6 +1043,51 @@ class EmailService:
             logger.error(f"Failed to send vendor booking notification: {str(e)}")
             return False
 
+    async def send_review_request_email(
+        self,
+        customer_email: str,
+        customer_name: str,
+        salon_name: str,
+        booking_number: str,
+        booking_date: str,
+        feedback_url: str,
+        booking_id: str
+    ) -> bool:
+        """
+        Send a thank-you email with a review link after service completion.
+        """
+        try:
+            template = self.env.get_template('review_request.html')
+            html_body = template.render(
+                customer_name=customer_name,
+                salon_name=salon_name,
+                booking_number=booking_number,
+                booking_date=booking_date,
+                feedback_url=feedback_url,
+                support_email=settings.EMAIL_FROM
+            )
+
+            subject = f"Thanks for visiting {salon_name} - Share your feedback"
+
+            return await self._send_email(
+                customer_email,
+                subject,
+                html_body,
+                email_type="review_request_customer",
+                related_entity_type="booking",
+                related_entity_id=booking_id,
+                email_data={
+                    "customer_name": customer_name,
+                    "salon_name": salon_name,
+                    "booking_number": booking_number,
+                    "booking_date": booking_date,
+                    "feedback_url": feedback_url
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to send review request email: {str(e)}")
+            return False
+
 
 # =====================================================
 # GLOBAL INSTANCE

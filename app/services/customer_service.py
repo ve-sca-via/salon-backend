@@ -9,7 +9,7 @@ from app.schemas.request.customer import CartItemCreate, ReviewCreate, ReviewUpd
 from datetime import datetime
 from fastapi import HTTPException, status
 
-from app.core.database import get_db
+from app.core.auth import verify_review_feedback_token
 
 logger = logging.getLogger(__name__)
 
@@ -1143,18 +1143,25 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = db.table("reviews")\
-                .select("*, salons(name)")\
-                .eq("user_id", customer_id)\
+            response = self.db.table("reviews")\
+                .select("id, rating, review_text, created_at, updated_at, is_verified, salons(business_name)")\
+                .eq("customer_id", customer_id)\
+                .is_("deleted_at", "null")\
                 .order("created_at", desc=True)\
                 .execute()
             
-            # Format reviews
             reviews = []
-            if response.data:
-                for review in response.data:
-                    review["salon_name"] = review.get("salons", {}).get("name", "Unknown Salon")
-                    reviews.append(review)
+            for review in response.data or []:
+                reviews.append({
+                    "id": review.get("id"),
+                    "rating": review.get("rating"),
+                    "comment": review.get("review_text") or "",
+                    "created_at": review.get("created_at"),
+                    "updated_at": review.get("updated_at"),
+                    "status": "approved",
+                    "is_verified": review.get("is_verified", False),
+                    "salon_name": (review.get("salons") or {}).get("business_name", "Unknown Salon")
+                })
             
             logger.info(f"Retrieved {len(reviews)} reviews for customer {customer_id}")
             
@@ -1190,32 +1197,18 @@ class CustomerService:
             HTTPException: If creation fails
         """
         try:
-            review = {
-                "user_id": customer_id,
-                "salon_id": review_data.salon_id,
-                "booking_id": getattr(review_data, 'booking_id', None),
-                "rating": review_data.rating,
-                "comment": review_data.comment,
-                "status": "pending",  # Reviews need approval
-                "created_at": datetime.utcnow().isoformat()
-            }
-            
-            response = db.table("reviews")\
-                .insert(review)\
-                .execute()
-            
-            logger.info(f"Created review for salon {review_data['salon_id']} by customer {customer_id}")
-            
-            if response.data:
-                return {
-                    "success": True,
-                    "message": "Review submitted successfully. It will be published after approval.",
-                    "review": response.data[0]
-                }
-            
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to create review"
+            if not review_data.booking_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="booking_id is required to submit a review"
+                )
+
+            return await self._create_review_from_booking(
+                booking_id=review_data.booking_id,
+                customer_id=customer_id,
+                salon_id=review_data.salon_id,
+                rating=review_data.rating,
+                comment=review_data.comment
             )
         
         except HTTPException:
@@ -1229,7 +1222,7 @@ class CustomerService:
     
     async def update_review(
         self,
-        review_id: int,
+        review_id: str,
         customer_id: str,
         review_data: ReviewUpdate
     ) -> Dict[str, Any]:
@@ -1248,11 +1241,11 @@ class CustomerService:
             HTTPException: If review not found or update fails
         """
         try:
-            # Verify review belongs to user
-            review_response = db.table("reviews")\
-                .select("*")\
+            review_response = self.db.table("reviews")\
+                .select("id")\
                 .eq("id", review_id)\
-                .eq("user_id", customer_id)\
+                .eq("customer_id", customer_id)\
+                .is_("deleted_at", "null")\
                 .single()\
                 .execute()
             
@@ -1262,18 +1255,15 @@ class CustomerService:
                     detail="Review not found"
                 )
             
-            # Prepare update data
             update_data = {"updated_at": datetime.utcnow().isoformat()}
             
             if getattr(review_data, 'rating', None) is not None:
                 update_data["rating"] = review_data.rating
             
             if getattr(review_data, 'comment', None) is not None:
-                update_data["comment"] = review_data.comment
-                update_data["status"] = "pending"  # Re-approval needed after edit
-            
-            # Update review
-            response = db.table("reviews")\
+                update_data["review_text"] = review_data.comment
+             
+            response = self.db.table("reviews")\
                 .update(update_data)\
                 .eq("id", review_id)\
                 .execute()
@@ -1281,10 +1271,18 @@ class CustomerService:
             logger.info(f"Updated review {review_id} for customer {customer_id}")
             
             if response.data:
+                updated_review = response.data[0]
                 return {
                     "success": True,
                     "message": "Review updated successfully",
-                    "review": response.data[0]
+                    "review": {
+                        "id": updated_review.get("id"),
+                        "rating": updated_review.get("rating"),
+                        "comment": updated_review.get("review_text") or "",
+                        "created_at": updated_review.get("created_at"),
+                        "updated_at": updated_review.get("updated_at"),
+                        "status": "approved"
+                    }
                 }
             
             raise HTTPException(
@@ -1300,6 +1298,188 @@ class CustomerService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update review: {str(e)}"
             )
+
+    async def get_public_salon_reviews(self, salon_id: str) -> Dict[str, Any]:
+        """Get publicly visible reviews for a salon."""
+        try:
+            response = self.db.table("reviews").select(
+                "id, rating, review_text, created_at, is_verified, vendor_response, "
+                "profiles!reviews_customer_id_fkey(full_name), services(name)"
+            ).eq("salon_id", salon_id).eq("is_hidden", False).is_("deleted_at", "null").order(
+                "created_at", desc=True
+            ).execute()
+
+            reviews = []
+            for review in response.data or []:
+                reviews.append({
+                    "id": review.get("id"),
+                    "rating": review.get("rating"),
+                    "comment": review.get("review_text") or "",
+                    "created_at": review.get("created_at"),
+                    "customer_name": ((review.get("profiles") or {}).get("full_name") or "Verified Customer").strip(),
+                    "service_name": (review.get("services") or {}).get("name"),
+                    "is_verified": review.get("is_verified", False),
+                    "vendor_response": review.get("vendor_response")
+                })
+
+            return {
+                "success": True,
+                "reviews": reviews,
+                "count": len(reviews)
+            }
+        except Exception as e:
+            logger.error(f"Failed to retrieve public reviews for salon {salon_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve salon reviews: {str(e)}"
+            )
+
+    async def get_feedback_context(self, salon_id: str, token: str) -> Dict[str, Any]:
+        """Validate a feedback link and return the booking/salon context."""
+        token_data = verify_review_feedback_token(token)
+        if token_data["salon_id"] != salon_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Feedback link does not match this salon"
+            )
+
+        booking = await self._get_reviewable_booking(
+            booking_id=token_data["booking_id"],
+            customer_id=token_data["customer_id"],
+            salon_id=salon_id
+        )
+        existing_review = self._get_existing_review(token_data["booking_id"])
+
+        return {
+            "success": True,
+            "booking": {
+                "id": booking["id"],
+                "booking_number": booking.get("booking_number"),
+                "booking_date": booking.get("booking_date"),
+                "services": booking.get("services") or [],
+                "customer_name": ((booking.get("profiles") or {}).get("full_name") or "Customer")
+            },
+            "salon": {
+                "id": booking["salon_id"],
+                "business_name": (booking.get("salons") or {}).get("business_name", "Salon"),
+                "logo_url": (booking.get("salons") or {}).get("logo_url"),
+                "city": (booking.get("salons") or {}).get("city")
+            },
+            "existing_review": existing_review
+        }
+
+    async def submit_feedback_review(self, salon_id: str, token: str, rating: int, comment: str) -> Dict[str, Any]:
+        """Submit a review from the public feedback link."""
+        token_data = verify_review_feedback_token(token)
+        if token_data["salon_id"] != salon_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Feedback link does not match this salon"
+            )
+
+        return await self._create_review_from_booking(
+            booking_id=token_data["booking_id"],
+            customer_id=token_data["customer_id"],
+            salon_id=salon_id,
+            rating=rating,
+            comment=comment
+        )
+
+    async def _create_review_from_booking(
+        self,
+        booking_id: str,
+        customer_id: str,
+        salon_id: str,
+        rating: int,
+        comment: str
+    ) -> Dict[str, Any]:
+        booking = await self._get_reviewable_booking(booking_id, customer_id, salon_id)
+        if self._get_existing_review(booking_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A review has already been submitted for this booking"
+            )
+
+        services = booking.get("services") or []
+        primary_service = services[0] if services else None
+        service_id = primary_service.get("service_id") if primary_service else None
+        if not service_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Booking does not contain a reviewable service"
+            )
+
+        review_payload = {
+            "booking_id": booking_id,
+            "customer_id": customer_id,
+            "salon_id": salon_id,
+            "service_id": service_id,
+            "rating": rating,
+            "review_text": comment,
+            "is_verified": True,
+            "created_by": customer_id,
+            "updated_by": customer_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        response = self.db.table("reviews").insert(review_payload).execute()
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to create review"
+            )
+
+        created_review = response.data[0]
+        logger.info(f"Created review for booking {booking_id} by customer {customer_id}")
+        return {
+            "success": True,
+            "message": "Thank you for sharing your feedback.",
+            "review": {
+                "id": created_review.get("id"),
+                "rating": created_review.get("rating"),
+                "comment": created_review.get("review_text") or "",
+                "created_at": created_review.get("created_at"),
+                "status": "approved"
+            }
+        }
+
+    async def _get_reviewable_booking(self, booking_id: str, customer_id: str, salon_id: str) -> Dict[str, Any]:
+        booking_response = self.db.table("bookings").select(
+            "id, booking_number, booking_date, status, customer_id, salon_id, services, "
+            "profiles!customer_id(full_name, email), salons(business_name, logo_url, city)"
+        ).eq("id", booking_id).eq("customer_id", customer_id).eq("salon_id", salon_id).single().execute()
+
+        booking = booking_response.data
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booking not found for this feedback link"
+            )
+
+        if booking.get("status") != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reviews can only be submitted after the service is marked completed"
+            )
+
+        return booking
+
+    def _get_existing_review(self, booking_id: str) -> Optional[Dict[str, Any]]:
+        response = self.db.table("reviews").select(
+            "id, rating, review_text, created_at"
+        ).eq("booking_id", booking_id).is_("deleted_at", "null").execute()
+
+        if not response.data:
+            return None
+
+        review = response.data[0]
+        return {
+            "id": review.get("id"),
+            "rating": review.get("rating"),
+            "comment": review.get("review_text") or "",
+            "created_at": review.get("created_at")
+        }
     
     # =====================================================
     # HELPER METHODS

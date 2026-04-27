@@ -18,8 +18,8 @@ class SalonFilters(BaseModel):
 
 
 class ReviewCreate(BaseModel):
-    salon_id: int
-    booking_id: Optional[int] = None
+    salon_id: str
+    booking_id: Optional[str] = None
     rating: int = Field(..., ge=1, le=5)
     comment: str = Field(..., min_length=10, max_length=500)
 
@@ -27,6 +27,12 @@ class ReviewCreate(BaseModel):
 class ReviewUpdate(BaseModel):
     rating: Optional[int] = Field(None, ge=1, le=5)
     comment: Optional[str] = Field(None, min_length=10, max_length=500)
+
+
+class FeedbackReviewCreate(BaseModel):
+    token: str = Field(..., min_length=20)
+    rating: int = Field(..., ge=1, le=5)
+    comment: str = Field(..., min_length=10, max_length=500)
 
 
 class CartItemCreate(BaseModel):
