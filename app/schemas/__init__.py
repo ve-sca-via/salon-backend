@@ -28,7 +28,7 @@ from .request.auth import (
     PhoneSignupSendOTPRequest, PhoneSignupVerifyOTPRequest
 )
 from .request.customer import (
-    ReviewCreate, ReviewUpdate, CartItemCreate, CartItemUpdate, FavoriteCreate
+    ReviewCreate, ReviewUpdate, FeedbackReviewCreate, CartItemCreate, CartItemUpdate, FavoriteCreate
 )
 from .request.booking import (
     BookingCreate, BookingUpdate, BookingCancellation, CartCheckoutCreate
@@ -95,7 +95,8 @@ from .response.customer import (
     FavoriteResponse, CartResponse, CartOperationResponse, CartClearResponse,
     CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
     SalonsSearchResponse, SalonDetailsResponse, FavoritesResponse,
-    FavoriteOperationResponse, CustomerReviewsResponse, ReviewOperationResponse
+    FavoriteOperationResponse, CustomerReviewsResponse, ReviewOperationResponse,
+    ReviewFeedbackContextResponse, PublicSalonReviewsResponse
 )
 
 from .response.rm import (

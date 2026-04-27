@@ -9,26 +9,20 @@ Handles all payment-related database operations and business logic:
 
 Follows service layer pattern - no direct DB calls in API layer
 
-PERFORMANCE OPTIMIZATION:
-- Razorpay credentials are cached with 6-hour TTL
-- Prevents redundant database queries on every request
-- First request: fetches from DB and caches
-- Subsequent requests: use cached credentials (instant)
-- Cache auto-expires after 6 hours
-- Manual cache clear available via admin endpoint
+CREDENTIALS MANAGEMENT:
+- Razorpay credentials are fetched fresh from database on each payment request
+- Ensures credentials are always up-to-date
+- No caching layer - changes take effect immediately
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 from fastapi import HTTPException, status
 from datetime import datetime
 import logging
 
-from app.core.database import get_db
 from app.services.payment import RazorpayService
 from app.services.config_service import ConfigService
 from app.services.email import email_service
-from app.core.config import settings
-from app.core.cache import get_cached_razorpay_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -41,37 +35,53 @@ class PaymentService:
         self.config_service = ConfigService(db_client=db_client)
         self.razorpay = None  # Initialize lazily when needed
         self._razorpay_initialized = False
+        self._razorpay_key_id = None
     
     async def _initialize_razorpay(self):
         """
         Initialize Razorpay client with credentials from database.
-        
-        Uses 6-hour TTL cache to avoid repeated database queries.
-        First request fetches from DB, subsequent requests use cache.
+        Credentials are fetched fresh from database on each payment request.
         """
         if self._razorpay_initialized:
             return
-        
+
         try:
-            # Get Razorpay credentials from cache (fetches from DB only if expired)
-            razorpay_key_id, razorpay_key_secret = await get_cached_razorpay_credentials(
-                self.config_service
-            )
-            
-            # Initialize Razorpay service with cached credentials
-            self.razorpay = RazorpayService(
-                razorpay_key_id=razorpay_key_id,
-                razorpay_key_secret=razorpay_key_secret
-            )
-            self._razorpay_initialized = True
-            logger.info("Razorpay initialized with cached credentials")
-            
+            # Fetch Razorpay credentials from database
+            key_id_config = await self.config_service.get_config("razorpay_key_id")
+            key_secret_config = await self.config_service.get_config("razorpay_key_secret")
+            razorpay_key_id = (key_id_config or {}).get("config_value")
+            razorpay_key_secret = (key_secret_config or {}).get("config_value")
         except Exception as e:
-            logger.error(f"Failed to initialize Razorpay from cached credentials: {e}")
-            # Fallback to environment variables
-            self.razorpay = RazorpayService()
-            self._razorpay_initialized = True
-            logger.warning("Razorpay initialized from environment variables (fallback)")
+            logger.error(f"Failed to fetch Razorpay credentials from database: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment service is not configured. Please contact support."
+            )
+
+        if not razorpay_key_id or not razorpay_key_secret:
+            logger.error("Razorpay credentials missing in system configuration")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment service is not configured. Please contact support."
+            )
+
+        # Initialize Razorpay service with database credentials only
+        self.razorpay = RazorpayService(
+            razorpay_key_id=razorpay_key_id,
+            razorpay_key_secret=razorpay_key_secret
+        )
+
+        if not self.razorpay or not self.razorpay.client:
+            logger.error("Razorpay initialization failed with configured database credentials")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment service is not configured. Please contact support."
+            )
+
+        self._razorpay_key_id = razorpay_key_id
+        self._razorpay_initialized = True
+        print("FINAL KEY USED:", razorpay_key_id)
+        logger.info("Razorpay initialized with credentials from database")
     
     # =====================================================
     # BOOKING PAYMENT ORDERS
@@ -161,18 +171,12 @@ class PaymentService:
             
             logger.info(f"Created booking payment order: {order['order_id']} for booking {booking_id}")
             
-            # Get Razorpay key from config
-            razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
-            # If config exists but value is None (e.g. decryption failed in dev),
-            # fall back to environment setting to avoid returning None to clients.
-            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
-            
             return {
                 "order_id": order["order_id"],
                 "amount": total_payment,
                 "amount_paise": int(total_payment * 100),
                 "currency": "INR",
-                "key_id": razorpay_key_id,
+                "key_id": self._razorpay_key_id,
                 "booking_id": booking_id,
                 "breakdown": {
                     "service_price": service_price,
@@ -273,6 +277,9 @@ class PaymentService:
         Returns:
             Success message with payment and booking details
         """
+        # Initialize Razorpay with database credentials
+        await self._initialize_razorpay()
+
         try:
             # Verify signature first
             is_valid = self.razorpay.verify_payment_signature(
@@ -501,16 +508,12 @@ class PaymentService:
             
             logger.info(f"Created cart payment order: {order['order_id']} for user {user_id}")
             
-            # Get Razorpay key from config
-            razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
-            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
-            
             return {
                 "order_id": order["order_id"],
                 "amount": total_payment,
                 "amount_paise": int(total_payment * 100),
                 "currency": "INR",
-                "key_id": razorpay_key_id,
+                "key_id": self._razorpay_key_id,
                 "breakdown": {
                     "service_price": total_service_price,
                     "booking_fee": booking_fee,
@@ -628,16 +631,12 @@ class PaymentService:
             
             logger.info(f"Created vendor registration order: {order['order_id']}")
             
-            # Get Razorpay key from config
-            razorpay_key_config = await self.config_service.get_config("razorpay_key_id")
-            razorpay_key_id = (razorpay_key_config.get("config_value") or settings.RAZORPAY_KEY_ID)
-            
             return {
                 "order_id": order["order_id"],
                 "amount": registration_fee,
                 "amount_paise": int(registration_fee * 100),
                 "currency": "INR",
-                "key_id": razorpay_key_id
+                "key_id": self._razorpay_key_id
             }
         
         except HTTPException:

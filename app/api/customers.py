@@ -20,8 +20,8 @@ from app.schemas import (
     CartResponse, CartOperationResponse, SuccessResponse, CartClearResponse,
     CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
     SalonsSearchResponse, SalonDetailsResponse, BookingResponse,
-    FavoritesResponse, FavoriteOperationResponse,
-    CartItemCreate, CartItemUpdate,
+    FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
+    ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
     BookingCreate, BookingCancellation,
     CartCheckoutCreate, FavoriteCreate
 )
@@ -286,6 +286,40 @@ async def remove_favorite(
         customer_id=current_user.user_id,
         salon_id=salon_id
     )
+
+
+# =====================================================
+# REVIEWS
+# =====================================================
+
+@router.get("/reviews/my-reviews", response_model=CustomerReviewsResponse)
+async def get_my_reviews(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Get all reviews written by the current customer."""
+    return await customer_service.get_customer_reviews(current_user.user_id)
+
+
+@router.post("/reviews", response_model=ReviewOperationResponse)
+async def create_review(
+    review_data: ReviewCreate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Create a review for a completed booking."""
+    return await customer_service.create_review(current_user.user_id, review_data)
+
+
+@router.put("/reviews/{review_id}", response_model=ReviewOperationResponse)
+async def update_review(
+    review_id: str,
+    review_data: ReviewUpdate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """Update an existing review written by the current customer."""
+    return await customer_service.update_review(review_id, current_user.user_id, review_data)
 
 
 # =====================================================

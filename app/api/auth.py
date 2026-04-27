@@ -384,7 +384,8 @@ async def send_phone_login_otp(
             message=f"OTP sent successfully to {otp_result['phone']}",
             verification_id=otp_result["verification_id"],
             expires_in=otp_result["expires_in"],
-            phone=otp_result["phone"]
+            phone=otp_result["phone"],
+            customer_name=html.escape(profile.get("full_name") or "")
         )
 
     except HTTPException:
