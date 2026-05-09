@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Any, List
 from pydantic import BaseModel
 from app.core.auth import get_current_user, TokenData
-from app.services.product_order_service import product_order_service
+from app.core.database import get_db_client
+from app.services.product_order_service import ProductOrderService
+from supabase import Client
 
 router = APIRouter(prefix="/product-orders", tags=["product-orders"])
 
@@ -23,10 +25,15 @@ class VerifyPaymentRequest(BaseModel):
     razorpay_payment_id: str
     razorpay_signature: str
 
+def get_product_order_service(db: Client = Depends(get_db_client)) -> ProductOrderService:
+    """Dependency injection for ProductOrderService"""
+    return ProductOrderService(db_client=db)
+
 @router.post("/create")
 async def create_order(
     request: CreateOrderRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
+    product_order_service: ProductOrderService = Depends(get_product_order_service)
 ):
     """Create a new product order and get Razorpay order details"""
     order_data = {
@@ -44,7 +51,8 @@ async def create_order(
 @router.post("/verify")
 async def verify_payment(
     request: VerifyPaymentRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
+    product_order_service: ProductOrderService = Depends(get_product_order_service)
 ):
     """Verify Razorpay payment and mark order as paid"""
     return await product_order_service.verify_payment(
@@ -56,7 +64,8 @@ async def verify_payment(
 
 @router.get("/my-orders")
 async def get_my_orders(
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
+    product_order_service: ProductOrderService = Depends(get_product_order_service)
 ):
     """Get all orders for the current user"""
     return await product_order_service.get_user_orders(user_id=current_user.user_id)
