@@ -23,16 +23,33 @@ class ProductOrderService:
         order_number = f"ORD-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
 
         try:
-            # 2. Create Razorpay order
-            rzp_order = razorpay_service.create_order(
-                amount=float(total_amount),
-                receipt=order_number,
-                notes={
-                    "payment_type": "product_order",
-                    "user_id": user_id,
-                    "order_number": order_number
-                }
+            from app.core.config import settings
+
+            # Detect dev/placeholder credentials — skip real Razorpay call
+            is_dev_mode = (
+                not settings.is_production or
+                not settings.RAZORPAY_KEY_ID or
+                settings.RAZORPAY_KEY_ID.startswith("placeholder")
             )
+
+            if is_dev_mode:
+                # Use a fake Razorpay order ID for dev
+                fake_rzp_order_id = f"dev_order_{uuid.uuid4().hex[:16]}"
+                rzp_amount = float(total_amount)
+                rzp_currency = "INR"
+            else:
+                rzp_order = razorpay_service.create_order(
+                    amount=float(total_amount),
+                    receipt=order_number,
+                    notes={
+                        "payment_type": "product_order",
+                        "user_id": user_id,
+                        "order_number": order_number
+                    }
+                )
+                fake_rzp_order_id = rzp_order['order_id']
+                rzp_amount = rzp_order['amount']
+                rzp_currency = rzp_order['currency']
 
             # 3. Insert order into database
             order_insert_data = {
@@ -42,7 +59,7 @@ class ProductOrderService:
                 "discount_total": discount_total,
                 "total_amount": total_amount,
                 "shipping_address": order_data.get('shipping_address'),
-                "razorpay_order_id": rzp_order['order_id'],
+                "razorpay_order_id": fake_rzp_order_id,
                 "status": "pending",
                 "payment_status": "pending"
             }
@@ -72,9 +89,10 @@ class ProductOrderService:
 
             return {
                 "order": order_row,
-                "razorpay_order_id": rzp_order['order_id'],
-                "amount": rzp_order['amount'],
-                "currency": rzp_order['currency']
+                "razorpay_order_id": fake_rzp_order_id,
+                "amount": rzp_amount,
+                "currency": rzp_currency,
+                "dev_mode": is_dev_mode
             }
 
         except Exception as e:
@@ -83,6 +101,7 @@ class ProductOrderService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create order"
             )
+
 
     async def verify_payment(self, user_id: str, razorpay_order_id: str, razorpay_payment_id: str, razorpay_signature: str) -> Dict[str, Any]:
         """Verify Razorpay payment signature and update order status"""
@@ -125,6 +144,34 @@ class ProductOrderService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(e)
             )
+
+    async def dev_complete_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
+        """DEV ONLY: Mark order as paid without Razorpay verification"""
+        try:
+            import uuid
+            update_data = {
+                "status": "paid",
+                "payment_status": "completed",
+                "razorpay_payment_id": f"dev_pay_{uuid.uuid4().hex[:12]}",
+            }
+            result = self.db.table("product_orders").update(update_data)\
+                .eq("id", order_id)\
+                .eq("user_id", user_id).execute()
+
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Order not found")
+
+            return {
+                "success": True,
+                "order_id": result.data[0]["id"],
+                "order_number": result.data[0]["order_number"],
+                "dev_mode": True
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Dev complete order failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def get_user_orders(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all product orders for a user"""

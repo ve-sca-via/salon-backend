@@ -62,6 +62,24 @@ async def verify_payment(
         razorpay_signature=request.razorpay_signature
     )
 
+@router.post("/dev-verify/{order_id}")
+async def dev_verify_payment(
+    order_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    product_order_service: ProductOrderService = Depends(get_product_order_service)
+):
+    """
+    DEV ONLY: Simulate a successful payment without real Razorpay credentials.
+    Marks the order as paid directly. Returns 403 in production.
+    """
+    from app.core.config import settings
+    if settings.is_production:
+        raise HTTPException(status_code=403, detail="Not available in production")
+    return await product_order_service.dev_complete_order(
+        user_id=current_user.user_id,
+        order_id=order_id
+    )
+
 @router.get("/my-orders")
 async def get_my_orders(
     current_user: TokenData = Depends(get_current_user),
