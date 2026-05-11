@@ -189,3 +189,72 @@ class ProductOrderService:
         except Exception as e:
             logger.error(f"Error fetching user orders: {e}")
             return []
+
+    async def get_all_orders(self) -> List[Dict[str, Any]]:
+        """Get all product orders for admin"""
+        try:
+            logger.info("Fetching all product orders for admin...")
+            # 1. Fetch all orders
+            orders_response = self.db.table("product_orders")\
+                .select("*")\
+                .order("created_at", desc=True)\
+                .execute()
+            
+            orders = orders_response.data or []
+            logger.info(f"Found {len(orders)} orders in database")
+            
+            if not orders:
+                return []
+
+            # 2. Collect all unique user IDs
+            user_ids = list(set(order['user_id'] for order in orders))
+            
+            # 3. Fetch profiles for these users
+            profiles_response = self.db.table("profiles")\
+                .select("id, full_name, phone")\
+                .in_("id", user_ids)\
+                .execute()
+            
+            profiles_map = {p['id']: p for p in profiles_response.data or []}
+            
+            result = []
+            for order in orders:
+                # Add profile data
+                order['profiles'] = profiles_map.get(order['user_id'])
+                
+                # Fetch items for this order
+                items_response = self.db.table("product_order_items")\
+                    .select("*")\
+                    .eq("order_id", order['id'])\
+                    .execute()
+                order['items'] = items_response.data or []
+                result.append(order)
+                
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching all orders: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def update_order_status(self, order_id: str, status: str) -> Dict[str, Any]:
+        """Update order status (e.g., shipped, delivered, cancelled)"""
+        try:
+            update_data = {
+                "status": status,
+                "updated_at": "now()"
+            }
+            
+            result = self.db.table("product_orders").update(update_data)\
+                .eq("id", order_id).execute()
+
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Order not found")
+
+            return {
+                "success": True,
+                "order": result.data[0]
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to update order status: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
