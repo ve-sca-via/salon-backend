@@ -6,6 +6,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
+from urllib.parse import urlsplit
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.services.email_logger import EmailLogger
@@ -703,12 +704,18 @@ class EmailService:
         try:
             template = self.env.get_template('payment_reminder.html')
             
-            # Vendor login URL (if VENDOR_PORTAL_URL already points to the vendor portal, use it as-is)
-            vendor_portal_url = settings.VENDOR_PORTAL_URL.rstrip('/')
-            if vendor_portal_url.endswith('/vendor-login') or vendor_portal_url.endswith('/vendor'):
-                vendor_login_url = vendor_portal_url
+            # Vendor login URL (normalize VENDOR_PORTAL_URL to the correct login path)
+            vendor_portal_url = settings.VENDOR_PORTAL_URL.strip()
+            parsed = urlsplit(vendor_portal_url if vendor_portal_url.startswith(('http://', 'https://')) else f"https://{vendor_portal_url}")
+            portal_path = parsed.path.rstrip('/')
+
+            if portal_path.endswith('/vendor-login'):
+                vendor_login_url = vendor_portal_url.rstrip('/')
+            elif portal_path.endswith('/vendor') or portal_path == '':
+                base = parsed.netloc if not vendor_portal_url.startswith(('http://', 'https://')) else f"{parsed.scheme}://{parsed.netloc}"
+                vendor_login_url = f"{base}/vendor-login"
             else:
-                vendor_login_url = f"{vendor_portal_url}/vendor-login"
+                vendor_login_url = f"{vendor_portal_url.rstrip('/')}/vendor-login"
             
             # Log reminder
             logger.info("=" * 100)
