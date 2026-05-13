@@ -15,8 +15,8 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-# Security scheme
-security = HTTPBearer()
+# Security scheme (auto_error=False to allow optional auth)
+security = HTTPBearer(auto_error=False)
 
 
 # =====================================================
@@ -454,6 +454,12 @@ async def get_current_user(
     Raises:
         HTTPException: If authentication fails
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = credentials.credentials
     token_data = verify_token(token, db)
     
@@ -494,6 +500,44 @@ async def get_current_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication failed"
         )
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    db=Depends(get_db_client)
+) -> Optional[TokenData]:
+    """
+    Dependency to get current user if authenticated, otherwise return None.
+    Useful for public endpoints that have extra features for logged-in users.
+    """
+    if not credentials or not credentials.credentials:
+        return None
+
+    try:
+        token = credentials.credentials
+        token_data = verify_token(token, db)
+
+        user_response = db.table("profiles").select(
+            "id, email, user_role, is_active"
+        ).eq("id", token_data.sub).single().execute()
+
+        if not user_response.data:
+            return None
+
+        user = user_response.data
+        if not user.get("is_active", False):
+            return None
+
+        return TokenData(
+            user_id=user["id"],
+            email=user["email"],
+            user_role=user["user_role"],
+            jti=token_data.jti,
+            exp=datetime.utcfromtimestamp(token_data.exp) if token_data.exp else None
+        )
+    except Exception:
+        # Silently fail for optional auth
+        return None
 
 
 async def get_current_user_id(

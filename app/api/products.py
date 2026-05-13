@@ -22,7 +22,7 @@ from typing import Optional
 from supabase import Client
 
 from app.core.database import get_db_client
-from app.core.auth import require_admin, TokenData
+from app.core.auth import require_admin, get_optional_user, TokenData
 from app.services.product_service import ProductService
 from app.schemas.request.product import ProductCreate, ProductUpdate
 from app.schemas.response.product import (
@@ -55,6 +55,7 @@ async def list_products(
     search: Optional[str] = Query(None, description="Search in product name"),
     limit: int = Query(50, ge=1, le=100, description="Maximum results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: Optional[TokenData] = Depends(get_optional_user),
     product_service: ProductService = Depends(get_product_service),
 ):
     """
@@ -80,6 +81,7 @@ async def list_products(
         limit=limit,
         offset=offset,
         include_inactive=False,
+        user_role=current_user.user_role if current_user else None,
     )
 
     return {
@@ -109,6 +111,7 @@ async def get_product_categories(
 @router.get("/slug/{slug}", response_model=ProductResponse)
 async def get_product_by_slug(
     slug: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user),
     product_service: ProductService = Depends(get_product_service),
 ):
     """
@@ -120,7 +123,10 @@ async def get_product_by_slug(
     - Product detail page (SEO-friendly URL)
     - e.g. /products/slug/hair-serum-250ml
     """
-    product = await product_service.get_product_by_slug(slug)
+    product = await product_service.get_product_by_slug(
+        slug, 
+        user_role=current_user.user_role if current_user else None
+    )
     return {"success": True, "product": product}
 
 
@@ -195,6 +201,7 @@ async def create_product(
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product_by_id(
     product_id: str,
+    current_user: Optional[TokenData] = Depends(get_optional_user),
     product_service: ProductService = Depends(get_product_service),
 ):
     """
@@ -203,7 +210,10 @@ async def get_product_by_id(
     **Public endpoint** — returns product regardless of is_active status
     (admin may need to view inactive products by ID).
     """
-    product = await product_service.get_product_by_id(product_id)
+    product = await product_service.get_product_by_id(
+        product_id, 
+        user_role=current_user.user_role if current_user else None
+    )
     return {"success": True, "product": product}
 
 

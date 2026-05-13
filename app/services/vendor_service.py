@@ -723,7 +723,8 @@ class VendorService:
         email: str,
         full_name: str,
         age: int,
-        gender: str
+        gender: str,
+        user_role: str = "vendor"
     ) -> Dict[str, Any]:
         """
         Create vendor profile in profiles table.
@@ -751,7 +752,7 @@ class VendorService:
             "full_name": full_name,
             "age": age,
             "gender": gender.lower(),
-            "user_role": "vendor",
+            "user_role": user_role,
             "is_active": True
         }
         
@@ -869,6 +870,19 @@ class VendorService:
         
         logger.info(f"Token verified for {vendor_email}, salon_id: {salon_id}")
         
+        # Fetch salon to verify existence
+        salon_response = self.db.table("salons").select("id").eq("id", salon_id).single().execute()
+        if not salon_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salon not found"
+            )
+        
+        # salon_type is currently missing from DB, defaulting to "salon"
+        salon_type = salon_response.data.get("salon_type", "salon")
+        user_role = "regular_buyer" if salon_type == "regular_buyer" else "vendor"
+        logger.info(f"Determined user role: {user_role}")
+
         # Use full_name from registration request (provided by vendor)
         vendor_full_name = full_name.strip()
         
@@ -890,7 +904,7 @@ class VendorService:
                 "password": password,
                 "email_confirm": True,  # Auto-confirm email
                 "user_metadata": {
-                    "role": "vendor",
+                    "role": user_role,
                     "full_name": vendor_full_name
                 }
             })
@@ -906,7 +920,7 @@ class VendorService:
                     "password": password,
                     "options": {
                         "data": {
-                            "role": "vendor",
+                            "role": user_role,
                             "full_name": vendor_full_name
                         }
                     }
@@ -940,7 +954,8 @@ class VendorService:
                 email=vendor_email,
                 full_name=vendor_full_name,
                 age=age,
-                gender=gender
+                gender=gender,
+                user_role=user_role
             )
             logger.info("Vendor profile created successfully")
         except Exception as profile_error:
@@ -988,7 +1003,7 @@ class VendorService:
         token_data = {
             "sub": user_id,
             "email": vendor_email,
-            "user_role": "vendor"
+            "user_role": user_role
         }
         
         access_token = create_access_token(token_data)
@@ -1023,7 +1038,7 @@ class VendorService:
                     "id": user_id,
                     "email": vendor_email,
                     "full_name": vendor_full_name,
-                    "role": "vendor"
+                    "role": user_role
                 }
             }
         }

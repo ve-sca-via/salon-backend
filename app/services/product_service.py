@@ -52,6 +52,7 @@ class ProductService:
         limit: int = 50,
         offset: int = 0,
         include_inactive: bool = False,
+        user_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         List products with filtering and pagination.
@@ -93,6 +94,19 @@ class ProductService:
 
             response = query.execute()
             products = response.data or []
+            
+            # Apply B2B pricing if applicable
+            is_b2b = user_role in ['vendor', 'regular_buyer']
+            for p in products:
+                if is_b2b and p.get('b2b_discount_price') is not None:
+                    # Swap standard discount price with B2B price for the response
+                    p['original_discount_price'] = p.get('discount_price')
+                    p['discount_price'] = p['b2b_discount_price']
+                    p['discount_percentage'] = p.get('b2b_discount_percentage')
+                    p['is_b2b_price'] = True
+                else:
+                    p['is_b2b_price'] = False
+
             total = response.count if response.count is not None else len(products)
 
             logger.info(
@@ -115,7 +129,7 @@ class ProductService:
                 detail="Failed to fetch products",
             )
 
-    async def get_product_by_id(self, product_id: str) -> Dict[str, Any]:
+    async def get_product_by_id(self, product_id: str, user_role: Optional[str] = None) -> Dict[str, Any]:
         """
         Get a single product by UUID.
 
@@ -143,7 +157,18 @@ class ProductService:
                     detail=f"Product not found: {product_id}",
                 )
 
-            return response.data
+            product = response.data
+            
+            # Apply B2B pricing if applicable
+            if user_role in ['vendor', 'regular_buyer'] and product.get('b2b_discount_price') is not None:
+                product['original_discount_price'] = product.get('discount_price')
+                product['discount_price'] = product['b2b_discount_price']
+                product['discount_percentage'] = product.get('b2b_discount_percentage')
+                product['is_b2b_price'] = True
+            else:
+                product['is_b2b_price'] = False
+
+            return product
 
         except HTTPException:
             raise
@@ -154,7 +179,7 @@ class ProductService:
                 detail="Failed to fetch product",
             )
 
-    async def get_product_by_slug(self, slug: str) -> Dict[str, Any]:
+    async def get_product_by_slug(self, slug: str, user_role: Optional[str] = None) -> Dict[str, Any]:
         """
         Get a single product by slug.
 
@@ -183,7 +208,18 @@ class ProductService:
                     detail=f"Product not found: {slug}",
                 )
 
-            return response.data
+            product = response.data
+            
+            # Apply B2B pricing if applicable
+            if user_role in ['vendor', 'regular_buyer'] and product.get('b2b_discount_price') is not None:
+                product['original_discount_price'] = product.get('discount_price')
+                product['discount_price'] = product['b2b_discount_price']
+                product['discount_percentage'] = product.get('b2b_discount_percentage')
+                product['is_b2b_price'] = True
+            else:
+                product['is_b2b_price'] = False
+
+            return product
 
         except HTTPException:
             raise
@@ -260,6 +296,19 @@ class ProductService:
                 if price > 0:
                     product_data["discount_percentage"] = round(
                         ((price - discount_price) / price) * 100, 2
+                    )
+
+            # Auto-calculate b2b_discount_percentage
+            if (
+                product_data.get("b2b_discount_price") is not None
+                and product_data.get("b2b_discount_percentage") is None
+                and product_data.get("price")
+            ):
+                price = product_data["price"]
+                b2b_price = product_data["b2b_discount_price"]
+                if price > 0:
+                    product_data["b2b_discount_percentage"] = round(
+                        ((price - b2b_price) / price) * 100, 2
                     )
 
             response = self.db.table("products").insert(product_data).execute()
@@ -346,6 +395,17 @@ class ProductService:
                 if discount_price is not None and price and price > 0:
                     safe_updates["discount_percentage"] = round(
                         ((price - discount_price) / price) * 100, 2
+                    )
+
+            # Auto-recalculate b2b_discount_percentage if needed
+            if "b2b_discount_price" in safe_updates or "price" in safe_updates:
+                current = await self.get_product_by_id(product_id)
+                price = safe_updates.get("price", current.get("price"))
+                b2b_price = safe_updates.get("b2b_discount_price", current.get("b2b_discount_price"))
+
+                if b2b_price is not None and price and price > 0:
+                    safe_updates["b2b_discount_percentage"] = round(
+                        ((price - b2b_price) / price) * 100, 2
                     )
 
             response = (

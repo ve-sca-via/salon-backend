@@ -26,6 +26,7 @@ class VendorJoinRequestResponse(BaseModel):
     user_id: Optional[str] = None
     rm_id: str
     status: RequestStatus
+    request_type: str = "salon"
     submitted_at: Optional[datetime] = None
     admin_notes: Optional[str] = None
     reviewed_by: Optional[str] = None
@@ -74,6 +75,7 @@ class SalonResponse(BaseModel):
     vendor_id: Optional[str] = None
     rm_id: Optional[str] = None
     join_request_id: Optional[str] = None
+    salon_type: str = "salon"
     is_active: bool
     is_verified: bool
     verified_at: Optional[datetime] = None
