@@ -128,7 +128,10 @@ async def get_product_cart(
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
 ):
     """Get all product cart items for the current customer"""
-    return await product_cart_service.get_cart(current_user.user_id)
+    return await product_cart_service.get_cart(
+        user_id=current_user.user_id,
+        user_role=current_user.user_role
+    )
 
 
 @router.post("/product-cart")

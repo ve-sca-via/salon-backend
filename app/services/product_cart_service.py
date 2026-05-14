@@ -9,7 +9,7 @@ class ProductCartService:
     def __init__(self, db_client: Client):
         self.db = db_client
 
-    async def get_cart(self, user_id: str) -> Dict[str, Any]:
+    async def get_cart(self, user_id: str, user_role: Optional[str] = None) -> Dict[str, Any]:
         """Get all product cart items for a user"""
         try:
             response = self.db.table("product_cart_items")\
@@ -24,9 +24,16 @@ class ProductCartService:
             total_amount = 0.0
             item_count = 0
             
+            is_b2b = user_role in ['vendor', 'regular_buyer']
+            
             for item in items:
                 product = item.get("products", {})
+                
+                # Dynamic price selection
                 price = product.get("discount_price") or product.get("price") or 0.0
+                if is_b2b and product.get('b2b_discount_price') is not None:
+                    price = product['b2b_discount_price']
+                
                 quantity = item.get("quantity", 1)
                 line_total = price * quantity
                 
@@ -41,7 +48,8 @@ class ProductCartService:
                     "quantity": quantity,
                     "image_url": product.get("image_urls", [None])[0] if product.get("image_urls") else None,
                     "image_urls": product.get("image_urls", []),
-                    "total": line_total
+                    "total": line_total,
+                    "is_b2b_price": is_b2b and product.get('b2b_discount_price') is not None
                 })
                 
             return {

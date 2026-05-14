@@ -25,6 +25,8 @@ class ProductCreate(BaseModel):
     is_featured: bool = Field(default=False, description="Whether product appears in featured carousel")
     tags: List[str] = Field(default_factory=list, description="Searchable tags")
     weight: Optional[str] = Field(None, max_length=50, description="Weight/volume (e.g. 250ml, 100g)")
+    b2b_discount_price: Optional[float] = Field(None, ge=0, description="Wholesale discounted price for vendors")
+    b2b_discount_percentage: Optional[float] = Field(None, ge=0, le=100, description="Wholesale discount percentage")
 
     @field_validator("slug", mode="before")
     @classmethod
@@ -41,6 +43,14 @@ class ProductCreate(BaseModel):
         if v is not None and info.data.get("price") is not None:
             if v >= info.data["price"]:
                 raise ValueError("Discount price must be less than the original price")
+        return v
+
+    @field_validator("b2b_discount_price", mode="before")
+    @classmethod
+    def validate_b2b_discount_price(cls, v, info):
+        if v is not None and info.data.get("price") is not None:
+            if v >= info.data["price"]:
+                raise ValueError("B2B discount price must be less than the original price")
         return v
 
 
@@ -62,6 +72,8 @@ class ProductUpdate(BaseModel):
     is_featured: Optional[bool] = None
     tags: Optional[List[str]] = None
     weight: Optional[str] = Field(None, max_length=50)
+    b2b_discount_price: Optional[float] = Field(None, ge=0)
+    b2b_discount_percentage: Optional[float] = Field(None, ge=0, le=100)
 
     @field_validator("slug", mode="before")
     @classmethod
