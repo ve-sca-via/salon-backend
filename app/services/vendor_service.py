@@ -878,10 +878,24 @@ class VendorService:
                 detail="Salon not found"
             )
         
-        # salon_type is currently missing from DB, defaulting to "salon"
-        salon_type = salon_response.data.get("salon_type", "salon")
+        # Determine salon type (salon vs regular_buyer)
+        salon_type = salon_response.data.get("salon_type")
+        
+        # Fallback: check the original join request if salon_type is missing from salon record
+        if not salon_type:
+            try:
+                request_response = self.db.table("vendor_join_requests").select("request_type").eq("id", request_id).single().execute()
+                if request_response.data:
+                    salon_type = request_response.data.get("request_type")
+            except Exception as e:
+                logger.warning(f"Could not fetch request_type for fallback: {e}")
+        
+        # Final fallback
+        if not salon_type:
+            salon_type = "salon"
+            
         user_role = "regular_buyer" if salon_type == "regular_buyer" else "vendor"
-        logger.info(f"Determined user role: {user_role}")
+        logger.info(f"Determined user role: {user_role} (from salon_type: {salon_type})")
 
         # Use full_name from registration request (provided by vendor)
         vendor_full_name = full_name.strip()

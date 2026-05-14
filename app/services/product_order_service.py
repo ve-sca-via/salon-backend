@@ -125,7 +125,8 @@ class ProductOrderService:
                 "shipping_address": order_data.get('shipping_address'),
                 "razorpay_order_id": razorpay_order_id,
                 "status": "pending",
-                "payment_status": "pending"
+                "payment_status": "pending",
+                "user_type": user_role
             }
             
             order_response = self.db.table("product_orders").insert(order_insert_data).execute()
