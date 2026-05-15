@@ -140,8 +140,6 @@ class VendorApprovalService:
                 warnings.append("Could not send RM notification - RM details not found")
         except Exception as e:
             warnings.append(f"Failed to send RM notification: {str(e)}")
-        except Exception as e:
-            warnings.append(f"Failed to send RM notification: {str(e)}")
         
         logger.info(f"Vendor request {request_id} approved. Salon: {salon_id}")
         
@@ -557,7 +555,8 @@ class VendorApprovalService:
         registration_token = create_registration_token(
             request_id=request_id,
             salon_id=salon_id,
-            owner_email=request_data.owner_email
+            owner_email=request_data.owner_email,
+            request_type=getattr(request_data, "request_type", "salon")
         )
         
         logger.info(f"Registration token generated for {request_data.owner_email}")

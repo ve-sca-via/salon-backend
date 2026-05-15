@@ -132,7 +132,11 @@ class AdminService:
     
     async def _calculate_revenue(self) -> Dict[str, float]:
         """
-        Calculate total and monthly revenue from completed payments
+        Calculate total and monthly revenue from completed payments.
+        
+        Sources:
+        - 'payments' table: booking convenience fees (status = 'success')
+        - 'vendor_registration_payments' table: registration fees (status = 'success')
         
         Returns:
             Dict with 'total' and 'this_month' revenue amounts
@@ -140,35 +144,53 @@ class AdminService:
         total_revenue = 0.0
         this_month_revenue = 0.0
         
+        current_month = datetime.now().month
+        current_year = datetime.now().year
+
+        def _add_payments(records):
+            nonlocal total_revenue, this_month_revenue
+            for payment in records:
+                amount = float(payment.get("amount", 0))
+                total_revenue += amount
+                
+                # Check if payment is from current month
+                created_at = payment.get("created_at") or payment.get("payment_completed_at")
+                if created_at:
+                    try:
+                        payment_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        if payment_date.month == current_month and payment_date.year == current_year:
+                            this_month_revenue += amount
+                    except (ValueError, AttributeError):
+                        logger.warning(f"Invalid payment date format: {created_at}")
+        
         try:
-            # Get all completed payments with amount
+            # 1. Booking convenience fee payments (status = 'success')
             payments_response = self.db.table("payments").select(
                 "amount, created_at"
-            ).eq("status", "completed").execute()
+            ).eq("status", "success").execute()
             
             if payments_response.data:
-                current_month = datetime.now().month
-                current_year = datetime.now().year
-                
-                for payment in payments_response.data:
-                    amount = float(payment.get("amount", 0))
-                    total_revenue += amount
-                    
-                    # Check if payment is from current month
-                    created_at = payment.get("created_at")
-                    if created_at:
-                        try:
-                            payment_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            if payment_date.month == current_month and payment_date.year == current_year:
-                                this_month_revenue += amount
-                        except (ValueError, AttributeError) as date_error:
-                            logger.warning(f"Invalid payment date format: {created_at}")
-                            continue
+                _add_payments(payments_response.data)
         
         except Exception as rev_error:
-            logger.error(f"Failed to calculate revenue: {str(rev_error)}")
-            # Return 0 values on error
+            logger.error(f"Failed to calculate booking payments revenue: {str(rev_error)}")
+
+        try:
+            # 2. Vendor registration fee payments (status = 'success')
+            reg_payments_response = self.db.table("vendor_registration_payments").select(
+                "amount, payment_completed_at"
+            ).eq("status", "success").execute()
+            
+            if reg_payments_response.data:
+                # Map payment_completed_at -> created_at for uniform processing
+                for p in reg_payments_response.data:
+                    p["created_at"] = p.get("payment_completed_at")
+                _add_payments(reg_payments_response.data)
+
+        except Exception as reg_error:
+            logger.error(f"Failed to calculate registration payments revenue: {str(reg_error)}")
         
+        logger.info(f"Revenue calculated: total={total_revenue}, this_month={this_month_revenue}")
         return {
             "total": total_revenue,
             "this_month": this_month_revenue
