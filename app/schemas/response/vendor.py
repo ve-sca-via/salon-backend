@@ -192,6 +192,10 @@ class DashboardStatistics(BaseModel):
     today_bookings: int
     average_rating: float
     total_reviews: int
+    # Product stats (B2B)
+    total_product_orders: int = 0
+    pending_product_orders: int = 0
+    total_product_spending: float = 0.0
 
 class VendorDashboardResponse(BaseModel):
     """Response for vendor dashboard endpoint"""
@@ -209,6 +213,10 @@ class VendorAnalyticsResponse(BaseModel):
     active_services: int
     average_rating: float
     pending_bookings: int
+    # Product stats (B2B)
+    total_product_orders: int = 0
+    pending_product_orders: int = 0
+    total_product_spending: float = 0.0
 
     class Config:
         extra = "allow"
