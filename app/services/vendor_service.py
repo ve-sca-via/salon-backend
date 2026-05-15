@@ -564,7 +564,7 @@ class VendorService:
             # Get product order stats (always relevant as vendors can also buy products)
             total_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).execute()
             pending_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
-            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("status", "completed").execute()
+            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
             total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
 
             # Recent orders
@@ -661,7 +661,7 @@ class VendorService:
             # Get product order stats
             orders_response = self.db.table("product_orders").select("id, total_amount", count="exact").eq("user_id", vendor_id).execute()
             pending_orders_response = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
-            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("status", "completed").execute()
+            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
             total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
 
             if is_regular_buyer:
