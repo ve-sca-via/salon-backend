@@ -543,10 +543,14 @@ class RMService:
                     detail="RM account is inactive"
                 )
             
+            print(f"DEBUG: Creating vendor request. Full request_data: {request_data.model_dump()}")
+            
             # Prepare request data (mode='json' converts time objects to strings)
             db_data = request_data.model_dump(mode='json')
             db_data["rm_id"] = rm_id
             db_data["status"] = "draft" if is_draft else "pending"
+            
+            print(f"DEBUG: db_data for insert: {db_data.get('request_type')}")
             
             # Create request
             response = self.db.table("vendor_join_requests").insert(db_data).execute()
@@ -637,6 +641,9 @@ class RMService:
             
             # Prepare update data (mode='json' converts time objects to strings)
             update_data = request_data.model_dump(mode='json')
+            
+            print(f"DEBUG: Updating vendor request {request_id}. request_type in request_data: {request_data.request_type}")
+            print(f"DEBUG: update_data for update: {update_data.get('request_type')}")
             
             # Change status if submitting for approval
             if submit_for_approval:
@@ -880,28 +887,45 @@ class RMService:
     async def _cleanup_vendor_request_images(self, request: Dict[str, Any]) -> None:
         """Delete vendor request images from storage."""
         try:
-            documents = request.get("documents", {})
             images_to_delete = []
+            # Collect from top-level columns
+            if request.get("cover_image_url"):
+                images_to_delete.append(request["cover_image_url"])
             
-            # Collect all image paths
-            if documents.get("cover_image"):
-                images_to_delete.append(documents["cover_image"])
+            if request.get("gallery_images"):
+                gallery = request["gallery_images"]
+                if isinstance(gallery, list):
+                    images_to_delete.extend(gallery)
+                elif isinstance(gallery, str):
+                    images_to_delete.append(gallery)
             
-            if documents.get("images"):
-                images_to_delete.extend(documents["images"])
-            
-            if documents.get("business_license"):
-                images_to_delete.append(documents["business_license"])
-            
-            if documents.get("business_registration"):
-                images_to_delete.append(documents["business_registration"])
+            if request.get("registration_certificate"):
+                images_to_delete.append(request["registration_certificate"])
+
+            if request.get("business_license"):
+                images_to_delete.append(request["business_license"])
+
+            # Check documents JSON for legacy/extra fields
+            documents = request.get("documents", {})
+            if isinstance(documents, dict):
+                if documents.get("cover_image"):
+                    images_to_delete.append(documents["cover_image"])
+                
+                if documents.get("images") and isinstance(documents["images"], list):
+                    images_to_delete.extend(documents["images"])
+                
+                if documents.get("business_license"):
+                    images_to_delete.append(documents["business_license"])
+                
+                if documents.get("business_registration"):
+                    images_to_delete.append(documents["business_registration"])
             
             # Delete images from storage
             if images_to_delete:
                 for image_path in images_to_delete:
                     if "salon-images/" in image_path:
                         file_path = image_path.split("salon-images/")[-1]
-                        db.storage.from_("salon-images").remove([file_path])
+                        self.db.storage.from_("salon-images").remove([file_path])
                 
                 logger.info(f"Deleted {len(images_to_delete)} images from storage")
         

@@ -15,8 +15,8 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-# Security scheme
-security = HTTPBearer()
+# Security scheme (auto_error=False to allow optional auth)
+security = HTTPBearer(auto_error=False)
 
 
 # =====================================================
@@ -454,6 +454,12 @@ async def get_current_user(
     Raises:
         HTTPException: If authentication fails
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = credentials.credentials
     token_data = verify_token(token, db)
     
@@ -494,6 +500,44 @@ async def get_current_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication failed"
         )
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    db=Depends(get_db_client)
+) -> Optional[TokenData]:
+    """
+    Dependency to get current user if authenticated, otherwise return None.
+    Useful for public endpoints that have extra features for logged-in users.
+    """
+    if not credentials or not credentials.credentials:
+        return None
+
+    try:
+        token = credentials.credentials
+        token_data = verify_token(token, db)
+
+        user_response = db.table("profiles").select(
+            "id, email, user_role, is_active"
+        ).eq("id", token_data.sub).single().execute()
+
+        if not user_response.data:
+            return None
+
+        user = user_response.data
+        if not user.get("is_active", False):
+            return None
+
+        return TokenData(
+            user_id=user["id"],
+            email=user["email"],
+            user_role=user["user_role"],
+            jti=token_data.jti,
+            exp=datetime.utcfromtimestamp(token_data.exp) if token_data.exp else None
+        )
+    except Exception:
+        # Silently fail for optional auth
+        return None
 
 
 async def get_current_user_id(
@@ -589,21 +633,22 @@ async def require_rm(current_user: TokenData = Depends(get_current_user)) -> Tok
 
 async def require_vendor(current_user: TokenData = Depends(get_current_user)) -> TokenData:
     """
-    Dependency to require vendor role
+    Dependency to require vendor or regular_buyer role
     
     Args:
         current_user: Current authenticated user
     
     Returns:
-        TokenData if user is vendor
+        TokenData if user is vendor or regular_buyer
     
     Raises:
-        HTTPException: If user is not vendor
+        HTTPException: If user is not authorized
     """
-    if current_user.user_role != "vendor":
+    allowed_roles = ["vendor", "regular_buyer"]
+    if current_user.user_role not in allowed_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Vendor access required"
+            detail="Vendor or Business Partner access required"
         )
     return current_user
 
@@ -633,7 +678,7 @@ async def require_customer(current_user: TokenData = Depends(get_current_user)) 
 # SPECIAL TOKEN GENERATION
 # =====================================================
 
-def create_registration_token(request_id: str, salon_id: str, owner_email: str) -> str:
+def create_registration_token(request_id: str, salon_id: str, owner_email: str, request_type: str = "salon") -> str:
     """
     Create special JWT token for vendor registration link
     Shorter expiration time (7 days)
@@ -642,6 +687,7 @@ def create_registration_token(request_id: str, salon_id: str, owner_email: str) 
         request_id: Vendor join request ID
         salon_id: Salon ID
         owner_email: Vendor owner email
+        request_type: Type of request (salon, regular_buyer)
     
     Returns:
         Encoded JWT token for registration
@@ -651,6 +697,7 @@ def create_registration_token(request_id: str, salon_id: str, owner_email: str) 
         "request_id": request_id,
         "salon_id": salon_id,
         "email": owner_email,
+        "request_type": request_type,
         "type": "registration"
     }
     
@@ -695,7 +742,8 @@ def verify_registration_token(token: str) -> dict:
         return {
             "request_id": payload.get("request_id"),
             "salon_id": payload.get("salon_id"),
-            "email": payload.get("email")
+            "email": payload.get("email"),
+            "request_type": payload.get("request_type", "salon")
         }
     
     except JWTError as e:
@@ -802,8 +850,8 @@ async def verify_salon_access(user: TokenData, salon_id: str, db = Depends(get_d
     if user.user_role == "admin":
         return True
     
-    # Vendors can only access their own salon
-    if user.user_role == "vendor":
+    # Vendors and Regular Buyers can only access their own salon
+    if user.user_role in ["vendor", "regular_buyer"]:
         user_salon_id = await get_user_salon_id(user.user_id, db)
         return user_salon_id == salon_id
     

@@ -12,6 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, 
 from typing import Optional, List
 from decimal import Decimal
 from supabase import Client
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.core.database import get_db_client
@@ -227,6 +230,13 @@ async def get_salon(
         raise HTTPException(
             status_code=404, 
             detail="Salon not available. It may be inactive, unverified, or payment pending."
+        )
+    
+    # Regular buyers can only buy products — they don't offer salon services publicly
+    if salon_data.get('salon_type') == 'regular_buyer':
+        raise HTTPException(
+            status_code=404,
+            detail="Salon not available."
         )
     
     # Extract services from the salon data if present
@@ -541,6 +551,7 @@ async def search_salons(
 @router.post("/", response_model=SalonResponse)
 async def create_salon(
     current_user: TokenData = Depends(require_admin),
+    db: Client = Depends(get_db_client),
     name: str = Form(...),
     description: Optional[str] = Form(None),
     phone: str = Form(...),
@@ -605,6 +616,7 @@ async def create_salon(
 @router.patch("/{salon_id}", response_model=SalonResponse)
 async def update_salon(
     salon_id: int,
+    db: Client = Depends(get_db_client),
     name: Optional[str] = None,
     description: Optional[str] = None,
     phone: Optional[str] = None,
@@ -635,6 +647,7 @@ async def update_salon(
 async def approve_salon(
     salon_id: int,
     admin: TokenData = Depends(require_admin),
+    db: Client = Depends(get_db_client),
     reviewed_by: str = Form(...),
     rejection_reason: Optional[str] = Form(None)
 ):
@@ -662,6 +675,7 @@ async def approve_salon(
 @router.post("/{salon_id}/images", response_model=SuccessResponse, operation_id="salons_upload_salon_image")
 async def upload_salon_image(
     salon_id: int,
+    db: Client = Depends(get_db_client),
     image: UploadFile = File(...),
     image_type: str = Form("gallery")
 ):

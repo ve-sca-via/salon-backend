@@ -90,10 +90,14 @@ class VendorApprovalService:
             logger.error(f"Failed to create salon: {str(e)}")
             return ApprovalResult(success=False, error=str(e))
         
-        # Step 6: Insert services if provided
-        services_created = await self._create_salon_services(salon_id, request_data)
-        if services_created:
-            logger.info(f"Created {services_created} services")
+        # Step 6: Insert services if provided (skip for regular buyers)
+        services_created = 0
+        if request_data.request_type == "salon":
+            services_created = await self._create_salon_services(salon_id, request_data)
+            if services_created:
+                logger.info(f"Created {services_created} services")
+        else:
+            logger.info(f"Skipping service creation for {request_data.request_type}")
         
         # Step 7: Update RM score and get new total
         rm_new_score = None
@@ -134,8 +138,6 @@ class VendorApprovalService:
                 )
             else:
                 warnings.append("Could not send RM notification - RM details not found")
-        except Exception as e:
-            warnings.append(f"Failed to send RM notification: {str(e)}")
         except Exception as e:
             warnings.append(f"Failed to send RM notification: {str(e)}")
         
@@ -218,7 +220,7 @@ class VendorApprovalService:
         update_data = {
             "status": "approved",
             "admin_notes": admin_notes,
-            "reviewed_at": "now()"
+            "reviewed_at": datetime.utcnow().isoformat()
         }
         
         if admin_id:
@@ -358,7 +360,7 @@ class VendorApprovalService:
         # assigned_rm should be the RM user_id from request (not rm_id column)
         salon_data = {
             "vendor_id": getattr(request_data, "user_id", None),  # Will be set after vendor registers
-            "assigned_rm": getattr(request_data, "user_id", None),  # RM who submitted this
+            "assigned_rm": request_data.rm_id,  # RM who submitted this
             "join_request_id": request_id,  # Link salon to original vendor request
             "business_name": request_data.business_name,
             "description": documents.get("description"),
@@ -382,6 +384,7 @@ class VendorApprovalService:
             "working_days": working_days if isinstance(working_days, list) else [],
             "business_hours": business_hours,
             "facilities": getattr(request_data, "facilities", None) or documents.get("facilities", None),
+            "salon_type": getattr(request_data, "request_type", "salon"),
             "registration_fee_paid": False,
             "is_active": False,
             "is_verified": False
@@ -552,7 +555,8 @@ class VendorApprovalService:
         registration_token = create_registration_token(
             request_id=request_id,
             salon_id=salon_id,
-            owner_email=request_data.owner_email
+            owner_email=request_data.owner_email,
+            request_type=getattr(request_data, "request_type", "salon")
         )
         
         logger.info(f"Registration token generated for {request_data.owner_email}")
@@ -685,7 +689,7 @@ class VendorApprovalService:
         update_data = {
             "status": "rejected",
             "admin_notes": admin_notes,
-            "reviewed_at": "now()"
+            "reviewed_at": datetime.utcnow().isoformat()
         }
         
         if admin_id:

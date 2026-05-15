@@ -51,6 +51,9 @@ class VendorJoinRequestBase(BaseModel):
     cover_image_url: Optional[str] = None
     gallery_images: Optional[List[str]] = Field(default_factory=list)
     
+    # Request Type
+    request_type: Optional[str] = Field("salon", description="Type of request: salon or regular_buyer")
+    
     # Operations
     services_offered: Optional[Dict[str, Any]] = Field(None, description="Services by category")
     opening_time: Optional[time] = None

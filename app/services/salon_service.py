@@ -234,6 +234,18 @@ class SalonService:
         
         salons = response.data or []
         
+        # Exclude regular_buyer salons — they can only buy products, not offer services
+        # Note: The RPC function doesn't return salon_type, so we do a secondary lookup
+        if salons:
+            salon_ids = [s["id"] for s in salons if s.get("id")]
+            if salon_ids:
+                type_response = self.db.table("salons").select("id, salon_type").in_("id", salon_ids).execute()
+                regular_buyer_ids = {
+                    row["id"] for row in (type_response.data or [])
+                    if row.get("salon_type") == "regular_buyer"
+                }
+                salons = [s for s in salons if s["id"] not in regular_buyer_ids]
+        
         # Apply additional filters if provided
         if params.filters:
             if params.filters.is_active is not None:
@@ -518,12 +530,14 @@ class SalonService:
             List of public salons with basic info
         """
         # Build query with all three required conditions
+        # Exclude regular_buyer salons — they can only buy products, not offer services
         query = (
             self.db.table("salons")
             .select("*, vendor_join_requests(business_type)")
             .eq("is_active", True)
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
+            .neq("salon_type", "regular_buyer")
         )
         
         # Apply city filter if provided
@@ -570,11 +584,13 @@ class SalonService:
         Returns:
             List of approved salons
         """
+        # Exclude regular_buyer salons — they can only buy products, not offer services
         query = (
             self.db.table("salons")
             .select("*")
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
+            .neq("salon_type", "regular_buyer")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
         )
@@ -610,12 +626,14 @@ class SalonService:
             List of matching salons
         """
         # Start with public salons filter
+        # Exclude regular_buyer salons — they can only buy products, not offer services
         query = (
             self.db.table("salons")
             .select("*, vendor_join_requests(business_type)")
             .eq("is_active", True)
             .eq("is_verified", True)
             .eq("registration_fee_paid", True)
+            .neq("salon_type", "regular_buyer")
         )
         
         # Apply text search if provided
