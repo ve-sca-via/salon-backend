@@ -43,4 +43,4 @@ pytz==2023.3
 rich==13.7.0  # Rich terminal output for logging
 
 # Cloudinary Storage
-cloudinary==1.41.0
+cloudinary==1.42.0
