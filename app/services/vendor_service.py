@@ -192,9 +192,9 @@ class VendorService:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Get services with category details
+            # Get services with category and subcategory details
             response = self.db.table("services").select(
-                "*, service_categories(*)"
+                "*, service_categories(*), service_subcategories(*)"
             ).eq("salon_id", salon_id).order("created_at", desc=True).execute()
             
             return response.data or []
@@ -234,6 +234,10 @@ class VendorService:
             if service.category_id:
                 await self._validate_service_category(service.category_id)
             
+            # Validate subcategory_id if provided
+            if service.subcategory_id:
+                await self._validate_service_subcategory(service.subcategory_id, service.category_id)
+            
             # Create service with auto-assigned salon_id
             service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
@@ -245,7 +249,7 @@ class VendorService:
             
             logger.info(
                 f"Vendor {vendor_id} created service: {service.name} "
-                f"(category: {service.category_id or 'none'})"
+                f"(category: {service.category_id or 'none'}, subcategory: {service.subcategory_id or 'none'})"
             )
             
             return created_service
@@ -289,6 +293,10 @@ class VendorService:
             # Validate category_id if being updated
             if update.category_id is not None:
                 await self._validate_service_category(update.category_id)
+            
+            # Validate subcategory_id if being updated
+            if update.subcategory_id is not None:
+                await self._validate_service_subcategory(update.subcategory_id, update.category_id)
             
             # Prepare update data
             update_data = update.model_dump(exclude_unset=True)
@@ -730,6 +738,36 @@ class VendorService:
                 detail=f"Invalid category_id: {category_id}"
             )
     
+    async def _validate_service_subcategory(self, subcategory_id: str, category_id: str = None) -> None:
+        """
+        Validate that subcategory_id exists and optionally belongs to the given category.
+        
+        Args:
+            subcategory_id: Subcategory UUID to validate
+            category_id: Optional parent category UUID for consistency check
+            
+        Raises:
+            HTTPException: If subcategory not found or parent mismatch
+        """
+        subcategory_check = self.db.table("service_subcategories").select(
+            "id, parent_category_id"
+        ).eq("id", subcategory_id).execute()
+        
+        if not subcategory_check.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid subcategory_id: {subcategory_id}"
+            )
+        
+        # If category_id is also provided, verify parent-child relationship
+        if category_id:
+            actual_parent = subcategory_check.data[0].get("parent_category_id")
+            if actual_parent != category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Subcategory {subcategory_id} does not belong to category {category_id}"
+                )
+    
     async def _verify_service_ownership(self, service_id: str, salon_id: str) -> None:
         """
         Verify that service belongs to the vendor's salon.
@@ -1114,20 +1152,46 @@ class VendorService:
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
-        Get all active service categories.
+        Get all active service categories with their active subcategories.
         
         Returns:
-            List of service categories ordered by display_order
+            List of service categories ordered by display_order,
+            each with a 'subcategories' list nested inside.
         """
+        # Fetch parent categories
         response = self.db.table("service_categories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
         
         categories = response.data or []
         
-        logger.info(f" Retrieved {len(categories)} service categories")
+        if not categories:
+            logger.info(" Retrieved 0 service categories")
+            return categories
+        
+        # Fetch all active subcategories in a single query
+        subcategories_response = self.db.table("service_subcategories").select(
+            "*"
+        ).eq("is_active", True).order("display_order").execute()
+        
+        subcategories = subcategories_response.data or []
+        
+        # Group subcategories by parent_category_id
+        subcats_by_parent = {}
+        for sub in subcategories:
+            parent_id = sub.get("parent_category_id")
+            if parent_id not in subcats_by_parent:
+                subcats_by_parent[parent_id] = []
+            subcats_by_parent[parent_id].append(sub)
+        
+        # Attach subcategories to their parent categories
+        for cat in categories:
+            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
+        
+        logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
         
         return categories
+
 
     def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
