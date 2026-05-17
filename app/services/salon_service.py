@@ -687,9 +687,9 @@ class SalonService:
         if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
             raise ValueError("Salon not available")
         
-        # Get services from database with category join
+        # Get services from database with category and subcategory join
         response = self.db.table("services").select(
-            "*, service_categories(id, name, icon_url)"
+            "*, service_categories(id, name, icon_url), service_subcategories(id, name, icon_url, parent_category_id)"
         ).eq("salon_id", salon_id).eq("is_active", True).order("category_id").execute()
         
         services = response.data or []

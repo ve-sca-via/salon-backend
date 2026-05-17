@@ -12,6 +12,7 @@ from .users import router as users_router
 from .salons import router as salons_router
 from .bookings import router as bookings_router
 from .service_categories import router as service_categories_router
+from .service_subcategories import router as service_subcategories_router
 from .product_orders import router as product_orders_router
 
 # Create the main admin router
@@ -26,4 +27,5 @@ router.include_router(users_router, prefix="/users", tags=["admin-users"])
 router.include_router(salons_router, prefix="/salons", tags=["admin-salons"])
 router.include_router(bookings_router, prefix="/bookings", tags=["admin-bookings"])
 router.include_router(service_categories_router, prefix="/service-categories", tags=["admin-service-categories"])
-router.include_router(product_orders_router, prefix="/product-orders", tags=["admin-product-orders"])
+router.include_router(service_subcategories_router, prefix="/service-categories", tags=["admin-service-subcategories"])
+router.include_router(product_orders_router, prefix="/product-orders", tags=["admin-product-orders"])
