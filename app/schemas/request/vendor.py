@@ -153,6 +153,7 @@ class ServiceCreate(BaseModel):
     price: float = Field(..., ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
     gender_category: Optional[str] = Field("both", pattern="^(male|female|both)$")
     image_url: Optional[str] = None
 
@@ -163,6 +164,7 @@ class ServiceUpdate(BaseModel):
     price: Optional[float] = Field(None, ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
     gender_category: Optional[str] = Field(None, pattern="^(male|female|both)$")
     image_url: Optional[str] = None
     is_active: Optional[bool] = None

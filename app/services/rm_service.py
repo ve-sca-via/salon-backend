@@ -809,17 +809,42 @@ class RMService:
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
-        Get all active service categories.
+        Get all active service categories with their active subcategories.
         
         Returns:
-            List of active service categories
+            List of active service categories with nested subcategories
         """
         try:
+            # Fetch parent categories
             response = self.db.table("service_categories").select(
                 "id, name, description, icon_url, display_order"
             ).eq("is_active", True).order("display_order").execute()
             
-            return response.data or []
+            categories = response.data or []
+            
+            if not categories:
+                return categories
+            
+            # Fetch all active subcategories in a single query
+            subcategories_response = self.db.table("service_subcategories").select(
+                "id, parent_category_id, name, description, icon_url, display_order"
+            ).eq("is_active", True).order("display_order").execute()
+            
+            subcategories = subcategories_response.data or []
+            
+            # Group subcategories by parent_category_id
+            subcats_by_parent = {}
+            for sub in subcategories:
+                parent_id = sub.get("parent_category_id")
+                if parent_id not in subcats_by_parent:
+                    subcats_by_parent[parent_id] = []
+                subcats_by_parent[parent_id].append(sub)
+            
+            # Attach subcategories to their parent categories
+            for cat in categories:
+                cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
+            
+            return categories
         
         except Exception as e:
             logger.error(f"Failed to fetch service categories: {str(e)}")
@@ -827,6 +852,7 @@ class RMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch service categories"
             )
+
     
     async def get_rm_dashboard(self, rm_id: str) -> Dict[str, Any]:
         """
