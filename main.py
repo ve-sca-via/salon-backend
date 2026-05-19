@@ -6,7 +6,6 @@ and registers them with the FastAPI app instance.
 import logging
 
 from fastapi import FastAPI
-from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
@@ -46,7 +45,6 @@ log_startup_info()
 # Configure rate limiting
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
 
 # Setup middleware (CORS, logging, HTTPS, etc.)
 setup_middleware(app)

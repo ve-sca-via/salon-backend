@@ -160,13 +160,21 @@ class Settings(BaseSettings):
     def allowed_hosts_list(self) -> List[str]:
         """Convert comma-separated ALLOWED_HOSTS string to list"""
         if isinstance(self.ALLOWED_HOSTS, str):
-            return [host.strip() for host in self.ALLOWED_HOSTS.split(",")]
+            return [
+                host.strip().strip("\"'").rstrip("/")
+                for host in self.ALLOWED_HOSTS.split(",")
+                if host.strip()
+            ]
         return self.ALLOWED_HOSTS
     
     @property
     def allowed_origins_list(self) -> List[str]:
         if isinstance(self.ALLOWED_ORIGINS, str):
-            return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
+            return [
+                origin.strip().strip("\"'").rstrip("/")
+                for origin in self.ALLOWED_ORIGINS.split(",")
+                if origin.strip()
+            ]
         return self.ALLOWED_ORIGINS
     
     @property
