@@ -64,15 +64,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 def setup_middleware(app):
     """Configure all middleware for the FastAPI app."""
-    # Configure CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.allowed_origins_list,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     # Add request/response logging middleware
     app.add_middleware(LoggingMiddleware)
 
@@ -89,3 +80,12 @@ def setup_middleware(app):
         )
     else:
         logger.info("Development mode: HTTPS enforcement disabled")
+
+    # Add CORS last so it wraps the whole stack, including error responses
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )

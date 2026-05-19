@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 def add_cors_headers(response: JSONResponse, request: Request) -> None:
     """Add CORS headers to response if origin is allowed."""
     origin = request.headers.get("origin")
-    if origin and origin in settings.allowed_origins_list:
+    normalized_origin = origin.rstrip("/") if origin else None
+    if normalized_origin and normalized_origin in settings.allowed_origins_list:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
 
