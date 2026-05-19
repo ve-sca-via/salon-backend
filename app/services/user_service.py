@@ -394,7 +394,7 @@ class UserService:
             raise ValueError(f"Cannot delete user: Has {reviews_check.count} active review(s). Please delete reviews first.")
         
         # 4. Check for salons (if vendor)
-        if user_role == "vendor":
+        if user_role in ["vendor", "regular_buyer"]:
             salons_check = db.table("salons").select("id", count="exact").eq("vendor_id", user_id).execute()
             if salons_check.count and salons_check.count > 0:
                 raise ValueError(f"Cannot delete vendor: Has {salons_check.count} salon(s). Please delete or reassign salons first.")

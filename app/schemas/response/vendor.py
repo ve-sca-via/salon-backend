@@ -26,6 +26,7 @@ class VendorJoinRequestResponse(BaseModel):
     user_id: Optional[str] = None
     rm_id: str
     status: RequestStatus
+    request_type: str = "salon"
     submitted_at: Optional[datetime] = None
     admin_notes: Optional[str] = None
     reviewed_by: Optional[str] = None
@@ -74,6 +75,7 @@ class SalonResponse(BaseModel):
     vendor_id: Optional[str] = None
     rm_id: Optional[str] = None
     join_request_id: Optional[str] = None
+    salon_type: str = "salon"
     is_active: bool
     is_verified: bool
     verified_at: Optional[datetime] = None
@@ -168,6 +170,7 @@ class ServiceResponse(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     discounted_price: Optional[float] = Field(None, ge=0)
     category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
     gender_category: str = "both"
     image_url: Optional[str] = None
     is_active: bool
@@ -176,6 +179,7 @@ class ServiceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 
 # =====================================================
@@ -190,6 +194,10 @@ class DashboardStatistics(BaseModel):
     today_bookings: int
     average_rating: float
     total_reviews: int
+    # Product stats (B2B)
+    total_product_orders: int = 0
+    pending_product_orders: int = 0
+    total_product_spending: float = 0.0
 
 class VendorDashboardResponse(BaseModel):
     """Response for vendor dashboard endpoint"""
@@ -207,6 +215,10 @@ class VendorAnalyticsResponse(BaseModel):
     active_services: int
     average_rating: float
     pending_bookings: int
+    # Product stats (B2B)
+    total_product_orders: int = 0
+    pending_product_orders: int = 0
+    total_product_spending: float = 0.0
 
     class Config:
         extra = "allow"

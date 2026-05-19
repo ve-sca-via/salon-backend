@@ -71,7 +71,7 @@ class BookingService:
                 
             elif salon_id:
                 # Verify salon access
-                if current_user_role == "vendor":
+                if current_user_role in ["vendor", "regular_buyer"]:
                     await self._verify_salon_ownership(salon_id, current_user_id)
                 elif current_user_role not in ["admin"]:
                     raise HTTPException(
@@ -803,7 +803,7 @@ class BookingService:
             salon_id = str(booking_check.data["salon_id"])
             
             # Verify vendor owns the salon
-            if current_user_role == "vendor":
+            if current_user_role in ["vendor", "regular_buyer"]:
                 await self._verify_salon_ownership(salon_id, current_user_id)
             elif current_user_role not in ["admin"]:
                 raise HTTPException(
@@ -1192,7 +1192,7 @@ class BookingService:
             return
         
         # Vendors can access bookings for salons they own
-        if current_user_role == "vendor":
+        if current_user_role in ["vendor", "regular_buyer"]:
             await self._verify_salon_ownership(booking.get("salon_id"), current_user_id)
             return
         

@@ -51,6 +51,9 @@ class VendorJoinRequestBase(BaseModel):
     cover_image_url: Optional[str] = None
     gallery_images: Optional[List[str]] = Field(default_factory=list)
     
+    # Request Type
+    request_type: Optional[str] = Field("salon", description="Type of request: salon or regular_buyer")
+    
     # Operations
     services_offered: Optional[Dict[str, Any]] = Field(None, description="Services by category")
     opening_time: Optional[time] = None
@@ -150,6 +153,7 @@ class ServiceCreate(BaseModel):
     price: float = Field(..., ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
     gender_category: Optional[str] = Field("both", pattern="^(male|female|both)$")
     image_url: Optional[str] = None
 
@@ -160,6 +164,7 @@ class ServiceUpdate(BaseModel):
     price: Optional[float] = Field(None, ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
+    subcategory_id: Optional[str] = None
     gender_category: Optional[str] = Field(None, pattern="^(male|female|both)$")
     image_url: Optional[str] = None
     is_active: Optional[bool] = None

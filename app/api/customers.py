@@ -16,6 +16,7 @@ from app.core.auth import get_current_user, TokenData
 from app.core.database import get_db_client
 from app.services.customer_service import CustomerService
 from app.services.booking_service import BookingService
+from app.services.product_cart_service import ProductCartService
 from app.schemas import (
     CartResponse, CartOperationResponse, SuccessResponse, CartClearResponse,
     CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
@@ -32,6 +33,25 @@ router = APIRouter(prefix="/customers", tags=["Customer Portal"])
 def get_customer_service(db: Client = Depends(get_db_client)) -> CustomerService:
     """Dependency injection for CustomerService"""
     return CustomerService(db_client=db)
+
+
+def get_product_cart_service(db: Client = Depends(get_db_client)) -> ProductCartService:
+    """Dependency injection for ProductCartService"""
+    return ProductCartService(db_client=db)
+
+
+def get_booking_service(db: Client = Depends(get_db_client)) -> BookingService:
+    """Dependency injection for BookingService"""
+    return BookingService(db_client=db)
+
+
+class ProductCartItemAdd(BaseModel):
+    product_id: str
+    quantity: int = 1
+
+
+class ProductCartItemUpdate(BaseModel):
+    quantity: int
 
 
 # =====================================================
@@ -94,6 +114,73 @@ async def remove_from_cart(
     """
     return await customer_service.remove_from_cart(
         customer_id=current_user.user_id,
+        item_id=item_id
+    )
+
+
+# =====================================================
+# PRODUCT SHOPPING CART OPERATIONS
+# =====================================================
+
+@router.get("/product-cart")
+async def get_product_cart(
+    current_user: TokenData = Depends(get_current_user),
+    product_cart_service: ProductCartService = Depends(get_product_cart_service)
+):
+    """Get all product cart items for the current customer"""
+    return await product_cart_service.get_cart(
+        user_id=current_user.user_id,
+        user_role=current_user.user_role
+    )
+
+
+@router.post("/product-cart")
+async def add_to_product_cart(
+    item: ProductCartItemAdd,
+    current_user: TokenData = Depends(get_current_user),
+    product_cart_service: ProductCartService = Depends(get_product_cart_service)
+):
+    """Add product to cart"""
+    return await product_cart_service.add_to_cart(
+        user_id=current_user.user_id,
+        product_id=item.product_id,
+        quantity=item.quantity
+    )
+
+
+@router.put("/product-cart/{item_id}")
+async def update_product_cart_item(
+    item_id: str,
+    item: ProductCartItemUpdate,
+    current_user: TokenData = Depends(get_current_user),
+    product_cart_service: ProductCartService = Depends(get_product_cart_service)
+):
+    """Update product cart item quantity"""
+    return await product_cart_service.update_item(
+        user_id=current_user.user_id,
+        item_id=item_id,
+        quantity=item.quantity
+    )
+
+
+@router.delete("/product-cart/clear/all")
+async def clear_product_cart(
+    current_user: TokenData = Depends(get_current_user),
+    product_cart_service: ProductCartService = Depends(get_product_cart_service)
+):
+    """Clear all items from product cart"""
+    return await product_cart_service.clear_cart(current_user.user_id)
+
+
+@router.delete("/product-cart/{item_id}")
+async def remove_from_product_cart(
+    item_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    product_cart_service: ProductCartService = Depends(get_product_cart_service)
+):
+    """Remove item from product cart"""
+    return await product_cart_service.remove_item(
+        user_id=current_user.user_id,
         item_id=item_id
     )
 
@@ -329,21 +416,16 @@ async def update_review(
 @router.post("/bookings", response_model=BookingResponse, operation_id="customer_create_booking")
 async def create_booking(
     booking_data: BookingCreate,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
+    booking_service: BookingService = Depends(get_booking_service)
 ):
     """
     Create a new booking
     Requires authentication
     """
-    booking_service = BookingService()
     return await booking_service.create_booking(
-        customer_id=current_user.user_id,
-        salon_id=booking_data.salon_id,
-        booking_date=booking_data.booking_date,
-        booking_time=booking_data.booking_time,
-        services=booking_data.services,
-        total_amount=booking_data.total_amount,
-        notes=booking_data.notes
+        booking=booking_data,
+        current_user_id=current_user.user_id
     )
 
 

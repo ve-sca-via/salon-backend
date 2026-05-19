@@ -192,9 +192,9 @@ class VendorService:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Get services with category details
+            # Get services with category and subcategory details
             response = self.db.table("services").select(
-                "*, service_categories(*)"
+                "*, service_categories(*), service_subcategories(*)"
             ).eq("salon_id", salon_id).order("created_at", desc=True).execute()
             
             return response.data or []
@@ -234,6 +234,10 @@ class VendorService:
             if service.category_id:
                 await self._validate_service_category(service.category_id)
             
+            # Validate subcategory_id if provided
+            if service.subcategory_id:
+                await self._validate_service_subcategory(service.subcategory_id, service.category_id)
+            
             # Create service with auto-assigned salon_id
             service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
@@ -245,7 +249,7 @@ class VendorService:
             
             logger.info(
                 f"Vendor {vendor_id} created service: {service.name} "
-                f"(category: {service.category_id or 'none'})"
+                f"(category: {service.category_id or 'none'}, subcategory: {service.subcategory_id or 'none'})"
             )
             
             return created_service
@@ -289,6 +293,10 @@ class VendorService:
             # Validate category_id if being updated
             if update.category_id is not None:
                 await self._validate_service_category(update.category_id)
+            
+            # Validate subcategory_id if being updated
+            if update.subcategory_id is not None:
+                await self._validate_service_subcategory(update.subcategory_id, update.category_id)
             
             # Prepare update data
             update_data = update.model_dump(exclude_unset=True)
@@ -558,6 +566,37 @@ class VendorService:
             salon_id = str(salon["id"])
             logger.info(f"Fetching dashboard stats for salon_id: {salon_id}")
             
+            # Check if regular_buyer
+            is_regular_buyer = salon.get("salon_type") == "regular_buyer"
+
+            # Get product order stats (always relevant as vendors can also buy products)
+            total_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).execute()
+            pending_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
+            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
+            total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
+
+            # Recent orders
+            recent_orders_response = self.db.table("product_orders").select("*").eq("user_id", vendor_id).order("created_at", desc=True).limit(5).execute()
+            recent_orders = recent_orders_response.data or []
+
+            if is_regular_buyer:
+                return {
+                    "salon": salon,
+                    "statistics": {
+                        "total_services": 0,
+                        "total_bookings": 0, # Don't repurpose fields anymore
+                        "pending_bookings": 0,
+                        "today_bookings": 0,
+                        "average_rating": 0,
+                        "total_reviews": 0,
+                        "total_product_orders": total_orders.count if total_orders else 0,
+                        "pending_product_orders": pending_orders.count if pending_orders else 0,
+                        "total_product_spending": total_spending
+                    },
+                    "recent_bookings": recent_orders
+                }
+            
+            # Original salon logic
             # Get counts
             total_services = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).execute()
             total_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).is_("deleted_at", "null").execute()
@@ -568,10 +607,6 @@ class VendorService:
             
             # Recent bookings (last 5) using bookings_with_payments view
             recent_bookings_response = self.db.from_("bookings_with_payments").select("*").eq("salon_id", salon_id).is_("deleted_at", "null").order("created_at", desc=True).limit(5).execute()
-            
-            logger.info(f"Dashboard: Found {len(recent_bookings_response.data or [])} recent bookings")
-            if recent_bookings_response.data:
-                logger.debug(f"First booking customer_name: {recent_bookings_response.data[0].get('customer_name')}")
             
             recent_bookings = []
             for booking in (recent_bookings_response.data or []):
@@ -593,7 +628,10 @@ class VendorService:
                     "pending_bookings": pending_bookings.count if pending_bookings else 0,
                     "today_bookings": today_bookings.count if today_bookings else 0,
                     "average_rating": salon.get("average_rating", 0),
-                    "total_reviews": salon.get("total_reviews", 0)
+                    "total_reviews": salon.get("total_reviews", 0),
+                    "total_product_orders": total_orders.count if total_orders else 0,
+                    "pending_product_orders": pending_orders.count if pending_orders else 0,
+                    "total_product_spending": total_spending
                 },
                 "recent_bookings": recent_bookings
             }
@@ -625,6 +663,28 @@ class VendorService:
             salon = await self.get_vendor_salon(vendor_id)
             salon_id = salon["id"]
             
+            # Check if regular_buyer
+            is_regular_buyer = salon.get("salon_type") == "regular_buyer"
+            
+            # Get product order stats
+            orders_response = self.db.table("product_orders").select("id, total_amount", count="exact").eq("user_id", vendor_id).execute()
+            pending_orders_response = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
+            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
+            total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
+
+            if is_regular_buyer:
+                return {
+                    "total_bookings": 0,
+                    "total_revenue": 0.0,
+                    "active_services": 0,
+                    "average_rating": 0.0,
+                    "pending_bookings": 0,
+                    "total_product_orders": orders_response.count if orders_response else 0,
+                    "pending_product_orders": pending_orders_response.count if pending_orders_response else 0,
+                    "total_product_spending": total_spending
+                }
+            
+            # Original salon logic
             # Get counts
             services_response = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).eq("is_active", True).execute()
             bookings_response = self.db.table("bookings").select("id, total_amount", count="exact").eq("salon_id", salon_id).execute()
@@ -639,7 +699,10 @@ class VendorService:
                 "total_revenue": total_revenue,
                 "active_services": services_response.count if services_response else 0,
                 "average_rating": salon.get("average_rating", 0.0),
-                "pending_bookings": pending_response.count if pending_response else 0
+                "pending_bookings": pending_response.count if pending_response else 0,
+                "total_product_orders": orders_response.count if orders_response else 0,
+                "pending_product_orders": pending_orders_response.count if pending_orders_response else 0,
+                "total_product_spending": total_spending
             }
         
         except HTTPException:
@@ -674,6 +737,36 @@ class VendorService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid category_id: {category_id}"
             )
+    
+    async def _validate_service_subcategory(self, subcategory_id: str, category_id: str = None) -> None:
+        """
+        Validate that subcategory_id exists and optionally belongs to the given category.
+        
+        Args:
+            subcategory_id: Subcategory UUID to validate
+            category_id: Optional parent category UUID for consistency check
+            
+        Raises:
+            HTTPException: If subcategory not found or parent mismatch
+        """
+        subcategory_check = self.db.table("service_subcategories").select(
+            "id, parent_category_id"
+        ).eq("id", subcategory_id).execute()
+        
+        if not subcategory_check.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid subcategory_id: {subcategory_id}"
+            )
+        
+        # If category_id is also provided, verify parent-child relationship
+        if category_id:
+            actual_parent = subcategory_check.data[0].get("parent_category_id")
+            if actual_parent != category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Subcategory {subcategory_id} does not belong to category {category_id}"
+                )
     
     async def _verify_service_ownership(self, service_id: str, salon_id: str) -> None:
         """
@@ -723,7 +816,8 @@ class VendorService:
         email: str,
         full_name: str,
         age: int,
-        gender: str
+        gender: str,
+        user_role: str = "vendor"
     ) -> Dict[str, Any]:
         """
         Create vendor profile in profiles table.
@@ -751,7 +845,7 @@ class VendorService:
             "full_name": full_name,
             "age": age,
             "gender": gender.lower(),
-            "user_role": "vendor",
+            "user_role": user_role,
             "is_active": True
         }
         
@@ -869,6 +963,33 @@ class VendorService:
         
         logger.info(f"Token verified for {vendor_email}, salon_id: {salon_id}")
         
+        # Fetch salon to verify existence
+        salon_response = self.db.table("salons").select("id").eq("id", salon_id).single().execute()
+        if not salon_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salon not found"
+            )
+        
+        # Determine salon type (salon vs regular_buyer)
+        salon_type = salon_response.data.get("salon_type")
+        
+        # Fallback: check the original join request if salon_type is missing from salon record
+        if not salon_type:
+            try:
+                request_response = self.db.table("vendor_join_requests").select("request_type").eq("id", request_id).single().execute()
+                if request_response.data:
+                    salon_type = request_response.data.get("request_type")
+            except Exception as e:
+                logger.warning(f"Could not fetch request_type for fallback: {e}")
+        
+        # Final fallback
+        if not salon_type:
+            salon_type = "salon"
+            
+        user_role = "regular_buyer" if salon_type == "regular_buyer" else "vendor"
+        logger.info(f"Determined user role: {user_role} (from salon_type: {salon_type})")
+
         # Use full_name from registration request (provided by vendor)
         vendor_full_name = full_name.strip()
         
@@ -890,7 +1011,7 @@ class VendorService:
                 "password": password,
                 "email_confirm": True,  # Auto-confirm email
                 "user_metadata": {
-                    "role": "vendor",
+                    "role": user_role,
                     "full_name": vendor_full_name
                 }
             })
@@ -906,7 +1027,7 @@ class VendorService:
                     "password": password,
                     "options": {
                         "data": {
-                            "role": "vendor",
+                            "role": user_role,
                             "full_name": vendor_full_name
                         }
                     }
@@ -940,7 +1061,8 @@ class VendorService:
                 email=vendor_email,
                 full_name=vendor_full_name,
                 age=age,
-                gender=gender
+                gender=gender,
+                user_role=user_role
             )
             logger.info("Vendor profile created successfully")
         except Exception as profile_error:
@@ -988,7 +1110,7 @@ class VendorService:
         token_data = {
             "sub": user_id,
             "email": vendor_email,
-            "user_role": "vendor"
+            "user_role": user_role
         }
         
         access_token = create_access_token(token_data)
@@ -1023,27 +1145,53 @@ class VendorService:
                     "id": user_id,
                     "email": vendor_email,
                     "full_name": vendor_full_name,
-                    "role": "vendor"
+                    "role": user_role
                 }
             }
         }
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
-        Get all active service categories.
+        Get all active service categories with their active subcategories.
         
         Returns:
-            List of service categories ordered by display_order
+            List of service categories ordered by display_order,
+            each with a 'subcategories' list nested inside.
         """
+        # Fetch parent categories
         response = self.db.table("service_categories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
         
         categories = response.data or []
         
-        logger.info(f" Retrieved {len(categories)} service categories")
+        if not categories:
+            logger.info(" Retrieved 0 service categories")
+            return categories
+        
+        # Fetch all active subcategories in a single query
+        subcategories_response = self.db.table("service_subcategories").select(
+            "*"
+        ).eq("is_active", True).order("display_order").execute()
+        
+        subcategories = subcategories_response.data or []
+        
+        # Group subcategories by parent_category_id
+        subcats_by_parent = {}
+        for sub in subcategories:
+            parent_id = sub.get("parent_category_id")
+            if parent_id not in subcats_by_parent:
+                subcats_by_parent[parent_id] = []
+            subcats_by_parent[parent_id].append(sub)
+        
+        # Attach subcategories to their parent categories
+        for cat in categories:
+            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
+        
+        logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
         
         return categories
+
 
     def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -77,6 +77,18 @@ async def get_salons_nearby(
     
     salons = response.data if response.data else []
     
+    # Exclude regular_buyer salons — they can only buy products, not offer services
+    # Note: The RPC function doesn't return salon_type, so we do a secondary lookup
+    if salons:
+        salon_ids = [s["id"] for s in salons if s.get("id")]
+        if salon_ids:
+            type_response = db.table("salons").select("id, salon_type").in_("id", salon_ids).execute()
+            regular_buyer_ids = {
+                row["id"] for row in (type_response.data or [])
+                if row.get("salon_type") == "regular_buyer"
+            }
+            salons = [s for s in salons if s["id"] not in regular_buyer_ids]
+    
     return {
         "salons": salons,
         "count": len(salons),

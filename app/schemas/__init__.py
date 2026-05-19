@@ -50,6 +50,9 @@ from .request.location import (
 from .request.career import (
     ApplicationStatusUpdate
 )
+from .request.product import (
+    ProductCreate, ProductUpdate
+)
 
 # =====================================================
 # RESPONSE SCHEMAS (API Output Contracts)
@@ -89,6 +92,9 @@ from .response.city import (
 )
 from .response.career import (
     CareerApplicationResponse
+)
+from .response.product import (
+    ProductResponse, ProductListResponse, ProductOperationResponse, ProductDeleteResponse
 )
 
 from .response.customer import (
