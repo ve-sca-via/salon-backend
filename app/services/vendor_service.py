@@ -233,16 +233,25 @@ class VendorService:
             # Get salon ID and verify vendor owns a salon
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Validate category_id if provided
-            if service.category_id:
-                await self._validate_service_category(service.category_id)
-            
-            # Validate subcategory_id if provided
-            if service.subcategory_id:
-                await self._validate_service_subcategory(service.subcategory_id, service.category_id)
-            
+            category_id, subcategory_id = await self._resolve_service_category_fields(
+                category_id=service.category_id,
+                subcategory_id=service.subcategory_id,
+                category_name=service.category_name,
+                subcategory_name=service.subcategory_name,
+            )
+
+            if category_id:
+                await self._validate_service_category(category_id)
+
+            if subcategory_id:
+                await self._validate_service_subcategory(subcategory_id, category_id)
+
             # Create service with auto-assigned salon_id
-            service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
+            service_data = service.model_dump(
+                exclude={'salon_id', 'category_name', 'subcategory_name'}
+            )
+            service_data['category_id'] = category_id
+            service_data['subcategory_id'] = subcategory_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
             service_data = self._apply_discount_fields(service_data)
             
@@ -293,16 +302,36 @@ class VendorService:
             # Verify service belongs to vendor's salon
             await self._verify_service_ownership(service_id, salon_id)
             
-            # Validate category_id if being updated
-            if update.category_id is not None:
-                await self._validate_service_category(update.category_id)
-            
-            # Validate subcategory_id if being updated
-            if update.subcategory_id is not None:
-                await self._validate_service_subcategory(update.subcategory_id, update.category_id)
-            
-            # Prepare update data
-            update_data = update.model_dump(exclude_unset=True)
+            update_data = update.model_dump(
+                exclude_unset=True,
+                exclude={'category_name', 'subcategory_name'},
+            )
+
+            if (
+                update.category_id is not None
+                or update.subcategory_id is not None
+                or update.category_name is not None
+                or update.subcategory_name is not None
+            ):
+                resolved_category_id, resolved_subcategory_id = await self._resolve_service_category_fields(
+                    category_id=update.category_id,
+                    subcategory_id=update.subcategory_id,
+                    category_name=update.category_name,
+                    subcategory_name=update.subcategory_name,
+                )
+                if update.category_id is not None or update.category_name is not None:
+                    update_data['category_id'] = resolved_category_id
+                if update.subcategory_id is not None or update.subcategory_name is not None:
+                    update_data['subcategory_id'] = resolved_subcategory_id
+
+            if update_data.get('category_id'):
+                await self._validate_service_category(update_data['category_id'])
+
+            if update_data.get('subcategory_id'):
+                await self._validate_service_subcategory(
+                    update_data['subcategory_id'],
+                    update_data.get('category_id'),
+                )
             
             if not update_data:
                 raise HTTPException(
@@ -721,6 +750,108 @@ class VendorService:
     # HELPER METHODS
     # =====================================================
     
+    async def _resolve_service_category_fields(
+        self,
+        category_id: Optional[str] = None,
+        subcategory_id: Optional[str] = None,
+        category_name: Optional[str] = None,
+        subcategory_name: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Resolve category/subcategory IDs from explicit IDs or typed names.
+        Typed names match existing catalog entries case-insensitively, or create new ones.
+        """
+        cat_name = (category_name or "").strip()
+        sub_name = (subcategory_name or "").strip()
+
+        if cat_name or sub_name:
+            if not cat_name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="category_name is required when subcategory_name is provided",
+                )
+            resolved_category_id = await self._get_or_create_category_by_name(cat_name)
+            resolved_subcategory_id = None
+            if sub_name:
+                resolved_subcategory_id = await self._get_or_create_subcategory_by_name(
+                    resolved_category_id, sub_name
+                )
+            return resolved_category_id, resolved_subcategory_id
+
+        return category_id, subcategory_id
+
+    async def _get_or_create_category_by_name(self, name: str) -> str:
+        normalized = name.strip()
+        existing = self.db.table("service_categories").select("id, name").eq(
+            "is_active", True
+        ).execute()
+
+        for row in existing.data or []:
+            if (row.get("name") or "").strip().lower() == normalized.lower():
+                return row["id"]
+
+        max_order = self.db.table("service_categories").select("display_order").order(
+            "display_order", desc=True
+        ).limit(1).execute()
+        next_order = (
+            (max_order.data[0]["display_order"] + 1) if max_order.data else 1
+        )
+
+        inserted = self.db.table("service_categories").insert({
+            "name": normalized,
+            "description": None,
+            "display_order": next_order,
+            "is_active": True,
+        }).execute()
+
+        if not inserted.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create service category",
+            )
+
+        logger.info(f"Created service category from vendor input: {normalized}")
+        return inserted.data[0]["id"]
+
+    async def _get_or_create_subcategory_by_name(
+        self, parent_category_id: str, name: str
+    ) -> str:
+        normalized = name.strip()
+        existing = self.db.table("service_subcategories").select(
+            "id, name"
+        ).eq("parent_category_id", parent_category_id).eq("is_active", True).execute()
+
+        for row in existing.data or []:
+            if (row.get("name") or "").strip().lower() == normalized.lower():
+                return row["id"]
+
+        max_order = self.db.table("service_subcategories").select("display_order").eq(
+            "parent_category_id", parent_category_id
+        ).order("display_order", desc=True).limit(1).execute()
+        next_order = (
+            (max_order.data[0]["display_order"] + 1) if max_order.data else 1
+        )
+
+        inserted = self.db.table("service_subcategories").insert({
+            "parent_category_id": parent_category_id,
+            "name": normalized,
+            "description": None,
+            "display_order": next_order,
+            "is_active": True,
+        }).execute()
+
+        if not inserted.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create service subcategory",
+            )
+
+        logger.info(
+            f"Created service subcategory from vendor input: {normalized} "
+            f"(category {parent_category_id})"
+        )
+        return inserted.data[0]["id"]
+
     async def _validate_service_category(self, category_id: str) -> None:
         """
         Validate that category_id exists.
@@ -1187,53 +1318,13 @@ class VendorService:
                 subcats_by_parent[parent_id] = []
             subcats_by_parent[parent_id].append(sub)
         
-        # Attach subcategories to their parent categories (ensure "Others" exists per category)
+        # Attach subcategories to their parent categories
         for cat in categories:
-            cat_subs = subcats_by_parent.get(cat["id"], [])
-            has_others = any(
-                (s.get("name") or "").strip().lower() == "others" for s in cat_subs
-            )
-            if not has_others:
-                others_id = await self._ensure_others_subcategory(cat["id"])
-                if others_id:
-                    others_row = self.db.table("service_subcategories").select(
-                        "*"
-                    ).eq("id", others_id).single().execute()
-                    if others_row.data:
-                        cat_subs = [*cat_subs, others_row.data]
-            cat["subcategories"] = sorted(
-                cat_subs,
-                key=lambda s: (1 if (s.get("name") or "").strip().lower() == "others" else 0, s.get("display_order") or 0),
-            )
+            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
         
         logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
         
         return categories
-
-    async def _ensure_others_subcategory(self, parent_category_id: str) -> Optional[str]:
-        """
-        Get or create the catalog "Others" subcategory for custom vendor services.
-        """
-        existing = self.db.table("service_subcategories").select("id, name").eq(
-            "parent_category_id", parent_category_id
-        ).eq("is_active", True).execute()
-
-        for row in existing.data or []:
-            if (row.get("name") or "").strip().lower() == "others":
-                return row["id"]
-
-        insert = self.db.table("service_subcategories").insert({
-            "parent_category_id": parent_category_id,
-            "name": "Others",
-            "description": "Custom or vendor-defined services",
-            "display_order": 9999,
-            "is_active": True,
-        }).execute()
-
-        if insert.data:
-            logger.info(f"Created Others subcategory for category {parent_category_id}")
-            return insert.data[0]["id"]
-        return None
 
 
     def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
