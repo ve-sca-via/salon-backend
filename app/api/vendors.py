@@ -18,6 +18,8 @@ from app.schemas import (
     ServiceCreate,
     ServiceUpdate,
     ServiceResponse,
+    SalonPromoApplyRequest,
+    SalonPromoResponse,
     BookingResponse,
     SuccessResponse,
     CompleteRegistrationRequest,
@@ -229,6 +231,37 @@ async def delete_service(
     return await vendor_service.delete_service(
         vendor_id=current_user.user_id,
         service_id=service_id
+    )
+
+
+# =====================================================
+# SALON PROMOTIONS (RUN PROMO)
+# =====================================================
+
+@router.get("/promotions/active", response_model=Optional[SalonPromoResponse], operation_id="vendor_get_active_promotion")
+async def get_active_promotion(
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """Get the vendor's current active or scheduled salon-wide promotion."""
+    return await vendor_service.get_active_salon_promotion(vendor_id=current_user.user_id)
+
+
+@router.post("/promotions/apply", response_model=SalonPromoResponse, operation_id="vendor_apply_promotion")
+async def apply_promotion(
+    promo: SalonPromoApplyRequest,
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """
+    Apply a discount promotion to all salon services.
+
+    Discount applies to every service (no per-service targeting).
+    Supports percentage or flat-amount-off per service price.
+    """
+    return await vendor_service.apply_salon_promotion(
+        vendor_id=current_user.user_id,
+        promo=promo
     )
 
 

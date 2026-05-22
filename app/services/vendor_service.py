@@ -3,6 +3,7 @@ Vendor Service - Business Logic Layer
 Handles vendor salon management, services CRUD
 """
 import logging
+from datetime import date, datetime
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
@@ -16,7 +17,8 @@ from app.core.auth import (
 from app.schemas import (
     ServiceCreate,
     ServiceUpdate,
-    SalonUpdate
+    SalonUpdate,
+    SalonPromoApplyRequest,
 )
 from app.services.booking_service import BookingService
 from app.services.activity_log_service import ActivityLogService
@@ -191,7 +193,8 @@ class VendorService:
         try:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
-            
+            await self._sync_promotions_if_needed(salon_id)
+
             # Get services with category and subcategory details
             response = self.db.table("services").select(
                 "*, service_categories(*), service_subcategories(*)"
@@ -1184,13 +1187,53 @@ class VendorService:
                 subcats_by_parent[parent_id] = []
             subcats_by_parent[parent_id].append(sub)
         
-        # Attach subcategories to their parent categories
+        # Attach subcategories to their parent categories (ensure "Others" exists per category)
         for cat in categories:
-            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
+            cat_subs = subcats_by_parent.get(cat["id"], [])
+            has_others = any(
+                (s.get("name") or "").strip().lower() == "others" for s in cat_subs
+            )
+            if not has_others:
+                others_id = await self._ensure_others_subcategory(cat["id"])
+                if others_id:
+                    others_row = self.db.table("service_subcategories").select(
+                        "*"
+                    ).eq("id", others_id).single().execute()
+                    if others_row.data:
+                        cat_subs = [*cat_subs, others_row.data]
+            cat["subcategories"] = sorted(
+                cat_subs,
+                key=lambda s: (1 if (s.get("name") or "").strip().lower() == "others" else 0, s.get("display_order") or 0),
+            )
         
         logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
         
         return categories
+
+    async def _ensure_others_subcategory(self, parent_category_id: str) -> Optional[str]:
+        """
+        Get or create the catalog "Others" subcategory for custom vendor services.
+        """
+        existing = self.db.table("service_subcategories").select("id, name").eq(
+            "parent_category_id", parent_category_id
+        ).eq("is_active", True).execute()
+
+        for row in existing.data or []:
+            if (row.get("name") or "").strip().lower() == "others":
+                return row["id"]
+
+        insert = self.db.table("service_subcategories").insert({
+            "parent_category_id": parent_category_id,
+            "name": "Others",
+            "description": "Custom or vendor-defined services",
+            "display_order": 9999,
+            "is_active": True,
+        }).execute()
+
+        if insert.data:
+            logger.info(f"Created Others subcategory for category {parent_category_id}")
+            return insert.data[0]["id"]
+        return None
 
 
     def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1251,3 +1294,224 @@ class VendorService:
         data["discount_percentage"] = float(normalized_discount)
         data["discounted_price"] = float(discounted_price)
         return data
+
+    # =====================================================
+    # SALON-WIDE DISCOUNT PROMOTIONS
+    # =====================================================
+
+    def _parse_promo_date(self, value: str, field_name: str) -> date:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {field_name}. Use YYYY-MM-DD format.",
+            ) from exc
+
+    def _promo_status(self, promo: Dict[str, Any], today: date) -> str:
+        start = promo.get("start_date")
+        end = promo.get("end_date")
+        if isinstance(start, str):
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+        if end and isinstance(end, str):
+            end = datetime.strptime(end, "%Y-%m-%d").date()
+
+        if not promo.get("is_active"):
+            return "inactive"
+        if start and today < start:
+            return "scheduled"
+        if end and today > end:
+            return "expired"
+        return "active"
+
+    def _serialize_promo(self, promo: Dict[str, Any], today: date, services_updated: int = 0) -> Dict[str, Any]:
+        start = promo.get("start_date")
+        end = promo.get("end_date")
+        if hasattr(start, "isoformat"):
+            start = start.isoformat()
+        if end and hasattr(end, "isoformat"):
+            end = end.isoformat()
+
+        return {
+            **promo,
+            "start_date": start,
+            "end_date": end,
+            "status": self._promo_status(promo, today),
+            "services_updated": services_updated,
+        }
+
+    async def _clear_salon_service_discounts(self, salon_id: str) -> None:
+        services = self.db.table("services").select("id, price").eq(
+            "salon_id", salon_id
+        ).is_("deleted_at", "null").execute()
+        for svc in services.data or []:
+            payload = self._apply_discount_fields({
+                "price": svc.get("price", 0),
+                "discount_percentage": None,
+            })
+            self.db.table("services").update(payload).eq("id", svc["id"]).execute()
+
+    def _discount_percentage_for_service(
+        self,
+        price: float,
+        discount_type: str,
+        discount_value: float,
+    ) -> Optional[float]:
+        if price <= 0:
+            return None
+        if discount_type == "percentage":
+            return min(float(discount_value), 100.0)
+        flat = float(discount_value)
+        pct = (flat / float(price)) * 100
+        return min(round(pct, 2), 100.0)
+
+    async def _apply_promo_to_all_services(
+        self,
+        salon_id: str,
+        discount_type: str,
+        discount_value: float,
+    ) -> int:
+        services = self.db.table("services").select("id, price").eq(
+            "salon_id", salon_id
+        ).is_("deleted_at", "null").execute()
+        updated = 0
+        for svc in services.data or []:
+            pct = self._discount_percentage_for_service(
+                float(svc.get("price") or 0),
+                discount_type,
+                discount_value,
+            )
+            if pct is None or pct <= 0:
+                continue
+            payload = self._apply_discount_fields({
+                "price": svc.get("price", 0),
+                "discount_percentage": pct,
+            })
+            self.db.table("services").update(payload).eq("id", svc["id"]).execute()
+            updated += 1
+        return updated
+
+    async def _sync_promotions_if_needed(self, salon_id: str) -> None:
+        today = date.today()
+        promos = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).execute()
+
+        expired_any = False
+        for promo in promos.data or []:
+            if self._promo_status(promo, today) == "expired":
+                self.db.table("salon_discount_promotions").update(
+                    {"is_active": False}
+                ).eq("id", promo["id"]).execute()
+                expired_any = True
+
+        if expired_any:
+            await self._clear_salon_service_discounts(salon_id)
+
+        latest_resp = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).limit(1).execute()
+
+        latest = latest_resp.data[0] if latest_resp.data else None
+        if not latest:
+            return
+
+        start = latest.get("start_date")
+        if isinstance(start, str):
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+
+        status_label = self._promo_status(latest, today)
+        if status_label in ("active", "scheduled") and start and today >= start:
+            await self._apply_promo_to_all_services(
+                salon_id,
+                latest["discount_type"],
+                float(latest["discount_value"]),
+            )
+
+    async def apply_salon_promotion(
+        self,
+        vendor_id: str,
+        promo: SalonPromoApplyRequest,
+    ) -> Dict[str, Any]:
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        today = date.today()
+        start = self._parse_promo_date(promo.start_date, "start_date")
+        end = self._parse_promo_date(promo.end_date, "end_date") if promo.end_date else None
+
+        if end and end < start:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="End date must be on or after start date",
+            )
+        if end and end < today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="End date cannot be in the past",
+            )
+        if promo.discount_type == "percentage" and promo.discount_value > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Percentage discount cannot exceed 100",
+            )
+        if promo.min_booking_amount is not None and promo.max_discount_limit is not None:
+            if promo.max_discount_limit < promo.min_booking_amount:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Max discount limit should be greater than or equal to minimum booking amount",
+                )
+
+        await self._sync_promotions_if_needed(salon_id)
+
+        self.db.table("salon_discount_promotions").update(
+            {"is_active": False}
+        ).eq("salon_id", salon_id).eq("is_active", True).execute()
+
+        insert_data = {
+            "salon_id": salon_id,
+            "title": promo.title.strip(),
+            "discount_type": promo.discount_type,
+            "discount_value": promo.discount_value,
+            "min_booking_amount": promo.min_booking_amount,
+            "max_discount_limit": promo.max_discount_limit,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat() if end else None,
+            "is_active": True,
+        }
+        created = self.db.table("salon_discount_promotions").insert(insert_data).execute()
+        record = created.data[0] if created.data else None
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create promotion",
+            )
+
+        services_updated = 0
+        if today >= start and (end is None or today <= end):
+            services_updated = await self._apply_promo_to_all_services(
+                salon_id,
+                promo.discount_type,
+                promo.discount_value,
+            )
+        else:
+            await self._clear_salon_service_discounts(salon_id)
+
+        logger.info(
+            f"Vendor {vendor_id} applied salon promo '{promo.title}' "
+            f"({promo.discount_type}={promo.discount_value}), services_updated={services_updated}"
+        )
+        return self._serialize_promo(record, today, services_updated)
+
+    async def get_active_salon_promotion(self, vendor_id: str) -> Optional[Dict[str, Any]]:
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        await self._sync_promotions_if_needed(salon_id)
+        today = date.today()
+
+        response = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).limit(1).execute()
+
+        if not response.data:
+            return None
+
+        promo = response.data[0]
+        return self._serialize_promo(promo, today)
