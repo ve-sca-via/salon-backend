@@ -154,8 +154,11 @@ class ServiceCreate(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     subcategory_id: Optional[str] = None
+    category_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     gender_category: Optional[str] = Field("both", pattern="^(male|female|both)$")
     image_url: Optional[str] = None
+    is_active: Optional[bool] = True
 
 class ServiceUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
@@ -165,6 +168,19 @@ class ServiceUpdate(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     subcategory_id: Optional[str] = None
+    category_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     gender_category: Optional[str] = Field(None, pattern="^(male|female|both)$")
     image_url: Optional[str] = None
     is_active: Optional[bool] = None
+
+
+class SalonPromoApplyRequest(BaseModel):
+    """Apply a salon-wide discount promotion to all services."""
+    title: str = Field(..., min_length=2, max_length=255)
+    discount_type: str = Field(..., pattern="^(percentage|flat_amount)$")
+    discount_value: float = Field(..., gt=0)
+    min_booking_amount: Optional[float] = Field(None, ge=0)
+    max_discount_limit: Optional[float] = Field(None, ge=0)
+    start_date: str = Field(..., description="ISO date YYYY-MM-DD")
+    end_date: Optional[str] = Field(None, description="ISO date YYYY-MM-DD, optional")

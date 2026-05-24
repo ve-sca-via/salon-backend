@@ -181,6 +181,25 @@ class ServiceResponse(BaseModel):
         from_attributes = True
 
 
+class SalonPromoResponse(BaseModel):
+    id: str
+    salon_id: str
+    title: str
+    discount_type: str
+    discount_value: float
+    min_booking_amount: Optional[float] = None
+    max_discount_limit: Optional[float] = None
+    start_date: str
+    end_date: Optional[str] = None
+    is_active: bool
+    status: str
+    services_updated: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 # =====================================================
 # DASHBOARD RESPONSE SCHEMAS
