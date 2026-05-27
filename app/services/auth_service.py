@@ -8,6 +8,7 @@ from datetime import datetime
 import html
 import logging
 import asyncio
+import httpx
 
 from app.core.database import get_auth_client, get_db
 from app.core.auth import create_access_token, create_refresh_token, revoke_token, verify_refresh_token
@@ -233,6 +234,7 @@ class AuthService:
                 "email": email,
                 "password": password,
                 "options": {
+                    "email_redirect_to": f"{settings.FRONTEND_URL.rstrip('/')}/",
                     "data": {
                         "full_name": sanitized_full_name,
                         "phone": sanitized_phone,
@@ -962,6 +964,95 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to reset password"
             )
+    def _email_verification_redirect_url(self) -> str:
+        return f"{settings.FRONTEND_URL.rstrip('/')}/"
+
+    def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
+        """Return True/False when known, or None if auth user could not be loaded."""
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+        }
+        try:
+            response = httpx.get(url, headers=headers, timeout=15.0)
+            if response.status_code != 200:
+                logger.warning(
+                    "Could not load auth user %s for verification check: %s %s",
+                    user_id,
+                    response.status_code,
+                    response.text,
+                )
+                return None
+            data = response.json()
+            return bool(data.get("email_confirmed_at"))
+        except Exception as exc:
+            logger.warning("Auth user lookup failed for %s: %s", user_id, exc)
+            return None
+
+    async def _supabase_resend_signup_confirmation(self, email: str) -> None:
+        """
+        Call Supabase GoTrue /resend directly.
+
+        supabase==2.0.3 does not expose auth.resend on the Python client, so the
+        previous implementation always failed while still returning success.
+        """
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/resend"
+        headers = {
+            "apikey": settings.SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "type": "signup",
+            "email": email,
+            "options": {
+                "email_redirect_to": self._email_verification_redirect_url(),
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+        if response.status_code < 400:
+            return
+
+        try:
+            error_body = response.json()
+        except Exception:
+            error_body = {}
+
+        error_text = (
+            error_body.get("msg")
+            or error_body.get("error_description")
+            or error_body.get("message")
+            or response.text
+            or "Unknown error"
+        ).lower()
+        logger.error(
+            "Supabase resend failed for %s: status=%s body=%s",
+            email,
+            response.status_code,
+            error_body or response.text,
+        )
+
+        if response.status_code == 429 or "rate" in error_text:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many verification emails requested. Please try again later.",
+            )
+
+        if "already" in error_text and ("confirm" in error_text or "verified" in error_text):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This email address is already verified.",
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not send verification email right now. Please try again in a few minutes.",
+        )
+
     async def resend_verification_email(self, user_id: str, email: str) -> Dict:
         """
         Resend email verification link to user
@@ -976,30 +1067,21 @@ class AuthService:
         Raises:
             HTTPException: If resend fails
         """
-        try:
-            # Use Supabase's resend functionality
-            response = self.auth_client.auth.resend({
-                "type": "signup",
-                "email": email,
-                "options": {
-                    "email_redirect_to": f"{settings.FRONTEND_URL}"
-                }
-            })
-            
-            logger.info(f"Verification email resent to: {email}")
-            
+        email_confirmed = self._is_auth_user_email_confirmed(user_id)
+        if email_confirmed is True:
             return {
                 "success": True,
-                "message": "Verification email sent successfully. Please check your inbox."
+                "already_verified": True,
+                "message": "Your email is already verified.",
             }
-            
-        except Exception as e:
-            logger.error(f"Failed to resend verification email: {str(e)}")
-            # Don't expose detailed error to user
-            return {
-                "success": True,
-                "message": "If your email is registered and unverified, you will receive a verification email shortly."
-            }
+
+        await self._supabase_resend_signup_confirmation(email)
+
+        logger.info("Verification email resent to: %s", email)
+        return {
+            "success": True,
+            "message": "Verification email sent successfully. Please check your inbox.",
+        }
 
     async def send_phone_verification_otp(self, user_id: str, phone: str, country_code: str = "91") -> Dict:
         """
