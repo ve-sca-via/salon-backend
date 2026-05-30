@@ -25,6 +25,24 @@ class AuthService:
         """Initialize service with database clients"""
         self.db = db_client
         self.auth_client = auth_client
+
+    @staticmethod
+    def format_public_user(profile: dict, email: str | None = None) -> dict:
+        """Build sanitized user payload returned from auth endpoints."""
+        phone = profile.get("phone") or ""
+        return {
+            "id": profile.get("id"),
+            "email": email or profile.get("email"),
+            "full_name": html.escape(profile.get("full_name") or ""),
+            "user_role": profile.get("user_role", "customer"),
+            "role": profile.get("user_role", "customer"),
+            "phone": html.escape(phone) if phone else "",
+            "age": profile.get("age"),
+            "gender": profile.get("gender"),
+            "created_at": profile.get("created_at"),
+            "phone_verified": profile.get("phone_verified", False),
+            "is_active": profile.get("is_active", True),
+        }
     
     async def authenticate_user(self, email: str, password: str) -> Dict:
         """
@@ -85,15 +103,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Sanitize user data (XSS protection)
-            user_data = {
-                "id": user.id,
-                "email": user.email,
-                "full_name": html.escape(profile.get("full_name") or ""),
-                "user_role": profile.get("user_role", "customer"),
-                "role": profile.get("user_role", "customer"),  # Backward compatibility for frontend
-                "phone": html.escape(profile.get("phone") or ""),
-                "is_active": profile.get("is_active", True)
-            }
+            user_data = self.format_public_user(profile, email=user.email)
             
             logger.info(f"User authenticated: {user.email} (role: {profile.get('user_role')})")
             
@@ -174,10 +184,16 @@ class AuthService:
 
             # Normalize phone to E.164 format if provided
             if sanitized_phone:
-                from app.utils.phone import normalize_phone
+                from app.utils.phone import normalize_phone, find_profile_by_phone
                 normalized_phone = normalize_phone(sanitized_phone)
                 if normalized_phone:
                     sanitized_phone = normalized_phone
+                    existing_phone, _ = find_profile_by_phone(self.db, sanitized_phone)
+                    if existing_phone and existing_phone.get("phone_verified"):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Phone number already registered"
+                        )
                 # If normalization fails, keep original (user can verify later)
 
             
@@ -308,18 +324,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Build user response
-            user_data = {
-                "id": user.id,
-                "email": email,
-                "full_name": sanitized_full_name,
-                "user_role": user_role,
-                "role": user_role,  # Backward compatibility for frontend
-                "phone": sanitized_phone,
-                "phone_verified": phone_verified,
-                "age": age,
-                "gender": sanitized_gender,
-                "is_active": True
-            }
+            user_data = self.format_public_user(profile_data, email=email)
             
             logger.info(f"New user registered: {email}")
             
@@ -362,7 +367,7 @@ class AuthService:
         """
         Send OTP for unauthenticated phone signup
         """
-        from app.utils.phone import normalize_phone, mask_phone
+        from app.utils.phone import normalize_phone, mask_phone, find_profile_by_phone
         from app.services.otp_service import OTPService
 
         try:
@@ -374,8 +379,8 @@ class AuthService:
                 )
 
             # Check if phone is already registered and verified
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="This phone number is already registered to an account. Please sign in."
@@ -447,8 +452,9 @@ class AuthService:
                 )
 
             # Optional: check again if registered
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            from app.utils.phone import find_profile_by_phone
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="This phone number is already registered to an account. Please sign in."
@@ -609,7 +615,15 @@ class AuthService:
             if "full_name" in profile_data and profile_data["full_name"] is not None:
                 update_data["full_name"] = html.escape(profile_data["full_name"].strip())
             if "phone" in profile_data and profile_data["phone"] is not None:
-                update_data["phone"] = html.escape(profile_data["phone"].strip())
+                from app.utils.phone import normalize_phone
+                raw_phone = html.escape(profile_data["phone"].strip())
+                normalized = normalize_phone(raw_phone)
+                if not normalized:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Please enter a valid 10-digit phone number."
+                    )
+                update_data["phone"] = normalized
             if "age" in profile_data and profile_data["age"] is not None:
                 update_data["age"] = profile_data["age"]
             if "gender" in profile_data and profile_data["gender"] is not None:
@@ -936,15 +950,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Sanitize user data
-            user_data = {
-                "id": user_id,
-                "email": user_email,
-                "full_name": html.escape(profile.get("full_name") or ""),
-                "user_role": profile.get("user_role", "customer"),
-                "role": profile.get("user_role", "customer"),
-                "phone": html.escape(profile.get("phone") or ""),
-                "is_active": profile.get("is_active", True)
-            }
+            user_data = self.format_public_user(profile, email=user_email)
             
             logger.info(f"Password reset confirmed for user: {user_id}")
             
@@ -1098,7 +1104,7 @@ class AuthService:
         Raises:
             HTTPException: If user not found or OTP sending fails
         """
-        from app.utils.phone import normalize_phone, mask_phone
+        from app.utils.phone import normalize_phone, mask_phone, find_profile_by_phone
         from app.services.otp_service import OTPService
 
         try:
@@ -1119,10 +1125,11 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            from app.utils.phone import find_profile_by_phone
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 # Check if it's not the same user
-                if existing_phone.data[0]["id"] != user_id:
+                if existing_phone["id"] != user_id:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="This phone number is already registered"
@@ -1227,10 +1234,11 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            from app.utils.phone import find_profile_by_phone
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 # Check if it's not the same user
-                if existing_phone.data[0]["id"] != user_id:
+                if existing_phone["id"] != user_id:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="This phone number is already registered by another user"

@@ -109,6 +109,59 @@ def extract_country_code_and_phone(phone: str) -> Tuple[str, str]:
     return "91", phone
 
 
+def phone_lookup_variants(phone: Optional[str], country_code: str = "91") -> list[str]:
+    """
+    Return possible stored phone values for DB lookup (canonical + legacy formats).
+    """
+    normalized = normalize_phone(phone, country_code)
+    if not normalized:
+        return []
+
+    cc = country_code.lstrip("+")
+    digits = normalized.lstrip("+")
+    local = digits[len(cc):] if digits.startswith(cc) else digits
+
+    variants: list[str] = []
+    for candidate in (normalized, local, digits, f"+{local}", f"{cc}{local}"):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def find_profile_by_phone(db, phone: Optional[str], country_code: str = "91", select: str = "*"):
+    """
+    Find a profile row by phone, trying canonical E.164 and legacy stored formats.
+
+    Returns:
+        Tuple of (profile dict or None, canonical E.164 phone or None)
+    """
+    canonical = normalize_phone(phone, country_code)
+    if not canonical:
+        return None, None
+
+    for variant in phone_lookup_variants(phone, country_code):
+        response = db.table("profiles").select(select).eq("phone", variant).execute()
+        if response.data:
+            return response.data[0], canonical
+
+    return None, canonical
+
+
+def reconcile_profile_phone(db, profile_id: str, stored_phone: Optional[str], country_code: str = "91") -> Optional[str]:
+    """
+    Ensure profile phone is stored in E.164 (+91...) format.
+    Updates the row when a legacy format is found.
+    """
+    canonical = normalize_phone(stored_phone, country_code)
+    if not canonical:
+        return stored_phone
+
+    if stored_phone != canonical:
+        db.table("profiles").update({"phone": canonical}).eq("id", profile_id).execute()
+
+    return canonical
+
+
 def mask_phone(phone: Optional[str]) -> Optional[str]:
     """
     Mask phone number for display (show only last 4 digits)

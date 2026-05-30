@@ -5,7 +5,7 @@ Handles booking CRUD, cancellations, completions, and email notifications
 import logging
 import random
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, date
 from fastapi import HTTPException, status
 
 from app.core.auth import create_review_feedback_token
@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.schemas import BookingCreate, BookingUpdate, BookingResponse
 from app.schemas.request.booking import ServiceSummary, Totals, BookingForUpdate, BookingForCancellation
 from app.services.email import email_service
+from app.services.activity_log_service import ActivityLogService
 
 logger = logging.getLogger(__name__)
 
@@ -675,7 +676,7 @@ class BookingService:
             if updates.cancellation_reason:
                 update_data["cancellation_reason"] = updates.cancellation_reason
                 update_data["cancelled_at"] = datetime.utcnow().isoformat()
-                update_data["cancelled_by"] = current_user_id
+                update_data["updated_by"] = current_user_id
             update_data["updated_by"] = current_user_id
             
             # Update booking
@@ -723,10 +724,7 @@ class BookingService:
             HTTPException: If not found or access denied
         """
         try:
-            # Get booking details with profile
-            booking_response = self.db.table("bookings").select(
-                "*, profiles!customer_id(email, full_name), services(name), salons(business_name)"
-            ).eq("id", booking_id).single().execute()
+            booking_response = self.db.table("bookings").select("*").eq("id", booking_id).single().execute()
             
             if not booking_response.data:
                 raise HTTPException(
@@ -735,44 +733,113 @@ class BookingService:
                 )
             
             booking_data = booking_response.data
+
+            if booking_data.get("status") in ("completed", "cancelled"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot cancel {booking_data['status']} booking"
+                )
+
+            booking_date_raw = booking_data.get("booking_date")
+            if booking_date_raw:
+                if isinstance(booking_date_raw, str):
+                    appointment_date = date.fromisoformat(booking_date_raw[:10])
+                else:
+                    appointment_date = booking_date_raw
+                if appointment_date < date.today():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cancellation is only allowed for upcoming appointments."
+                    )
             
             # Verify ownership (only customer or admin can cancel)
-            if current_user_role != "admin" and booking_data["customer_id"] != current_user_id:
+            if current_user_role != "admin" and str(booking_data.get("customer_id")) != str(current_user_id):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Cannot cancel other users' bookings"
                 )
+
+            # Load related profile and salon for notification emails
+            try:
+                profile_response = self.db.table("profiles").select(
+                    "email, full_name, phone"
+                ).eq("id", booking_data["customer_id"]).single().execute()
+                booking_data["profiles"] = profile_response.data or {}
+            except Exception as profile_error:
+                logger.warning(f"Could not load customer profile for booking {booking_id}: {profile_error}")
+                booking_data["profiles"] = {}
+
+            try:
+                salon_response = self.db.table("salons").select(
+                    "id, business_name, vendor_id"
+                ).eq("id", booking_data["salon_id"]).single().execute()
+                booking_data["salons"] = salon_response.data or {}
+            except Exception as salon_error:
+                logger.warning(f"Could not load salon for booking {booking_id}: {salon_error}")
+                booking_data["salons"] = {}
             
-            # Cancel booking
+            # Cancel booking (cancelled_by is tracked via updated_by — no cancelled_by column)
             update_data = {
                 "status": "cancelled",
                 "cancellation_reason": reason,
                 "cancelled_at": datetime.utcnow().isoformat(),
-                "cancelled_by": current_user_id,
-                "updated_by": current_user_id
+                "updated_by": current_user_id,
             }
-            response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
+            response = (
+                self.db.table("bookings")
+                .update(update_data)
+                .eq("id", booking_id)
+                .execute()
+            )
             
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to cancel booking"
-                )
+            cancelled_booking = response.data[0] if response.data else None
+            if not cancelled_booking:
+                # Re-fetch in case client returned no rows (should not happen with service role)
+                refetch = self.db.table("bookings").select("*").eq("id", booking_id).single().execute()
+                cancelled_booking = refetch.data
+                if not cancelled_booking or cancelled_booking.get("status") != "cancelled":
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to cancel booking"
+                    )
             
             # Refund only covers online convenience fee for now
             refund_amount = booking_data.get("convenience_fee", 0.0)
             
-            # Send cancellation email
-            await self._send_cancellation_email(booking_data, reason, refund_amount)
+            # Send cancellation emails to customer and vendor
+            await self._send_cancellation_emails(booking_data, reason, refund_amount)
+
+            try:
+                profile = booking_data.get("profiles") or {}
+                salon = booking_data.get("salons") or {}
+                await ActivityLogService.log(
+                    user_id=current_user_id,
+                    action="booking_cancelled",
+                    entity_type="booking",
+                    entity_id=booking_id,
+                    details={
+                        "booking_number": booking_data.get("booking_number"),
+                        "salon_name": salon.get("business_name"),
+                        "customer_name": profile.get("full_name"),
+                        "cancelled_by_role": current_user_role,
+                        "reason": reason,
+                    },
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to log booking cancellation activity: {log_error}")
             
             logger.info(f"Booking {booking_id} cancelled by user {current_user_id}")
             
-            return {"success": True, "message": "Booking cancelled"}
+            return {
+                "success": True,
+                "message": "Booking cancelled successfully",
+                "booking": cancelled_booking,
+            }
         
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to cancel booking: {str(e)}")
+            logger.error(f"Failed to cancel booking: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to cancel booking"
@@ -1102,17 +1169,118 @@ class BookingService:
         except Exception as e:
             logger.warning(f"Error sending booking confirmation email: {str(e)}")
     
+    def _extract_booking_services(self, booking_data: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
+        """Extract service summary from booking JSONB services field."""
+        services = booking_data.get("services") or []
+        if not isinstance(services, list) or not services:
+            return "Service", [{"name": "Service", "price": 0, "quantity": 1}]
+
+        names: List[str] = []
+        service_list: List[Dict[str, Any]] = []
+        for service in services:
+            if not isinstance(service, dict):
+                continue
+            name = (
+                service.get("name")
+                or service.get("service_name")
+                or (service.get("service_details") or {}).get("name")
+                or "Service"
+            )
+            names.append(name)
+            service_list.append({
+                "name": name,
+                "price": float(service.get("unit_price") or service.get("price") or 0),
+                "quantity": int(service.get("quantity") or 1),
+            })
+
+        if not names:
+            return "Service", [{"name": "Service", "price": 0, "quantity": 1}]
+
+        return ", ".join(names), service_list
+
+    async def _send_cancellation_emails(
+        self,
+        booking_data: Dict[str, Any],
+        reason: Optional[str],
+        refund_amount: float,
+    ) -> None:
+        """Send cancellation emails to customer and vendor/salon."""
+        if not booking_data:
+            return
+
+        profile = booking_data.get("profiles") or {}
+        salon = booking_data.get("salons") or {}
+        customer_email = profile.get("email")
+        customer_name = profile.get("full_name") or "Customer"
+        customer_phone = profile.get("phone") or "N/A"
+        salon_name = salon.get("business_name") or "Salon"
+        booking_id = booking_data.get("id")
+        booking_number = booking_data.get("booking_number") or booking_id
+        booking_date = booking_data.get("booking_date") or "N/A"
+        time_slots = booking_data.get("time_slots") or []
+        booking_time = time_slots[0] if isinstance(time_slots, list) and time_slots else "N/A"
+        service_name, services = self._extract_booking_services(booking_data)
+
+        if customer_email:
+            try:
+                email_sent = await email_service.send_booking_cancellation_email(
+                    to_email=customer_email,
+                    customer_name=customer_name,
+                    salon_name=salon_name,
+                    service_name=service_name,
+                    booking_date=str(booking_date),
+                    booking_time=booking_time,
+                    refund_amount=refund_amount,
+                    cancellation_reason=reason,
+                    booking_id=booking_id,
+                    booking_number=booking_number,
+                )
+                if not email_sent:
+                    logger.warning(f"Failed to send cancellation email to {customer_email}")
+            except Exception as e:
+                logger.warning(f"Error sending customer cancellation email: {e}")
+
+        vendor_email = None
+        vendor_id = salon.get("vendor_id")
+        if vendor_id:
+            try:
+                vendor_response = self.db.table("profiles").select("email").eq("id", vendor_id).execute()
+                if vendor_response.data:
+                    vendor_email = vendor_response.data[0].get("email")
+            except Exception as vendor_error:
+                logger.warning(f"Could not fetch vendor email for booking {booking_id}: {vendor_error}")
+
+        if vendor_email:
+            try:
+                vendor_sent = await email_service.send_booking_cancellation_notification_to_vendor(
+                    vendor_email=vendor_email,
+                    salon_name=salon_name,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                    booking_number=booking_number,
+                    booking_date=str(booking_date),
+                    booking_time=booking_time,
+                    services=services,
+                    cancellation_reason=reason,
+                    booking_id=booking_id,
+                )
+                if not vendor_sent:
+                    logger.warning(f"Failed to send cancellation email to vendor {vendor_email}")
+            except Exception as e:
+                logger.warning(f"Error sending vendor cancellation email: {e}")
+        else:
+            logger.warning(f"Vendor email not found for cancelled booking {booking_id}")
+
     async def _send_cancellation_email(
         self,
         booking_data: BookingForCancellation,
         reason: Optional[str],
         refund_amount: float
     ) -> None:
-        """Send cancellation email.
-
-        Accepts either a validated `BookingResponse` model or a raw dict returned
-        from the DB. Handles both shapes safely.
-        """
+        """Backward-compatible wrapper for cancellation emails."""
+        if isinstance(booking_data, dict):
+            await self._send_cancellation_emails(booking_data, reason, refund_amount)
+            return
 
         if not booking_data:
             return
@@ -1126,7 +1294,6 @@ class BookingService:
         service_name = booking_data.services.name if booking_data.services else "Service"
         salon_name = booking_data.salons.business_name if booking_data.salons else "Salon"
         booking_date = booking_data.booking_date or "N/A"
-        # Use first time slot for email display
         booking_time = booking_data.time_slots[0] if booking_data.time_slots else "N/A"
 
         try:
@@ -1138,7 +1305,8 @@ class BookingService:
                 booking_date=booking_date,
                 booking_time=booking_time,
                 refund_amount=refund_amount,
-                cancellation_reason=reason
+                cancellation_reason=reason,
+                booking_id=getattr(booking_data, "id", None),
             )
 
             if not email_sent:
