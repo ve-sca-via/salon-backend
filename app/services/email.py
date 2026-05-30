@@ -531,7 +531,6 @@ class EmailService:
         service_name: str,
         booking_date: str,
         booking_time: str,
-        refund_amount: float,
         cancellation_reason: str = None,
         booking_id: str = None,
         booking_number: str = None,
@@ -546,7 +545,6 @@ class EmailService:
             service_name: Service name
             booking_date: Booking date
             booking_time: Booking time
-            refund_amount: Refund amount
             cancellation_reason: Reason for cancellation
             
         Returns:
@@ -561,7 +559,6 @@ class EmailService:
                 service_name=service_name,
                 booking_date=booking_date,
                 booking_time=booking_time,
-                refund_amount=refund_amount,
                 cancellation_reason=cancellation_reason,
                 support_email=settings.EMAIL_FROM,
                 current_year=2025
@@ -580,7 +577,6 @@ class EmailService:
                     "customer_name": customer_name,
                     "salon_name": salon_name,
                     "service_name": service_name,
-                    "refund_amount": refund_amount,
                     "booking_number": booking_number,
                 }
             )

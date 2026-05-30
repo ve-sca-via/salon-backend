@@ -803,11 +803,8 @@ class BookingService:
                         detail="Failed to cancel booking"
                     )
             
-            # Refund only covers online convenience fee for now
-            refund_amount = booking_data.get("convenience_fee", 0.0)
-            
             # Send cancellation emails to customer and vendor
-            await self._send_cancellation_emails(booking_data, reason, refund_amount)
+            await self._send_cancellation_emails(booking_data, reason)
 
             try:
                 profile = booking_data.get("profiles") or {}
@@ -1202,7 +1199,6 @@ class BookingService:
         self,
         booking_data: Dict[str, Any],
         reason: Optional[str],
-        refund_amount: float,
     ) -> None:
         """Send cancellation emails to customer and vendor/salon."""
         if not booking_data:
@@ -1230,7 +1226,6 @@ class BookingService:
                     service_name=service_name,
                     booking_date=str(booking_date),
                     booking_time=booking_time,
-                    refund_amount=refund_amount,
                     cancellation_reason=reason,
                     booking_id=booking_id,
                     booking_number=booking_number,
@@ -1279,7 +1274,7 @@ class BookingService:
     ) -> None:
         """Backward-compatible wrapper for cancellation emails."""
         if isinstance(booking_data, dict):
-            await self._send_cancellation_emails(booking_data, reason, refund_amount)
+            await self._send_cancellation_emails(booking_data, reason)
             return
 
         if not booking_data:
@@ -1304,7 +1299,6 @@ class BookingService:
                 service_name=service_name,
                 booking_date=booking_date,
                 booking_time=booking_time,
-                refund_amount=refund_amount,
                 cancellation_reason=reason,
                 booking_id=getattr(booking_data, "id", None),
             )
