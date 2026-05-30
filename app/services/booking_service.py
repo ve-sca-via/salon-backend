@@ -398,6 +398,7 @@ class BookingService:
             # Process all services and calculate totals
             processed_services = []
             total_service_price = 0.0
+            original_service_price = 0.0
             total_duration = 0
 
             for service_item in booking.services:
@@ -410,12 +411,15 @@ class BookingService:
                     from app.core.exceptions import NotFoundError
                     raise NotFoundError("Service", service_id)
 
-                # Calculate pricing (use discounted price when available)
+                # Effective price (discounted when available) — amount due at salon
                 unit_price = service_details.get("discounted_price")
                 if unit_price is None:
                     unit_price = service_details.get("price", 0.0)
                 unit_price = float(unit_price)
+
+                original_unit_price = float(service_details.get("price", 0.0))
                 line_total = unit_price * quantity
+                original_line_total = original_unit_price * quantity
                 line_duration = service_details.get("duration_minutes", 30) * quantity
 
                 processed_services.append({
@@ -428,6 +432,7 @@ class BookingService:
                 })
 
                 total_service_price += line_total
+                original_service_price += original_line_total
                 total_duration += line_duration
 
             # Get convenience fee percentage from system config
@@ -446,6 +451,7 @@ class BookingService:
             # Calculate convenience fee and totals
             totals = self._calculate_booking_totals_multi_service(
                 total_service_price,
+                original_service_price,
                 convenience_fee_percentage
             )
 
@@ -581,7 +587,8 @@ class BookingService:
                     booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
                     services=[{
                         "name": svc.get("service_details", {}).get("name", "Service"),
-                        "price": svc["unit_price"]
+                        "price": svc["unit_price"],
+                        "quantity": svc["quantity"],
                     } for svc in processed_services],
                     total_amount=totals["total_amount"],
                     convenience_fee=totals["convenience_fee"],
@@ -603,7 +610,8 @@ class BookingService:
                             booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
                             services=[{
                                 "name": svc.get("service_details", {}).get("name", "Service"),
-                                "price": svc["unit_price"]
+                                "price": svc["unit_price"],
+                                "quantity": svc["quantity"],
                             } for svc in processed_services],
                             total_amount=totals["total_amount"],
                             booking_id=created_booking.get("id", "")
@@ -947,24 +955,33 @@ class BookingService:
     
     def _calculate_booking_totals_multi_service(
         self,
-        total_service_price: float,
+        discounted_service_price: float,
+        original_service_price: float,
         convenience_fee_percentage: float = 6.0
     ) -> Dict[str, Any]:
         """
         Calculate pricing for multi-service booking.
 
+        Convenience fee is charged on the original (pre-discount) service total,
+        matching checkout UI and Razorpay payment. Service amount due at salon
+        uses discounted prices when available.
+
         Args:
-            total_service_price: Sum of all service line totals
+            discounted_service_price: Sum of discounted service line totals (pay at salon)
+            original_service_price: Sum of original service line totals (fee base)
             convenience_fee_percentage: Convenience fee percentage (default 6%)
 
         Returns:
             Dict with calculated totals
         """
-        convenience_fee = (total_service_price * convenience_fee_percentage) / 100
-        total_amount = total_service_price + convenience_fee
+        convenience_fee = round(
+            (original_service_price * convenience_fee_percentage) / 100,
+            2
+        )
+        total_amount = round(discounted_service_price + convenience_fee, 2)
 
         return {
-            "service_price": total_service_price,
+            "service_price": round(discounted_service_price, 2),
             "convenience_fee": convenience_fee,
             "total_amount": total_amount
         }

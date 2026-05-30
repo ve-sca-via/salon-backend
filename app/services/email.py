@@ -35,6 +35,25 @@ _jinja2_env = Environment(
 logger.info("Initialized shared Jinja2 template environment (singleton)")
 
 
+def _format_booking_services_html(services: list) -> str:
+    """Format booking services as HTML lines for confirmation emails."""
+    lines = []
+    for service in services:
+        if not isinstance(service, dict):
+            lines.append(f"• {service}")
+            continue
+
+        name = service.get("name") or service.get("service_name", "Service")
+        price = float(service.get("price") or service.get("unit_price") or 0)
+        quantity = int(service.get("quantity") or 1)
+
+        if quantity > 1:
+            lines.append(f"• {name} (x{quantity}) — ₹{price:.2f} each")
+        else:
+            lines.append(f"• {name} — ₹{price:.2f}")
+
+    return "<br>".join(lines) if lines else "• Service"
+
 
 class EmailService:
     """Email service for sending templated emails"""
@@ -907,7 +926,7 @@ class EmailService:
                         <p><strong>Booking Number:</strong> {booking_number}</p>
                         <p><strong>Date:</strong> {booking_date}</p>
                         <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
+                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
                     </div>
                     
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -1003,7 +1022,7 @@ class EmailService:
                         <p><strong>Phone:</strong> {customer_phone}</p>
                         <p><strong>Date:</strong> {booking_date}</p>
                         <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
+                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
                         <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
                     </div>
                     
