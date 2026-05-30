@@ -613,7 +613,7 @@ class BookingService:
                                 "price": svc["unit_price"],
                                 "quantity": svc["quantity"],
                             } for svc in processed_services],
-                            total_amount=totals["total_amount"],
+                            service_price=total_service_price,
                             booking_id=created_booking.get("id", "")
                         )
                     logger.info(f"Booking notification email sent to vendor {vendor_email}")

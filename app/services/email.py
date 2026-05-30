@@ -984,7 +984,7 @@ class EmailService:
         booking_date: str,
         booking_time: str,
         services: list,
-        total_amount: float,
+        service_price: float,
         booking_id: str
     ) -> bool:
         """
@@ -999,7 +999,7 @@ class EmailService:
             booking_date: Booking date
             booking_time: Booking time
             services: List of services booked
-            total_amount: Total booking amount
+            service_price: Discounted service total to collect from customer at salon
             booking_id: Booking UUID
             
         Returns:
@@ -1023,13 +1023,19 @@ class EmailService:
                         <p><strong>Date:</strong> {booking_date}</p>
                         <p><strong>Time:</strong> {booking_time}</p>
                         <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
-                        <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
+                    </div>
+
+                    <div style="background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; border: 1px solid #c8e6c9;">
+                        <h3 style="margin-top: 0; color: #2e7d32;">Amount to Collect at Salon</h3>
+                        <p style="margin-bottom: 0; font-size: 18px; font-weight: bold; color: #2e7d32;">
+                            ₹{service_price:.2f}
+                        </p>
                     </div>
                     
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <p><strong>⚠️ Action Required:</strong></p>
                         <p>Please confirm this booking from your vendor dashboard.</p>
-                        <p>Customer has already paid the convenience fee online.</p>
+                        <p>Collect <strong>₹{service_price:.2f}</strong> from the customer at the salon after service.</p>
                     </div>
                     
                     <p style="text-align: center; margin-top: 30px;">
@@ -1063,7 +1069,7 @@ class EmailService:
                     "booking_number": booking_number,
                     "booking_date": booking_date,
                     "booking_time": booking_time,
-                    "total_amount": total_amount
+                    "service_price": service_price,
                 }
             )
             logger.info(f"New booking notification email sent to vendor {vendor_email} for booking {booking_number}")
