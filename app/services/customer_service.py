@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -836,7 +837,9 @@ class CustomerService:
             
             # Apply filters
             if city:
-                query = query.ilike("city", f"%{city}%")
+                normalized_city = normalize_city_name(city)
+                if normalized_city:
+                    query = query.ilike("city", normalized_city)
             
             if min_rating:
                 query = query.gte("rating", min_rating)

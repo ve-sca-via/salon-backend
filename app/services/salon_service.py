@@ -11,6 +11,7 @@ from app.schemas.admin import ServiceCreate, ServiceUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,23 @@ class SalonService:
     def __init__(self, db_client):
         """Initialize service with database client"""
         self.db = db_client
+
+    def _apply_city_filter(self, query, city: Optional[str]):
+        """Apply case-insensitive exact city filter."""
+        if not city:
+            return query
+
+        normalized_city = normalize_city_name(city)
+        if not normalized_city:
+            return query
+
+        return query.ilike("city", normalized_city)
+
+    def _normalize_salon_cities(self, salons: List[Dict[str, Any]]) -> None:
+        """Ensure salon city values use consistent Title Case in API responses."""
+        for salon in salons:
+            if salon.get("city"):
+                salon["city"] = normalize_city_name(salon["city"])
 
     async def _attach_discount_flags(self, salons: List[Dict[str, Any]]) -> None:
         """
@@ -140,7 +158,7 @@ class SalonService:
         
         # Apply filters
         if params.city:
-            query = query.eq("city", params.city)
+            query = self._apply_city_filter(query, params.city)
         
         if params.state:
             query = query.eq("state", params.state)
@@ -297,6 +315,9 @@ class SalonService:
         
         if not safe_updates:
             raise ValueError("No valid fields to update")
+
+        if "city" in safe_updates:
+            safe_updates["city"] = normalize_city_name(safe_updates["city"])
         
         response = self.db.table("salons").update(
             safe_updates
@@ -540,9 +561,7 @@ class SalonService:
             .neq("salon_type", "regular_buyer")
         )
         
-        # Apply city filter if provided
-        if city:
-            query = query.eq("city", city)
+        query = self._apply_city_filter(query, city)
         
         # Pagination and ordering
         query = (
@@ -560,6 +579,7 @@ class SalonService:
             if vjr and isinstance(vjr, dict):
                 salon["business_type"] = vjr.get("business_type")
 
+        self._normalize_salon_cities(salons)
         await self._attach_discount_flags(salons)
         
         logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
@@ -640,9 +660,7 @@ class SalonService:
         if query_text:
             query = query.ilike("business_name", f"%{query_text}%")
         
-        # Apply filters
-        if city:
-            query = query.eq("city", city)
+        query = self._apply_city_filter(query, city)
         
         if state:
             query = query.eq("state", state)
@@ -662,6 +680,7 @@ class SalonService:
             if vjr and isinstance(vjr, dict):
                 salon["business_type"] = vjr.get("business_type")
 
+        self._normalize_salon_cities(salons)
         await self._attach_discount_flags(salons)
         
         logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")

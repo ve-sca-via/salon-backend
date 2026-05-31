@@ -13,6 +13,7 @@ from app.services.email import email_service
 from app.core.auth import create_registration_token
 from app.schemas.response.vendor import VendorJoinRequestResponse
 from app.schemas.request.vendor import Coordinates, ApprovalConfig
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,7 @@ class VendorApprovalService:
             "phone": request_data.owner_phone,
             "email": request_data.owner_email,
             "address": request_data.business_address,
-            "city": request_data.city,
+            "city": normalize_city_name(request_data.city),
             "state": request_data.state,
             "pincode": request_data.pincode,
             "latitude": coordinates["latitude"],

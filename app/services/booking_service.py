@@ -15,6 +15,7 @@ from app.schemas import BookingCreate, BookingUpdate, BookingResponse
 from app.schemas.request.booking import ServiceSummary, Totals, BookingForUpdate, BookingForCancellation
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
+from app.utils.location_text import cities_match
 
 logger = logging.getLogger(__name__)
 
@@ -1466,7 +1467,7 @@ class BookingService:
             salon_state = salon_response.data.get("state")
             
             # Allow access if RM is assigned to same city/state
-            if rm_city == salon_city and rm_state == salon_state:
+            if cities_match(rm_city, salon_city) and rm_state == salon_state:
                 return
             
             raise HTTPException(
