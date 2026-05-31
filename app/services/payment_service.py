@@ -427,7 +427,7 @@ class PaymentService:
             cart_response = self.db.table("cart_items")\
                 .select(
                     "id, service_id, quantity, "
-                    "services(id, name, price, salon_id)"
+                    "services(id, name, price, discounted_price, salon_id)"
                 )\
                 .eq("user_id", user_id)\
                 .execute()
@@ -439,7 +439,8 @@ class PaymentService:
                 )
             
             # Calculate totals and create cart snapshot
-            total_service_price = 0.0
+            discounted_service_total = 0.0
+            original_service_total = 0.0
             salon_id = None
             cart_snapshot = []  # Store cart state for validation
             
@@ -448,15 +449,18 @@ class PaymentService:
                 if salon_id is None:
                     salon_id = service.get("salon_id")
                 
-                unit_price = float(service.get("price", 0))
+                original_unit_price = float(service.get("price", 0))
+                discounted_price = service.get("discounted_price")
+                effective_unit_price = float(discounted_price) if discounted_price is not None else original_unit_price
                 quantity = item.get("quantity", 1)
-                total_service_price += unit_price * quantity
+                discounted_service_total += effective_unit_price * quantity
+                original_service_total += original_unit_price * quantity
                 
                 # Add to cart snapshot for idempotency validation
                 cart_snapshot.append({
                     "service_id": item.get("service_id"),
                     "quantity": quantity,
-                    "unit_price": unit_price
+                    "unit_price": effective_unit_price
                 })
             
             # Get convenience fee percentage from config (dynamically set by admin)
@@ -480,7 +484,7 @@ class PaymentService:
                     detail="Unable to process payment at this time. Please try again or contact support."
                 )
             
-            booking_fee = total_service_price * (convenience_fee_percentage / 100)
+            booking_fee = round(original_service_total * (convenience_fee_percentage / 100), 2)
             total_payment = booking_fee
             
             if total_payment <= 0:
@@ -499,7 +503,8 @@ class PaymentService:
                     "customer_id": user_id,
                     "salon_id": salon_id,
                     "type": "cart_checkout",
-                    "service_total": total_service_price,
+                    "service_total": discounted_service_total,
+                    "original_service_total": original_service_total,
                     "booking_fee": booking_fee,
                     "cart_snapshot": json.dumps(cart_snapshot),  # Store cart state
                     "cart_item_count": len(cart_snapshot)
@@ -511,14 +516,15 @@ class PaymentService:
             return {
                 "order_id": order["order_id"],
                 "amount": total_payment,
-                "amount_paise": int(total_payment * 100),
+                "amount_paise": int(round(total_payment * 100)),
                 "currency": "INR",
                 "key_id": self._razorpay_key_id,
                 "breakdown": {
-                    "service_price": total_service_price,
+                    "service_price": round(discounted_service_total, 2),
+                    "original_service_price": round(original_service_total, 2),
                     "booking_fee": booking_fee,
                     "total_to_pay_now": total_payment,
-                    "pay_at_salon": total_service_price
+                    "pay_at_salon": round(discounted_service_total, 2)
                 }
             }
         

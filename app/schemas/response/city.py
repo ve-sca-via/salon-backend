@@ -8,13 +8,13 @@ from typing import List
 
 class PopularCityResponse(BaseModel):
     """Single city with salon count"""
-    city: str = Field(..., description="City name (normalized to lowercase)")
+    city: str = Field(..., description="City name (normalized to Title Case)")
     salon_count: int = Field(..., description="Number of salons in this city")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "city": "mumbai",
+                "city": "Mumbai",
                 "salon_count": 124
             }
         }
@@ -29,9 +29,9 @@ class PopularCitiesResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "cities": [
-                    {"city": "mumbai", "salon_count": 124},
-                    {"city": "delhi", "salon_count": 98},
-                    {"city": "bangalore", "salon_count": 87}
+                    {"city": "Mumbai", "salon_count": 124},
+                    {"city": "Delhi", "salon_count": 98},
+                    {"city": "Bangalore", "salon_count": 87}
                 ],
                 "total": 3
             }

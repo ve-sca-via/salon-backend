@@ -35,6 +35,25 @@ _jinja2_env = Environment(
 logger.info("Initialized shared Jinja2 template environment (singleton)")
 
 
+def _format_booking_services_html(services: list) -> str:
+    """Format booking services as HTML lines for confirmation emails."""
+    lines = []
+    for service in services:
+        if not isinstance(service, dict):
+            lines.append(f"• {service}")
+            continue
+
+        name = service.get("name") or service.get("service_name", "Service")
+        price = float(service.get("price") or service.get("unit_price") or 0)
+        quantity = int(service.get("quantity") or 1)
+
+        if quantity > 1:
+            lines.append(f"• {name} (x{quantity}) — ₹{price:.2f} each")
+        else:
+            lines.append(f"• {name} — ₹{price:.2f}")
+
+    return "<br>".join(lines) if lines else "• Service"
+
 
 class EmailService:
     """Email service for sending templated emails"""
@@ -512,8 +531,9 @@ class EmailService:
         service_name: str,
         booking_date: str,
         booking_time: str,
-        refund_amount: float,
-        cancellation_reason: str = None
+        cancellation_reason: str = None,
+        booking_id: str = None,
+        booking_number: str = None,
     ) -> bool:
         """
         Send booking cancellation email
@@ -525,7 +545,6 @@ class EmailService:
             service_name: Service name
             booking_date: Booking date
             booking_time: Booking time
-            refund_amount: Refund amount
             cancellation_reason: Reason for cancellation
             
         Returns:
@@ -540,7 +559,6 @@ class EmailService:
                 service_name=service_name,
                 booking_date=booking_date,
                 booking_time=booking_time,
-                refund_amount=refund_amount,
                 cancellation_reason=cancellation_reason,
                 support_email=settings.EMAIL_FROM,
                 current_year=2025
@@ -554,17 +572,97 @@ class EmailService:
                 html_body,
                 email_type="booking_cancellation",
                 related_entity_type="booking",
-                related_entity_id=None,  # Would need booking_id passed in
+                related_entity_id=booking_id,
                 email_data={
                     "customer_name": customer_name,
                     "salon_name": salon_name,
                     "service_name": service_name,
-                    "refund_amount": refund_amount
+                    "booking_number": booking_number,
                 }
             )
             
         except Exception as e:
             logger.error(f"Failed to send booking cancellation email: {str(e)}")
+            return False
+
+    async def send_booking_cancellation_notification_to_vendor(
+        self,
+        vendor_email: str,
+        salon_name: str,
+        customer_name: str,
+        customer_phone: str,
+        booking_number: str,
+        booking_date: str,
+        booking_time: str,
+        services: list,
+        cancellation_reason: str = None,
+        booking_id: str = None,
+    ) -> bool:
+        """Notify vendor/salon that a customer cancelled a booking."""
+        try:
+            reason_block = ""
+            if cancellation_reason:
+                reason_block = f"""
+                    <p><strong>Cancellation Reason:</strong> {cancellation_reason}</p>
+                """
+
+            html_body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #ff6b6b;">Booking Cancelled</h2>
+                    <p>Hi {salon_name} Team,</p>
+                    <p>A customer has cancelled their booking. The appointment slot is now available again.</p>
+
+                    <div style="background: #fff5f5; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ff6b6b;">
+                        <h3 style="margin-top: 0;">Cancelled Booking Details</h3>
+                        <p><strong>Booking Number:</strong> {booking_number}</p>
+                        <p><strong>Customer:</strong> {customer_name}</p>
+                        <p><strong>Phone:</strong> {customer_phone}</p>
+                        <p><strong>Date:</strong> {booking_date}</p>
+                        <p><strong>Time:</strong> {booking_time}</p>
+                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
+                        {reason_block}
+                    </div>
+
+                    <p style="text-align: center; margin-top: 30px;">
+                        <a href="{settings.VENDOR_PORTAL_URL}/bookings"
+                           style="background: #2196F3; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                            View in Dashboard
+                        </a>
+                    </p>
+
+                    <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                        This is an automated notification from Lubist.
+                    </p>
+                </div>
+            </body>
+            </html>
+            """
+
+            subject = f"Booking Cancelled - {customer_name} ({booking_number})"
+
+            result = await self._send_email(
+                vendor_email,
+                subject,
+                html_body,
+                email_type="booking_cancellation_vendor",
+                related_entity_type="booking",
+                related_entity_id=booking_id,
+                email_data={
+                    "salon_name": salon_name,
+                    "customer_name": customer_name,
+                    "customer_phone": customer_phone,
+                    "booking_number": booking_number,
+                    "booking_date": booking_date,
+                    "booking_time": booking_time,
+                },
+            )
+            logger.info(f"Booking cancellation notification sent to vendor {vendor_email} for booking {booking_number}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to send vendor booking cancellation notification: {str(e)}")
             return False
     
     async def send_payment_receipt_email(
@@ -907,7 +1005,7 @@ class EmailService:
                         <p><strong>Booking Number:</strong> {booking_number}</p>
                         <p><strong>Date:</strong> {booking_date}</p>
                         <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
+                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
                     </div>
                     
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
@@ -965,7 +1063,7 @@ class EmailService:
         booking_date: str,
         booking_time: str,
         services: list,
-        total_amount: float,
+        service_price: float,
         booking_id: str
     ) -> bool:
         """
@@ -980,7 +1078,7 @@ class EmailService:
             booking_date: Booking date
             booking_time: Booking time
             services: List of services booked
-            total_amount: Total booking amount
+            service_price: Discounted service total to collect from customer at salon
             booking_id: Booking UUID
             
         Returns:
@@ -1003,14 +1101,20 @@ class EmailService:
                         <p><strong>Phone:</strong> {customer_phone}</p>
                         <p><strong>Date:</strong> {booking_date}</p>
                         <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{'<br>'.join([f"• {{s.get('name', 'Service')}} (₹{{s.get('price', 0)}})" for s in services])}</p>
-                        <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
+                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
+                    </div>
+
+                    <div style="background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; border: 1px solid #c8e6c9;">
+                        <h3 style="margin-top: 0; color: #2e7d32;">Amount to Collect at Salon</h3>
+                        <p style="margin-bottom: 0; font-size: 18px; font-weight: bold; color: #2e7d32;">
+                            ₹{service_price:.2f}
+                        </p>
                     </div>
                     
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <p><strong>⚠️ Action Required:</strong></p>
                         <p>Please confirm this booking from your vendor dashboard.</p>
-                        <p>Customer has already paid the convenience fee online.</p>
+                        <p>Collect <strong>₹{service_price:.2f}</strong> from the customer at the salon after service.</p>
                     </div>
                     
                     <p style="text-align: center; margin-top: 30px;">
@@ -1044,7 +1148,7 @@ class EmailService:
                     "booking_number": booking_number,
                     "booking_date": booking_date,
                     "booking_time": booking_time,
-                    "total_amount": total_amount
+                    "service_price": service_price,
                 }
             )
             logger.info(f"New booking notification email sent to vendor {vendor_email} for booking {booking_number}")

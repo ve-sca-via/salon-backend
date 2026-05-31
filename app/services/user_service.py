@@ -11,6 +11,7 @@ from app.schemas.user import UserUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,9 @@ class UserService:
         
         if not filtered_updates:
             raise ValueError("No valid fields to update")
+
+        if "city" in filtered_updates:
+            filtered_updates["city"] = normalize_city_name(filtered_updates["city"])
         
         # Prevent deactivating admin users
         if "is_active" in filtered_updates and not filtered_updates["is_active"] and current_role == "admin":

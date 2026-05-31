@@ -267,15 +267,18 @@ async def get_my_bookings(
 async def cancel_booking(
     booking_id: str,
     current_user: TokenData = Depends(get_current_user),
-    customer_service: CustomerService = Depends(get_customer_service)
+    booking_service: BookingService = Depends(get_booking_service)
 ):
     """
     Cancel a booking
-    Only allows canceling if booking is not already completed or cancelled
+    Only allows canceling if booking is not already completed or cancelled.
+    Sends cancellation emails to customer and vendor, and logs activity for admin panel.
     """
-    return await customer_service.cancel_customer_booking(
-        customer_id=current_user.user_id,
-        booking_id=booking_id
+    return await booking_service.cancel_booking(
+        booking_id=booking_id,
+        reason=None,
+        current_user_id=current_user.user_id,
+        current_user_role=current_user.user_role or "customer",
     )
 
 

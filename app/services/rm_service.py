@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
 from app.services.activity_log_service import ActivityLogger, ActivityLogService
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +550,8 @@ class RMService:
             db_data = request_data.model_dump(mode='json')
             db_data["rm_id"] = rm_id
             db_data["status"] = "draft" if is_draft else "pending"
+            if db_data.get("city"):
+                db_data["city"] = normalize_city_name(db_data["city"])
             
             print(f"DEBUG: db_data for insert: {db_data.get('request_type')}")
             
@@ -641,6 +644,8 @@ class RMService:
             
             # Prepare update data (mode='json' converts time objects to strings)
             update_data = request_data.model_dump(mode='json')
+            if update_data.get("city"):
+                update_data["city"] = normalize_city_name(update_data["city"])
             
             print(f"DEBUG: Updating vendor request {request_id}. request_type in request_data: {request_data.request_type}")
             print(f"DEBUG: update_data for update: {update_data.get('request_type')}")

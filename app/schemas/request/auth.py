@@ -80,6 +80,10 @@ class PhoneLoginVerifyOTPRequest(BaseModel):
         ...,
         description="Verification ID returned from send-otp endpoint"
     )
+    country_code: Optional[str] = Field(
+        default="91",
+        description="Country code (default: 91 for India)"
+    )
 
 class PhoneVerificationSendOTPRequest(BaseModel):
     """Request to send OTP for phone verification (for authenticated users)"""
