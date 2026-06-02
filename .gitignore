@@ -63,3 +63,7 @@ logs/
 
 # OS
 Thumbs.db
+
+# Generated outputs / presentation assets
+outputs/
+presentation_assets/
