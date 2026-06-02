@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client
 from app.services.admin_service import AdminService
-from app.services.activity_log_service import ActivityLogService
+from app.services.activity_log_service import ActivityLogService, DASHBOARD_EXCLUDED_ACTIONS
 from supabase import Client
 import logging
 
@@ -49,7 +49,10 @@ async def get_recent_activity(
     - Admin only
     - Returns last N activity logs with user details
     """
-    activities = await ActivityLogService.get_recent(limit=limit)
+    activities = await ActivityLogService.get_recent(
+        limit=limit,
+        exclude_actions=DASHBOARD_EXCLUDED_ACTIONS,
+    )
     
     return {
         "success": True,

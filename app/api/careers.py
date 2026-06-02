@@ -151,6 +151,7 @@ async def submit_career_application(
 async def get_career_applications(
     status: Optional[str] = None,
     position: Optional[str] = None,
+    search: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
     admin: TokenData = Depends(require_admin),
@@ -164,12 +165,14 @@ async def get_career_applications(
     Query params:
     - status: Filter by status (pending, under_review, etc.)
     - position: Filter by position
+    - search: Search name, email, phone, application number, or city
     - skip: Pagination offset
     - limit: Results per page
     """
     return career_service.get_applications(
         status_filter=status,
         position_filter=position,
+        search=search,
         skip=skip,
         limit=limit
     )

@@ -321,34 +321,38 @@ async def send_phone_login_otp(
     users must use email login.
     """
     try:
-        # Sanitize and clean phone number
-        clean_phone = html.escape(phone_data.phone.strip())
-        clean_phone = clean_phone.replace("+", "").replace(" ", "").replace("-", "")
+        from app.utils.phone import normalize_phone, find_profile_by_phone, reconcile_profile_phone
+
         country_code = phone_data.country_code or "91"
+        canonical_phone = normalize_phone(phone_data.phone.strip(), country_code)
+        if not canonical_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter a valid 10-digit phone number."
+            )
 
-        # Remove country code if present at start
-        if clean_phone.startswith(country_code):
-            clean_phone = clean_phone[len(country_code):]
+        logger.info(f"Checking phone in database: {canonical_phone[-4:]}")
 
-        # Build full phone number for database lookup
-        full_phone = f"+{country_code}{clean_phone}"
+        profile, _ = find_profile_by_phone(
+            db,
+            phone_data.phone.strip(),
+            country_code=country_code,
+            select="id, email, full_name, phone, phone_verified, user_role, is_active",
+        )
 
-        # Check if phone exists in profiles table
-        logger.info(f"Checking phone in database: {full_phone[-4:]}")  # Log last 4 digits only
-
-        profile_response = db.table("profiles").select(
-            "id, email, full_name, phone, phone_verified, user_role, is_active"
-        ).eq("phone", full_phone).execute()
-
-        if not profile_response.data or len(profile_response.data) == 0:
-            # Don't reveal if phone exists for security
-            logger.warning(f"Phone login attempt for non-existent phone")
+        if not profile:
+            logger.warning("Phone login attempt for non-existent phone")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Phone number not registered. Please sign up first."
             )
 
-        profile = profile_response.data[0]
+        reconcile_profile_phone(db, profile["id"], profile.get("phone"), country_code)
+        profile["phone"] = canonical_phone
+
+        canonical_digits = canonical_phone.lstrip("+")
+        cc = country_code.lstrip("+")
+        clean_phone = canonical_digits[len(cc):] if canonical_digits.startswith(cc) else canonical_digits
 
         # Check if phone is verified
         if not profile.get("phone_verified", False):
@@ -418,11 +422,18 @@ async def verify_phone_login_otp(
     **Note**: Only customer accounts can log in via phone.
     """
     try:
-        # Sanitize inputs
-        clean_phone = html.escape(verify_data.phone.strip())
-        clean_phone = clean_phone.replace("+", "").replace(" ", "").replace("-", "")
+        from app.utils.phone import normalize_phone, find_profile_by_phone, reconcile_profile_phone
+
+        country_code = verify_data.country_code or "91"
         clean_otp = verify_data.otp.strip()
         verification_id = verify_data.verification_id.strip()
+
+        canonical_phone = normalize_phone(verify_data.phone.strip(), country_code)
+        if not canonical_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter a valid 10-digit phone number."
+            )
 
         # Validate OTP format (6 digits)
         if not clean_otp.isdigit() or len(clean_otp) != 6:
@@ -445,30 +456,28 @@ async def verify_phone_login_otp(
                 detail="Invalid or expired OTP. Please try again."
             )
 
-        # OTP is valid - fetch user profile
-        # Try to find by phone (try with and without + prefix)
-        phone_variants = [
-            clean_phone,
-            f"+{clean_phone}",
-            f"+91{clean_phone}" if not clean_phone.startswith("91") else clean_phone
-        ]
-
-        profile = None
-        for phone_variant in phone_variants:
-            profile_response = db.table("profiles").select(
-                "*"
-            ).eq("phone", phone_variant).eq("phone_verified", True).execute()
-
-            if profile_response.data and len(profile_response.data) > 0:
-                profile = profile_response.data[0]
-                break
+        profile, _ = find_profile_by_phone(
+            db,
+            verify_data.phone.strip(),
+            country_code=country_code,
+            select="*",
+        )
 
         if not profile:
-            logger.error(f"Phone verified but profile not found for phone")
+            logger.error("Phone verified but profile not found for phone")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found. Please contact support."
             )
+
+        if not profile.get("phone_verified", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Phone number not verified. Please verify your phone first."
+            )
+
+        reconcile_profile_phone(db, profile["id"], profile.get("phone"), country_code)
+        profile["phone"] = canonical_phone
 
         # Validate user role (MUST be customer)
         if profile.get("user_role") != "customer":
@@ -498,15 +507,8 @@ async def verify_phone_login_otp(
         refresh_token = create_refresh_token(token_data)
 
         # Sanitize user data for response
-        user_data = {
-            "id": profile["id"],
-            "email": profile["email"],
-            "full_name": html.escape(profile.get("full_name") or ""),
-            "user_role": profile.get("user_role", "customer"),
-            "role": profile.get("user_role", "customer"),  # Backward compatibility
-            "phone": html.escape(profile.get("phone") or ""),
-            "is_active": profile.get("is_active", True)
-        }
+        auth_service = AuthService(db_client=db, auth_client=auth_client)
+        user_data = auth_service.format_public_user(profile)
 
         logger.info(f"User logged in via phone OTP: {profile['email']}")
 

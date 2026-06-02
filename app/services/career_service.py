@@ -362,6 +362,7 @@ class CareerService:
         self,
         status_filter: Optional[str] = None,
         position_filter: Optional[str] = None,
+        search: Optional[str] = None,
         skip: int = 0,
         limit: int = 50
     ) -> Dict[str, Any]:
@@ -371,27 +372,67 @@ class CareerService:
         Args:
             status_filter: Filter by application status
             position_filter: Filter by position
+            search: Search name, email, phone, application number, or city
             skip: Pagination offset
             limit: Results per page
         
         Returns:
-            Dict with applications list and count
+            Dict with applications list and total count
         """
         try:
-            query = self.db.table("career_applications").select("*")
-            
+            matching_ids = None
+            if search:
+                term = search.strip()
+                if term:
+                    pattern = f"%{term}%"
+                    id_set = set()
+                    for column in (
+                        "full_name",
+                        "email",
+                        "phone",
+                        "application_number",
+                        "current_city",
+                    ):
+                        try:
+                            rows = (
+                                self.db.table("career_applications")
+                                .select("id")
+                                .ilike(column, pattern)
+                                .execute()
+                            )
+                            for row in rows.data or []:
+                                id_set.add(row["id"])
+                        except Exception as col_err:
+                            logger.warning(
+                                "Career search skipped column %s: %s", column, col_err
+                            )
+                    matching_ids = list(id_set)
+                    if not matching_ids:
+                        return {
+                            "applications": [],
+                            "count": 0,
+                            "total": 0,
+                        }
+
+            query = self.db.table("career_applications").select("*", count="exact")
+
+            if matching_ids is not None:
+                query = query.in_("id", matching_ids)
             if status_filter:
                 query = query.eq("status", status_filter)
             if position_filter:
                 query = query.eq("position", position_filter)
-            
-            query = query.order("created_at", desc=True).range(skip, skip + limit - 1)
-            
-            result = query.execute()
-            
+
+            result = (
+                query.order("created_at", desc=True)
+                .range(skip, skip + limit - 1)
+                .execute()
+            )
+
             return {
-                "applications": result.data,
-                "count": len(result.data)
+                "applications": result.data or [],
+                "count": len(result.data or []),
+                "total": result.count if result.count is not None else len(result.data or []),
             }
             
         except Exception as e:

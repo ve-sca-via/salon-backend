@@ -11,6 +11,7 @@ from app.schemas.user import UserUpdate
 from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,9 @@ class UserService:
         
         if not filtered_updates:
             raise ValueError("No valid fields to update")
+
+        if "city" in filtered_updates:
+            filtered_updates["city"] = normalize_city_name(filtered_updates["city"])
         
         # Prevent deactivating admin users
         if "is_active" in filtered_updates and not filtered_updates["is_active"] and current_role == "admin":
@@ -534,9 +538,35 @@ class UserService:
             offset = (page - 1) * limit
             query = db.table("profiles").select("*", count="exact")
             
-            # Apply search filter
+            # Search: .ilike() per column (or_() is unreliable in supabase-py URL encoding)
             if search:
-                query = query.or_(f"email.ilike.%{search}%,full_name.ilike.%{search}%")
+                term = search.strip()
+                if term:
+                    pattern = f"%{term}%"
+                    matching_ids = set()
+                    for column in ("email", "full_name", "phone"):
+                        try:
+                            id_rows = (
+                                db.table("profiles")
+                                .select("id")
+                                .ilike(column, pattern)
+                                .execute()
+                            )
+                            for row in id_rows.data or []:
+                                matching_ids.add(row["id"])
+                        except Exception as col_err:
+                            logger.warning(
+                                "User search skipped column %s: %s", column, col_err
+                            )
+                    if not matching_ids:
+                        return {
+                            "success": True,
+                            "data": [],
+                            "total": 0,
+                            "page": page,
+                            "limit": limit,
+                        }
+                    query = query.in_("id", list(matching_ids))
             
             # Apply role filter
             if role:

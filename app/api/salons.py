@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.database import get_db_client
 from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService
+from app.utils.location_text import normalize_city_name
 from app.schemas import (
     PublicSalonsResponse,
     SalonDetailResponse,
@@ -579,7 +580,7 @@ async def create_salon(
         "phone": phone,
         "email": email,
         "address_line1": address_line1,
-        "city": city,
+        "city": normalize_city_name(city),
         "state": state,
         "pincode": pincode,
         "latitude": str(latitude) if latitude else None,
