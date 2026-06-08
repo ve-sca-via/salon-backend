@@ -3,9 +3,11 @@ OTP Service using MessageCentral API
 Handles OTP generation, sending, and verification for phone-based authentication
 """
 import logging
+import secrets
 import httpx
 from typing import Dict, Optional
 from datetime import datetime, timedelta
+from uuid import uuid4
 from fastapi import HTTPException, status
 
 from app.core.config import settings
@@ -20,7 +22,59 @@ class OTPService:
     _auth_token: Optional[str] = None
     _token_expires_at: Optional[datetime] = None
 
+    # Dev-mode OTP store: verification_id -> {"code": str, "expires_at": datetime}.
+    # In-memory only; used when settings.otp_dev_enabled is true.
+    _dev_otps: Dict[str, Dict[str, object]] = {}
+
     BASE_URL = "https://cpaas.messagecentral.com"
+
+    # =====================================================
+    # DEV MODE (no SMS — OTP is generated + logged locally)
+    # =====================================================
+    @classmethod
+    def _dev_send_otp(cls, clean_phone: str, country_code: str) -> Dict[str, object]:
+        """Generate an OTP locally, log it, and return a fake verification payload."""
+        code = "".join(secrets.choice("0123456789") for _ in range(settings.MESSAGECENTRAL_OTP_LENGTH))
+        verification_id = f"dev-{uuid4().hex[:16]}"
+        expires_in = settings.MESSAGECENTRAL_OTP_EXPIRY_SECONDS
+        cls._dev_otps[verification_id] = {
+            "code": code,
+            "expires_at": datetime.utcnow() + timedelta(seconds=expires_in),
+        }
+        logger.warning(
+            "\n"
+            "============================================================\n"
+            "  [OTP DEV MODE] No SMS sent. Use this code to verify:\n"
+            "    phone:          +%s%s\n"
+            "    otp:            %s\n"
+            "    verificationId: %s\n"
+            "============================================================",
+            country_code, clean_phone, code, verification_id,
+        )
+        masked = f"+{country_code}{'*' * max(len(clean_phone) - 4, 0)}{clean_phone[-4:]}"
+        return {
+            "verification_id": verification_id,
+            "expires_in": expires_in,
+            "phone": masked,
+        }
+
+    @classmethod
+    def _dev_verify_otp(cls, verification_id: str, otp_code: str) -> bool:
+        """Verify an OTP against the locally stored dev code."""
+        entry = cls._dev_otps.get(verification_id)
+        if not entry:
+            logger.warning("[OTP DEV MODE] Unknown verificationId: %s", verification_id)
+            return False
+        if datetime.utcnow() > entry["expires_at"]:
+            logger.warning("[OTP DEV MODE] OTP expired for verificationId: %s", verification_id)
+            cls._dev_otps.pop(verification_id, None)
+            return False
+        if otp_code == entry["code"]:
+            cls._dev_otps.pop(verification_id, None)  # single-use
+            logger.info("[OTP DEV MODE] OTP verified for verificationId: %s", verification_id)
+            return True
+        logger.warning("[OTP DEV MODE] Incorrect OTP for verificationId: %s", verification_id)
+        return False
 
     @classmethod
     async def _get_auth_token(cls) -> str:
@@ -118,16 +172,20 @@ class OTPService:
         if country_code is None:
             country_code = settings.MESSAGECENTRAL_DEFAULT_COUNTRY_CODE
 
+        # Clean phone number (remove +, spaces, dashes)
+        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+
+        # Remove country code if present at start
+        if clean_phone.startswith(country_code):
+            clean_phone = clean_phone[len(country_code):]
+
+        # Dev mode: generate + log the OTP locally instead of calling MessageCentral.
+        if settings.otp_dev_enabled:
+            return cls._dev_send_otp(clean_phone, country_code)
+
         try:
             # Get auth token
             auth_token = await cls._get_auth_token()
-
-            # Clean phone number (remove +, spaces, dashes)
-            clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
-
-            # Remove country code if present at start
-            if clean_phone.startswith(country_code):
-                clean_phone = clean_phone[len(country_code):]
 
             logger.info(f"Sending OTP to phone: +{country_code}{clean_phone[-4:]}")  # Log last 4 digits only
 
@@ -239,6 +297,10 @@ class OTPService:
         Raises:
             HTTPException: If verification service fails
         """
+        # Dev mode: verify against the locally stored OTP.
+        if settings.otp_dev_enabled:
+            return cls._dev_verify_otp(verification_id, otp_code)
+
         try:
             # Get auth token
             auth_token = await cls._get_auth_token()

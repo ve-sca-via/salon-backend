@@ -68,12 +68,3 @@ class RMLeaderboardResponse(SuccessResponse):
     """Response for RM leaderboard"""
     data: List[Dict[str, Any]] = Field(..., description="List of top RMs with rankings")
     total: int = Field(..., description="Total number of RMs in leaderboard")
-
-
-# =====================================================
-# SERVICE CATEGORIES
-# =====================================================
-
-class ServiceCategoriesResponse(SuccessResponse):
-    """Response for service categories list"""
-    data: List[Dict[str, Any]] = Field(..., description="List of active service categories")
