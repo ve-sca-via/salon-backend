@@ -6,7 +6,7 @@ BASE_URL = "http://localhost:8000/api/v1"
 def get_admin_token():
     """Login as admin and get access token"""
     login_data = {
-        "email": "admin@lubist.com",
+        "email": "787alisniazi787@gmail.com",
         "password": "Safdar@1234"
     }
     

@@ -71,7 +71,7 @@ async def get_salons_nearby(
             'user_lat': lat,
             'user_lon': lon,
             'radius_km': radius,
-            'result_limit': limit
+            'max_results': limit
         }
     ).execute()
     

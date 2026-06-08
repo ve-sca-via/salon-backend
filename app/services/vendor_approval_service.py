@@ -91,15 +91,9 @@ class VendorApprovalService:
             logger.error(f"Failed to create salon: {str(e)}")
             return ApprovalResult(success=False, error=str(e))
         
-        # Step 6: Insert services if provided (skip for regular buyers)
-        services_created = 0
-        if request_data.request_type == "salon":
-            services_created = await self._create_salon_services(salon_id, request_data)
-            if services_created:
-                logger.info(f"Created {services_created} services")
-        else:
-            logger.info(f"Skipping service creation for {request_data.request_type}")
-        
+        # Services are no longer created at approval time — vendors add their own
+        # services (category / subcategory / sub-subcategory) after onboarding.
+
         # Step 7: Update RM score and get new total
         rm_new_score = None
         try:
@@ -400,143 +394,6 @@ class VendorApprovalService:
         logger.info(f"Salon created: {salon_id}")
         
         return salon_id
-    
-    async def _create_salon_services(
-        self,
-        salon_id: str,
-        request_data: VendorJoinRequestResponse
-    ) -> int:
-        """
-        Create pre-filled services from RM submission.
-        
-        IMPORTANT: Services must have category_id to be inserted.
-        This method now checks multiple data sources and provides detailed logging.
-        """
-        documents = request_data.documents or {}
-        if isinstance(documents, str):
-            import json
-            documents = json.loads(documents)
-        
-        services_data = documents.get("services", [])
-        
-        # FIX: Also check services_offered if documents.services is empty or invalid
-        if not services_data or not isinstance(services_data, list):
-            logger.info(f"No services found in documents.services for salon {salon_id}")
-            
-            # Try to get services from services_offered column
-            services_offered = getattr(request_data, "services_offered", None)
-            if services_offered and isinstance(services_offered, dict):
-                logger.info(f"Attempting to extract services from services_offered...")
-                services_data = []
-                
-                # Get all service categories from database for mapping
-                categories_response = self.db.table("service_categories").select("id, name").execute()
-                category_map = {cat["name"]: cat["id"] for cat in (categories_response.data or [])}
-                
-                # Extract services from services_offered (grouped by category name)
-                for category_name, service_list in services_offered.items():
-                    category_id = category_map.get(category_name)
-                    
-                    if isinstance(service_list, list):
-                        for svc in service_list:
-                            if isinstance(svc, dict) and svc.get("name"):
-                                services_data.append({
-                                    "name": svc.get("name"),
-                                    "category_id": category_id,
-                                    "price": svc.get("price", 0),
-                                    "duration_minutes": svc.get("duration_minutes", 30),
-                                    "description": svc.get("description", "")
-                                })
-                
-                if services_data:
-                    logger.info(f"Extracted {len(services_data)} services from services_offered")
-        
-        if not services_data or not isinstance(services_data, list):
-            logger.warning(f"No valid services data found for salon {salon_id}")
-            return 0
-        
-        logger.info(f"Processing {len(services_data)} services for salon {salon_id}")
-        
-        try:
-            services_to_insert = []
-            skipped_services = []
-            
-            for service in services_data:
-                service_name = service.get("name", "Unnamed Service")
-                category_id = service.get("category_id")
-                
-                # FIX: Log detailed information about each service
-                logger.debug(f"Processing service: {service_name}, category_id: {category_id}")
-                
-                if not category_id:
-                    skipped_services.append(service_name)
-                    logger.warning(f"Service '{service_name}' missing category_id - SKIPPING. "
-                                 f"Raw service data: {service}")
-                    continue
-                
-                # Validate required fields
-                if not service_name or service_name == "Unnamed Service":
-                    skipped_services.append(service_name)
-                    logger.warning(f"Service missing name - SKIPPING. Raw data: {service}")
-                    continue
-                
-                service_entry = {
-                    "salon_id": salon_id,
-                    "name": service_name,
-                    "description": service.get("description", ""),
-                    "price": float(service.get("price", 0)),
-                    "duration_minutes": int(service.get("duration_minutes", 30)),
-                    "category_id": category_id,
-                    "gender_category": service.get("gender_category", "both"),
-                    "is_active": True,
-                    "is_featured": False
-                }
-                
-                services_to_insert.append(service_entry)
-            
-            # FIX: Provide detailed summary
-            if skipped_services:
-                logger.error(
-                    f"IMPORTANT: {len(skipped_services)} services were SKIPPED during migration: "
-                    f"{', '.join(skipped_services)}. "
-                    f"These services are missing category_id. Total services processed: {len(services_data)}, "
-                    f"Valid services: {len(services_to_insert)}"
-                )
-            
-            if services_to_insert:
-                logger.info(f"Inserting {len(services_to_insert)} valid services for salon {salon_id}")
-                logger.info(f"Service names: {[s['name'] for s in services_to_insert]}")
-                
-                response = self.db.table("services").insert(services_to_insert).execute()
-                
-                if response.data:
-                    created_count = len(response.data)
-                    logger.info(f"✅ Successfully created {created_count} services for salon {salon_id}")
-                    
-                    # FIX: Verify services were created correctly
-                    verify_response = self.db.table("services").select("id, name").eq(
-                        "salon_id", salon_id
-                    ).execute()
-                    if verify_response.data:
-                        logger.info(f"Verification: Found {len(verify_response.data)} services in database for salon {salon_id}")
-                    
-                    return created_count
-                else:
-                    logger.error(f"❌ Services insert returned no data for salon {salon_id}")
-                    return 0
-            else:
-                logger.error(
-                    f"❌ NO SERVICES CREATED for salon {salon_id}! "
-                    f"All {len(services_data)} services were skipped (missing category_id or name). "
-                    f"Vendor will have NO services when they log in. "
-                    f"Raw services data: {services_data}"
-                )
-                return 0
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create services for salon {salon_id}: {str(e)}")
-            logger.exception("Full traceback:")
-            return 0
     
     async def _send_approval_email(
         self,

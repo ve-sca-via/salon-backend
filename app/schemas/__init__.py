@@ -108,6 +108,6 @@ from .response.customer import (
 from .response.rm import (
     VendorRequestOperationResponse, VendorRequestsListResponse,
     RMSalonsListResponse, RMProfileUpdateResponse, RMDashboardStatistics,
-    RMDashboardResponse, RMLeaderboardResponse, ServiceCategoriesResponse
+    RMDashboardResponse, RMLeaderboardResponse
 )
 
