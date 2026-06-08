@@ -152,33 +152,55 @@ def verify_token(token: str, db) -> TokenPayload:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
+        # Load the user's profile to validate account state and logout_all timestamp.
+        # Use maybe_single() so a deleted profile returns empty data instead of raising
+        # PGRST116 ("Cannot coerce the result to a single JSON object") -> 500 crash.
+        profile_response = db.table("profiles").select(
+            "token_valid_after, is_active"
+        ).eq("id", user_id).maybe_single().execute()
+
+        profile = getattr(profile_response, "data", None)
+
+        # Account was deleted from the system (e.g. RM removed from admin panel) - force logout
+        if not profile:
+            logger.warning(f"Token presented for missing profile {user_id} (deleted account)")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account no longer exists",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Account deactivated - force logout (401 so the client clears the session)
+        if profile.get("is_active") is False:
+            logger.warning(f"Token presented for inactive account {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is inactive",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # Check if token was issued before user's token_valid_after timestamp (logout_all)
-        if iat:
-            user_response = db.table("profiles").select(
-                "token_valid_after"
-            ).eq("id", user_id).single().execute()
-            
-            if user_response.data and user_response.data.get("token_valid_after"):
-                token_valid_after_str = user_response.data.get("token_valid_after")
-                # Convert iat (Unix timestamp) to datetime
-                token_issued_at = datetime.utcfromtimestamp(iat)
-                # Parse token_valid_after timestamp
-                # Handle both ISO format with and without 'Z'
-                if token_valid_after_str.endswith('Z'):
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
-                elif '+' in token_valid_after_str:
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
-                else:
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
-                
-                # Reject token if it was issued before the logout_all timestamp
-                if token_issued_at < token_valid_after_dt:
-                    logger.warning(f"Token issued before logout_all timestamp for user {user_id}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Token has been revoked (logged out from all devices)",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
+        if iat and profile.get("token_valid_after"):
+            token_valid_after_str = profile.get("token_valid_after")
+            # Convert iat (Unix timestamp) to datetime
+            token_issued_at = datetime.utcfromtimestamp(iat)
+            # Parse token_valid_after timestamp
+            # Handle both ISO format with and without 'Z'
+            if token_valid_after_str.endswith('Z'):
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            elif '+' in token_valid_after_str:
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
+            else:
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
+
+            # Reject token if it was issued before the logout_all timestamp
+            if token_issued_at < token_valid_after_dt:
+                logger.warning(f"Token issued before logout_all timestamp for user {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked (logged out from all devices)",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
         
         # Check if token is blacklisted (for single logout)
         if jti:
@@ -235,32 +257,52 @@ def verify_refresh_token(token: str, db) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
+        # Load the user's profile (maybe_single avoids a PGRST116 crash if it was deleted).
+        profile_response = db.table("profiles").select(
+            "token_valid_after, is_active"
+        ).eq("id", user_id).maybe_single().execute()
+
+        profile = getattr(profile_response, "data", None)
+
+        # Account deleted - refuse to refresh so the client is forced to log out
+        if not profile:
+            logger.warning(f"Refresh token presented for missing profile {user_id} (deleted account)")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account no longer exists",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Account deactivated - refuse to refresh
+        if profile.get("is_active") is False:
+            logger.warning(f"Refresh token presented for inactive account {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is inactive",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # Check if refresh token was issued before user's token_valid_after timestamp (logout_all)
-        if iat:
-            user_response = db.table("profiles").select(
-                "token_valid_after"
-            ).eq("id", user_id).single().execute()
-            
-            if user_response.data and user_response.data.get("token_valid_after"):
-                token_valid_after_str = user_response.data.get("token_valid_after")
-                # Convert iat (Unix timestamp) to datetime
-                token_issued_at = datetime.utcfromtimestamp(iat)
-                # Parse token_valid_after timestamp
-                if token_valid_after_str.endswith('Z'):
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
-                elif '+' in token_valid_after_str:
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
-                else:
-                    token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
-                
-                # Reject refresh token if it was issued before the logout_all timestamp
-                if token_issued_at < token_valid_after_dt:
-                    logger.warning(f"Refresh token issued before logout_all timestamp for user {user_id}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Refresh token has been revoked (logged out from all devices)",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
+        if iat and profile.get("token_valid_after"):
+            token_valid_after_str = profile.get("token_valid_after")
+            # Convert iat (Unix timestamp) to datetime
+            token_issued_at = datetime.utcfromtimestamp(iat)
+            # Parse token_valid_after timestamp
+            if token_valid_after_str.endswith('Z'):
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            elif '+' in token_valid_after_str:
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str).replace(tzinfo=None)
+            else:
+                token_valid_after_dt = datetime.fromisoformat(token_valid_after_str)
+
+            # Reject refresh token if it was issued before the logout_all timestamp
+            if token_issued_at < token_valid_after_dt:
+                logger.warning(f"Refresh token issued before logout_all timestamp for user {user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token has been revoked (logged out from all devices)",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
         
         # Check if refresh token is blacklisted (for single logout)
         if jti:
@@ -467,21 +509,23 @@ async def get_current_user(
     try:
         user_response = db.table("profiles").select(
             "id, email, user_role, is_active"
-        ).eq("id", token_data.sub).single().execute()
-        
-        if not user_response.data:
+        ).eq("id", token_data.sub).maybe_single().execute()
+
+        if not getattr(user_response, "data", None):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
+                detail="Account no longer exists",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         user = user_response.data
-        
+
         if not user.get("is_active", False):
+            # 401 (not 403) so the client clears the session and forces re-login
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is inactive"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is inactive",
+                headers={"WWW-Authenticate": "Bearer"},
             )
         
         return TokenData(
@@ -519,9 +563,9 @@ async def get_optional_user(
 
         user_response = db.table("profiles").select(
             "id, email, user_role, is_active"
-        ).eq("id", token_data.sub).single().execute()
+        ).eq("id", token_data.sub).maybe_single().execute()
 
-        if not user_response.data:
+        if not getattr(user_response, "data", None):
             return None
 
         user = user_response.data

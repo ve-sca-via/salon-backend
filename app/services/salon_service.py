@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from app.core.config import settings
 from app.core.database import get_db
 from app.utils.location_text import normalize_city_name
+from app.services.service_taxonomy import ServiceTaxonomyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -706,16 +707,75 @@ class SalonService:
         if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
             raise ValueError("Salon not available")
         
-        # Get services from database with category and subcategory join
+        # Get services from database with category and subcategory join.
+        # service_subcategories is the DEEPEST taxonomy node the service points at
+        # (a level-2 subcategory or a level-3 sub-subcategory).
         response = self.db.table("services").select(
-            "*, service_categories(id, name, icon_url), service_subcategories(id, name, icon_url, parent_category_id)"
+            "*, service_categories(id, name, icon_url), "
+            "service_subcategories(id, name, icon_url, parent_category_id, parent_subcategory_id)"
         ).eq("salon_id", salon_id).eq("is_active", True).order("category_id").execute()
-        
+
         services = response.data or []
-        
+
+        self._attach_taxonomy_path(services)
+
         logger.info(f"Retrieved {len(services)} services for salon {salon_id}")
-        
+
         return services
+
+    def _attach_taxonomy_path(self, services: List[Dict[str, Any]]) -> None:
+        """
+        Add a normalized 3-slot ``taxonomy`` to each service so clients can group
+        uniformly regardless of depth:
+
+            {"category": {...}|None,
+             "subcategory": {...}|None,        # the level-2 node
+             "sub_subcategory": {...}|None}    # the level-3 node, if any
+
+        The embedded ``service_subcategories`` is the deepest node; when it is a
+        level-3 node we resolve its level-2 parent so the middle slot is populated.
+        """
+        if not services:
+            return
+
+        def _slim(node):
+            if not node:
+                return None
+            return {
+                "id": node.get("id"),
+                "name": node.get("name"),
+                "icon_url": node.get("icon_url"),
+            }
+
+        # Collect level-2 parents we need to resolve for level-3 leaves.
+        parent_ids = {
+            leaf["parent_subcategory_id"]
+            for s in services
+            if (leaf := s.get("service_subcategories")) and leaf.get("parent_subcategory_id")
+        }
+        parents_by_id = {}
+        if parent_ids:
+            parents = self.db.table("service_subcategories").select(
+                "id, name, icon_url"
+            ).in_("id", list(parent_ids)).execute()
+            parents_by_id = {p["id"]: p for p in (parents.data or [])}
+
+        for s in services:
+            leaf = s.get("service_subcategories")
+            if leaf and leaf.get("parent_subcategory_id"):
+                # Leaf is a level-3 sub-subcategory.
+                s["taxonomy"] = {
+                    "category": _slim(s.get("service_categories")),
+                    "subcategory": _slim(parents_by_id.get(leaf["parent_subcategory_id"])),
+                    "sub_subcategory": _slim(leaf),
+                }
+            else:
+                # Leaf is a level-2 subcategory (or absent).
+                s["taxonomy"] = {
+                    "category": _slim(s.get("service_categories")),
+                    "subcategory": _slim(leaf),
+                    "sub_subcategory": None,
+                }
 
     async def add_salon_service(self, salon_id: str, service: ServiceCreate) -> Dict[str, Any]:
         """
@@ -732,7 +792,34 @@ class SalonService:
             # Ensure salon exists
             await self.get_salon(salon_id)
 
-            service_data = service.model_dump()
+            # Resolve the taxonomy (ids and/or typed names) to (category, leaf node),
+            # the same way the vendor flow does.
+            resolver = ServiceTaxonomyResolver(self.db)
+            category_id, subcategory_id = await resolver.resolve_fields(
+                category_id=service.category_id,
+                subcategory_id=service.subcategory_id,
+                sub_subcategory_id=service.sub_subcategory_id,
+                category_name=service.category_name,
+                subcategory_name=service.subcategory_name,
+                sub_subcategory_name=service.sub_subcategory_name,
+            )
+            if not category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A service category is required",
+                )
+            await resolver.validate_category(category_id)
+            if subcategory_id:
+                await resolver.validate_subcategory(subcategory_id, category_id)
+
+            # subcategory_id holds the DEEPEST node; the name / sub_subcategory_*
+            # fields are resolver inputs only, not columns on services.
+            service_data = service.model_dump(exclude={
+                "category_name", "subcategory_name",
+                "sub_subcategory_id", "sub_subcategory_name",
+            })
+            service_data["category_id"] = category_id
+            service_data["subcategory_id"] = subcategory_id
             service_data["salon_id"] = salon_id
 
             response = self.db.table("services").insert(service_data).execute()
@@ -741,6 +828,8 @@ class SalonService:
             logger.info(f"Admin created service for salon {salon_id}: {service.name}")
             return created
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to add service to salon {salon_id}: {e}")
             raise
@@ -753,7 +842,39 @@ class SalonService:
             # Ensure salon exists
             await self.get_salon(salon_id)
 
-            update_data = service.model_dump(exclude_none=True)
+            update_data = service.model_dump(exclude_none=True, exclude={
+                "category_name", "subcategory_name",
+                "sub_subcategory_id", "sub_subcategory_name",
+            })
+
+            taxonomy_touched = any([
+                service.category_id, service.subcategory_id, service.sub_subcategory_id,
+                service.category_name, service.subcategory_name, service.sub_subcategory_name,
+            ])
+            if taxonomy_touched:
+                resolver = ServiceTaxonomyResolver(self.db)
+                category_id, subcategory_id = await resolver.resolve_fields(
+                    category_id=service.category_id,
+                    subcategory_id=service.subcategory_id,
+                    sub_subcategory_id=service.sub_subcategory_id,
+                    category_name=service.category_name,
+                    subcategory_name=service.subcategory_name,
+                    sub_subcategory_name=service.sub_subcategory_name,
+                )
+                if service.category_id is not None or service.category_name is not None:
+                    update_data["category_id"] = category_id
+                # The deepest selected node becomes the stored leaf reference.
+                if (service.subcategory_id is not None or service.subcategory_name is not None
+                        or service.sub_subcategory_id is not None or service.sub_subcategory_name is not None):
+                    update_data["subcategory_id"] = subcategory_id
+
+                if update_data.get("category_id"):
+                    await resolver.validate_category(update_data["category_id"])
+                if update_data.get("subcategory_id"):
+                    await resolver.validate_subcategory(
+                        update_data["subcategory_id"], update_data.get("category_id")
+                    )
+
             if not update_data:
                 raise ValueError("No fields provided for update")
 
@@ -764,6 +885,8 @@ class SalonService:
             logger.info(f"Admin updated service {service_id} for salon {salon_id}")
             return response.data[0]
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to update service {service_id} for salon {salon_id}: {e}")
             raise

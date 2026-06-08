@@ -154,8 +154,10 @@ class ServiceCreate(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     subcategory_id: Optional[str] = None
+    sub_subcategory_id: Optional[str] = None
     category_name: Optional[str] = Field(None, min_length=1, max_length=255)
     subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    sub_subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     gender_category: Optional[str] = Field("both", pattern="^(male|female|both)$")
     image_url: Optional[str] = None
     is_active: Optional[bool] = True
@@ -168,8 +170,10 @@ class ServiceUpdate(BaseModel):
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
     category_id: Optional[str] = None
     subcategory_id: Optional[str] = None
+    sub_subcategory_id: Optional[str] = None
     category_name: Optional[str] = Field(None, min_length=1, max_length=255)
     subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    sub_subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     gender_category: Optional[str] = Field(None, pattern="^(male|female|both)$")
     image_url: Optional[str] = None
     is_active: Optional[bool] = None

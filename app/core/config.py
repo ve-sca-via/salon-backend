@@ -155,6 +155,11 @@ class Settings(BaseSettings):
     MESSAGECENTRAL_OTP_LENGTH: int
     MESSAGECENTRAL_OTP_EXPIRY_SECONDS: int
 
+    # When true (and not in production), OTPs are generated + verified locally
+    # and printed to the server log instead of being sent via MessageCentral.
+    # Lets you test phone login/signup without spending SMS credits.
+    OTP_DEV_MODE: bool = False
+
     # =====================================================
     # CLOUDINARY SETTINGS
     # =====================================================
@@ -265,6 +270,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENVIRONMENT.lower() == "production"
+
+    @property
+    def otp_dev_enabled(self) -> bool:
+        """Local OTP mode is only honored outside production, as a safety net."""
+        return self.OTP_DEV_MODE and not self.is_production
 
     @property
     def cloudinary_is_configured(self) -> bool:

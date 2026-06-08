@@ -23,6 +23,7 @@ from app.schemas import (
 from app.services.booking_service import BookingService
 from app.services.activity_log_service import ActivityLogService
 from app.services.config_service import ConfigService
+from app.services.service_taxonomy import ServiceTaxonomyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -236,19 +237,33 @@ class VendorService:
             category_id, subcategory_id = await self._resolve_service_category_fields(
                 category_id=service.category_id,
                 subcategory_id=service.subcategory_id,
+                sub_subcategory_id=service.sub_subcategory_id,
                 category_name=service.category_name,
                 subcategory_name=service.subcategory_name,
+                sub_subcategory_name=service.sub_subcategory_name,
             )
 
-            if category_id:
-                await self._validate_service_category(category_id)
+            # A service must belong to a category (services.category_id is NOT NULL).
+            # Fail with a clear 400 rather than letting the DB raise on insert.
+            if not category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A service category is required",
+                )
+
+            await self._validate_service_category(category_id)
 
             if subcategory_id:
                 await self._validate_service_subcategory(subcategory_id, category_id)
 
-            # Create service with auto-assigned salon_id
+            # Create service with auto-assigned salon_id.
+            # subcategory_id holds the DEEPEST taxonomy node; sub_subcategory_* are
+            # resolver inputs only and are not columns on the services table.
             service_data = service.model_dump(
-                exclude={'salon_id', 'category_name', 'subcategory_name'}
+                exclude={
+                    'salon_id', 'category_name', 'subcategory_name',
+                    'sub_subcategory_id', 'sub_subcategory_name',
+                }
             )
             service_data['category_id'] = category_id
             service_data['subcategory_id'] = subcategory_id
@@ -304,24 +319,38 @@ class VendorService:
             
             update_data = update.model_dump(
                 exclude_unset=True,
-                exclude={'category_name', 'subcategory_name'},
+                exclude={
+                    'category_name', 'subcategory_name',
+                    'sub_subcategory_id', 'sub_subcategory_name',
+                },
             )
 
-            if (
+            taxonomy_touched = (
                 update.category_id is not None
                 or update.subcategory_id is not None
+                or update.sub_subcategory_id is not None
                 or update.category_name is not None
                 or update.subcategory_name is not None
-            ):
+                or update.sub_subcategory_name is not None
+            )
+            if taxonomy_touched:
                 resolved_category_id, resolved_subcategory_id = await self._resolve_service_category_fields(
                     category_id=update.category_id,
                     subcategory_id=update.subcategory_id,
+                    sub_subcategory_id=update.sub_subcategory_id,
                     category_name=update.category_name,
                     subcategory_name=update.subcategory_name,
+                    sub_subcategory_name=update.sub_subcategory_name,
                 )
                 if update.category_id is not None or update.category_name is not None:
                     update_data['category_id'] = resolved_category_id
-                if update.subcategory_id is not None or update.subcategory_name is not None:
+                # The deepest selected node becomes the stored leaf reference.
+                if (
+                    update.subcategory_id is not None
+                    or update.subcategory_name is not None
+                    or update.sub_subcategory_id is not None
+                    or update.sub_subcategory_name is not None
+                ):
                     update_data['subcategory_id'] = resolved_subcategory_id
 
             if update_data.get('category_id'):
@@ -750,157 +779,33 @@ class VendorService:
     # HELPER METHODS
     # =====================================================
     
+    def _taxonomy(self) -> ServiceTaxonomyResolver:
+        """Shared category/subcategory/sub-subcategory resolver."""
+        return ServiceTaxonomyResolver(self.db)
+
     async def _resolve_service_category_fields(
         self,
         category_id: Optional[str] = None,
         subcategory_id: Optional[str] = None,
+        sub_subcategory_id: Optional[str] = None,
         category_name: Optional[str] = None,
         subcategory_name: Optional[str] = None,
+        sub_subcategory_name: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str]]:
-        """
-        Resolve category/subcategory IDs from explicit IDs or typed names.
-        Typed names match existing catalog entries case-insensitively, or create new ones.
-        """
-        cat_name = (category_name or "").strip()
-        sub_name = (subcategory_name or "").strip()
-
-        if cat_name or sub_name:
-            if not cat_name:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="category_name is required when subcategory_name is provided",
-                )
-            resolved_category_id = await self._get_or_create_category_by_name(cat_name)
-            resolved_subcategory_id = None
-            if sub_name:
-                resolved_subcategory_id = await self._get_or_create_subcategory_by_name(
-                    resolved_category_id, sub_name
-                )
-            return resolved_category_id, resolved_subcategory_id
-
-        return category_id, subcategory_id
-
-    async def _get_or_create_category_by_name(self, name: str) -> str:
-        normalized = name.strip()
-        existing = self.db.table("service_categories").select("id, name").eq(
-            "is_active", True
-        ).execute()
-
-        for row in existing.data or []:
-            if (row.get("name") or "").strip().lower() == normalized.lower():
-                return row["id"]
-
-        max_order = self.db.table("service_categories").select("display_order").order(
-            "display_order", desc=True
-        ).limit(1).execute()
-        next_order = (
-            (max_order.data[0]["display_order"] + 1) if max_order.data else 1
+        return await self._taxonomy().resolve_fields(
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            sub_subcategory_id=sub_subcategory_id,
+            category_name=category_name,
+            subcategory_name=subcategory_name,
+            sub_subcategory_name=sub_subcategory_name,
         )
-
-        inserted = self.db.table("service_categories").insert({
-            "name": normalized,
-            "description": None,
-            "display_order": next_order,
-            "is_active": True,
-        }).execute()
-
-        if not inserted.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create service category",
-            )
-
-        logger.info(f"Created service category from vendor input: {normalized}")
-        return inserted.data[0]["id"]
-
-    async def _get_or_create_subcategory_by_name(
-        self, parent_category_id: str, name: str
-    ) -> str:
-        normalized = name.strip()
-        existing = self.db.table("service_subcategories").select(
-            "id, name"
-        ).eq("parent_category_id", parent_category_id).eq("is_active", True).execute()
-
-        for row in existing.data or []:
-            if (row.get("name") or "").strip().lower() == normalized.lower():
-                return row["id"]
-
-        max_order = self.db.table("service_subcategories").select("display_order").eq(
-            "parent_category_id", parent_category_id
-        ).order("display_order", desc=True).limit(1).execute()
-        next_order = (
-            (max_order.data[0]["display_order"] + 1) if max_order.data else 1
-        )
-
-        inserted = self.db.table("service_subcategories").insert({
-            "parent_category_id": parent_category_id,
-            "name": normalized,
-            "description": None,
-            "display_order": next_order,
-            "is_active": True,
-        }).execute()
-
-        if not inserted.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create service subcategory",
-            )
-
-        logger.info(
-            f"Created service subcategory from vendor input: {normalized} "
-            f"(category {parent_category_id})"
-        )
-        return inserted.data[0]["id"]
 
     async def _validate_service_category(self, category_id: str) -> None:
-        """
-        Validate that category_id exists.
-        
-        Args:
-            category_id: Category UUID to validate
-            
-        Raises:
-            HTTPException: If category not found
-        """
-        category_check = self.db.table("service_categories").select("id").eq(
-            "id", category_id
-        ).execute()
-        
-        if not category_check.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid category_id: {category_id}"
-            )
-    
+        await self._taxonomy().validate_category(category_id)
+
     async def _validate_service_subcategory(self, subcategory_id: str, category_id: str = None) -> None:
-        """
-        Validate that subcategory_id exists and optionally belongs to the given category.
-        
-        Args:
-            subcategory_id: Subcategory UUID to validate
-            category_id: Optional parent category UUID for consistency check
-            
-        Raises:
-            HTTPException: If subcategory not found or parent mismatch
-        """
-        subcategory_check = self.db.table("service_subcategories").select(
-            "id, parent_category_id"
-        ).eq("id", subcategory_id).execute()
-        
-        if not subcategory_check.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid subcategory_id: {subcategory_id}"
-            )
-        
-        # If category_id is also provided, verify parent-child relationship
-        if category_id:
-            actual_parent = subcategory_check.data[0].get("parent_category_id")
-            if actual_parent != category_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Subcategory {subcategory_id} does not belong to category {category_id}"
-                )
+        await self._taxonomy().validate_subcategory(subcategory_id, category_id)
     
     async def _verify_service_ownership(self, service_id: str, salon_id: str) -> None:
         """
@@ -1286,44 +1191,62 @@ class VendorService:
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
-        Get all active service categories with their active subcategories.
-        
+        Get all active service categories with their subcategories nested as a
+        3-level taxonomy tree:
+
+            category
+              subcategories[]        (level-2 nodes; parent_subcategory_id IS NULL)
+                subcategories[]      (level-3 sub-subcategory children)
+
         Returns:
-            List of service categories ordered by display_order,
-            each with a 'subcategories' list nested inside.
+            List of categories ordered by display_order, each level ordered by
+            display_order. Level-2 nodes always carry a 'subcategories' list
+            (possibly empty) so clients can render the picker uniformly.
         """
         # Fetch parent categories
         response = self.db.table("service_categories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
-        
+
         categories = response.data or []
-        
+
         if not categories:
             logger.info(" Retrieved 0 service categories")
             return categories
-        
-        # Fetch all active subcategories in a single query
+
+        # Fetch all active subcategories (both levels) in a single query
         subcategories_response = self.db.table("service_subcategories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
-        
+
         subcategories = subcategories_response.data or []
-        
-        # Group subcategories by parent_category_id
-        subcats_by_parent = {}
+
+        # First pass: bucket level-3 children by their parent subcategory id.
+        children_by_parent = {}
         for sub in subcategories:
-            parent_id = sub.get("parent_category_id")
-            if parent_id not in subcats_by_parent:
-                subcats_by_parent[parent_id] = []
-            subcats_by_parent[parent_id].append(sub)
-        
-        # Attach subcategories to their parent categories
+            parent_sub_id = sub.get("parent_subcategory_id")
+            if parent_sub_id:
+                children_by_parent.setdefault(parent_sub_id, []).append(sub)
+
+        # Second pass: collect level-2 nodes by category and attach their children.
+        top_subcats_by_category = {}
+        for sub in subcategories:
+            if sub.get("parent_subcategory_id"):
+                continue  # level-3 node, attached below
+            sub["subcategories"] = children_by_parent.get(sub["id"], [])
+            top_subcats_by_category.setdefault(
+                sub.get("parent_category_id"), []
+            ).append(sub)
+
+        # Attach level-2 subcategories to their parent categories
         for cat in categories:
-            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
-        
-        logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
-        
+            cat["subcategories"] = top_subcats_by_category.get(cat["id"], [])
+
+        logger.info(
+            f" Retrieved {len(categories)} service categories with "
+            f"{len(subcategories)} total subcategories (incl. sub-subcategories)"
+        )
+
         return categories
 
 
