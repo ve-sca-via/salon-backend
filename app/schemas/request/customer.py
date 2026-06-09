@@ -3,8 +3,7 @@ Request Pydantic schemas for API endpoints
 All request models should be defined here for consistency
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
-from datetime import datetime
+from typing import Optional, Dict
 
 
 # =====================================================

@@ -10,7 +10,6 @@ import logging
 import asyncio
 import httpx
 
-from app.core.database import get_auth_client, get_db
 from app.core.auth import create_access_token, create_refresh_token, revoke_token, verify_refresh_token
 from app.core.config import settings
 from app.services.activity_log_service import ActivityLogService
@@ -289,7 +288,7 @@ class AuthService:
             
             try:
                 # Try insert first
-                profile_response = self.db.table("profiles").insert(profile_data).execute()
+                self.db.table("profiles").insert(profile_data).execute()
             except Exception as insert_error:
                 error_str = str(insert_error)
                 
@@ -305,7 +304,7 @@ class AuthService:
                 
                 # Try update if insert fails (trigger might have created it)
                 try:
-                    profile_response = self.db.table("profiles").update(profile_data).eq("id", user.id).execute()
+                    self.db.table("profiles").update(profile_data).eq("id", user.id).execute()
                 except Exception as update_error:
                     logger.error(f"Profile update also failed: {update_error}")
                     raise HTTPException(
@@ -393,7 +392,7 @@ class AuthService:
             else:
                 clean_phone = normalized_digits
 
-            logger.info(f"Sending phone signup OTP to unauthenticated user")
+            logger.info("Sending phone signup OTP to unauthenticated user")
             otp_result = await OTPService.send_otp(
                 phone=clean_phone,
                 country_code=country_code_clean
@@ -431,14 +430,14 @@ class AuthService:
                     detail="Invalid OTP format. Please enter 6 digits."
                 )
 
-            logger.info(f"Verifying phone signup OTP for phone: {phone}")
+            logger.info(f"Verifying phone signup OTP for phone: ****{str(phone)[-4:]}")
             is_valid = await OTPService.verify_otp(
                 verification_id=verification_id,
                 otp_code=otp
             )
 
             if not is_valid:
-                logger.warning(f"Invalid signup OTP attempt")
+                logger.warning("Invalid signup OTP attempt")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or expired OTP. Please try again."
@@ -813,7 +812,7 @@ class AuthService:
             
             if not response.data:
                 # Don't reveal if email exists for security
-                logger.info(f"Password reset requested for non-existent email (redacted)")
+                logger.info("Password reset requested for non-existent email (redacted)")
                 return {
                     "success": True,
                     "message": "If an account with this email exists, a password reset link has been sent."

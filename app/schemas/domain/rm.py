@@ -2,7 +2,7 @@
 Domain models for Relationship Manager entities
 Core business entities for RM management
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from .user import TimestampMixin, ProfileResponse

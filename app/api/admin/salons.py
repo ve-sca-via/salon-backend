@@ -2,7 +2,7 @@
 Admin Salon Management API Endpoints
 Handles salon CRUD operations and status management for admins
 """
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService, SalonSearchParams

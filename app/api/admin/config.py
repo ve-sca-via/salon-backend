@@ -5,7 +5,7 @@ Handles system-wide configuration management
 from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List
 from app.core.auth import require_admin, TokenData, cleanup_expired_tokens
-from app.core.database import get_db, get_db_client
+from app.core.database import get_db_client
 from app.schemas import (
     SystemConfigResponse,
     SystemConfigUpdate

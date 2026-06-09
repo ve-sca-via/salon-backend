@@ -1,4 +1,4 @@
-name: CI - Smoke Build Check
+name: CI
 
 # Only run on pull requests to main (not on pushes)
 on:
@@ -7,6 +7,10 @@ on:
       - main
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Fast gate: app boots with a full (dummy) config; DB-free endpoints respond.
+  # No Docker / Supabase needed, runs in seconds.
+  # ---------------------------------------------------------------------------
   smoke-build:
     runs-on: ubuntu-latest
     
@@ -39,17 +43,59 @@ jobs:
             exit 1
           fi
 
-      # 5. Smoke test: Try importing the main application module
-      #    This validates all dependencies install correctly and are compatible
-      - name: Smoke build check
+      # 5. Smoke tests: boot the app with a full (dummy) config and hit
+      #    DB-free endpoints. tests/conftest.py loads tests/test.env, so all
+      #    ~50 required settings are present — no per-step env vars needed and
+      #    no more force-merging past a check that could never pass.
+      - name: Run smoke tests
         run: |
-          python -c "import main; print(' Application imports successfully')"
-        env:
-          # Required env vars (no defaults in config)
-          DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
-          JWT_SECRET_KEY: "dummy-jwt-secret-key-for-ci-testing-at-least-32-characters-long"
-          # Optional env vars with defaults (set to prevent any issues)
-          SUPABASE_URL: "https://dummy.supabase.co"
-          SUPABASE_ANON_KEY: "dummy-anon-key"
-          SUPABASE_SERVICE_ROLE_KEY: "dummy-service-key"
-          ENVIRONMENT: "ci"
+          python -m pytest tests/ -v -m "not integration"
+
+  # ---------------------------------------------------------------------------
+  # Thorough gate: spin up a real local Supabase stack, APPLY ALL MIGRATIONS,
+  # and run the integration suite against it. This is simultaneously:
+  #   * the regression net (real flows: signup/login/me/role), and
+  #   * the migration-safety gate — a broken or backward-incompatible migration
+  #     fails `supabase start`/`db reset` or the flows, turning the PR red.
+  # ---------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13.4
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.4'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmagic1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # `supabase start` applies every file in supabase/migrations to a fresh
+      # database. If a migration is broken or incompatible, this step fails and
+      # the integration job never runs the tests — the breakage is caught here.
+      - name: Start local Supabase (applies migrations)
+        run: supabase start
+
+      # conftest._read_supabase_env() runs `supabase status -o env` to pull the
+      # live keys and points the app at the local stack, so no env wiring needed.
+      - name: Run integration tests
+        run: python -m pytest tests/ -v -m integration
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop

@@ -4,7 +4,6 @@ Handles system configuration CRUD operations
 """
 from typing import List, Dict, Any, Optional
 from app.schemas.request.admin import SystemConfigUpdate
-from app.core.database import get_db
 from app.core.encryption import get_encryption_service
 from app.core.config import settings
 import logging
@@ -224,7 +223,7 @@ class ConfigService:
                     
                     # Verify encryption actually happened
                     if encrypted_value == original_value:
-                        logger.warning(f"Encryption service returned same value (NoopEncryptionService in use). Value will be stored unencrypted.")
+                        logger.warning("Encryption service returned same value (NoopEncryptionService in use). Value will be stored unencrypted.")
                     else:
                         logger.info(f"Encrypted sensitive config before saving: {config_key}")
                     

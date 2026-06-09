@@ -9,11 +9,7 @@ import logging
 from typing import Optional
 from fastapi import UploadFile, HTTPException, status
 import uuid
-import mimetypes
 
-from supabase import Client, create_client
-from app.core.database import get_db, get_storage_client
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 

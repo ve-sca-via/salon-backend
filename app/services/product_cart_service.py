@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
 from supabase import Client
 
@@ -83,10 +83,10 @@ class ProductCartService:
             if existing.data:
                 # Update quantity
                 new_qty = existing.data[0]["quantity"] + quantity
-                response = self.db.table("product_cart_items").update({"quantity": new_qty}).eq("id", existing.data[0]["id"]).execute()
+                self.db.table("product_cart_items").update({"quantity": new_qty}).eq("id", existing.data[0]["id"]).execute()
             else:
                 # Insert new
-                response = self.db.table("product_cart_items").insert({
+                self.db.table("product_cart_items").insert({
                     "user_id": user_id,
                     "product_id": product_id,
                     "quantity": quantity

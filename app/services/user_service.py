@@ -3,7 +3,6 @@ User Service - Business Logic Layer
 Handles all user-related operations (creation, updates, deletion)
 Separated from HTTP layer for better testability and reusability
 """
-import uuid
 import logging
 import requests
 from typing import Optional, Dict, Any
@@ -114,7 +113,7 @@ class UserService:
         # Step 5: Create RM profile if needed
         if request.user_role == "relationship_manager":
             try:
-                rm_profile_data = await self._create_rm_profile(auth_user_id, request)
+                await self._create_rm_profile(auth_user_id, request)
             except Exception as e:
                 logger.warning(f"Failed to create RM profile: {str(e)}")
                 # Don't rollback - user and profile are created

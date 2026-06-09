@@ -2,7 +2,7 @@
 Response Pydantic schemas for payment endpoints
 All payment response models should be defined here for consistency
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from ..domain.common import PaymentStatus

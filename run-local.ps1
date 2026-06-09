@@ -14,9 +14,10 @@ Write-Host ""
 Write-Host "  1) Backend            (FastAPI @ http://localhost:8000)" -ForegroundColor Cyan
 Write-Host "  2) Salon Admin Panel  (Vite dev server)"                 -ForegroundColor Cyan
 Write-Host "  3) Salon Management App (Vite dev server)"               -ForegroundColor Cyan
-Write-Host "  4) All of the above"                                     -ForegroundColor Cyan
+Write-Host "  4) All of the above (apps only)"                         -ForegroundColor Cyan
+Write-Host "  5) Backend Tests      (pytest: smoke + integration)"     -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Enter your choice(s), e.g. '1', '1,3', or 'all'." -ForegroundColor Gray
+Write-Host "Enter your choice(s), e.g. '1', '1,3', 'all', or '5' / 'test'." -ForegroundColor Gray
 
 $choice = Read-Host "Selection"
 $choice = $choice.ToLower().Trim()
@@ -26,6 +27,7 @@ $tokens = $choice -split '[,\s]+' | Where-Object { $_ -ne '' }
 $startBackend = $false
 $startAdmin   = $false
 $startApp     = $false
+$runTests     = $false
 
 foreach ($t in $tokens) {
     switch ($t) {
@@ -37,11 +39,14 @@ foreach ($t in $tokens) {
         'app'      { $startApp = $true }
         '4'        { $startBackend = $true; $startAdmin = $true; $startApp = $true }
         'all'      { $startBackend = $true; $startAdmin = $true; $startApp = $true }
+        '5'        { $runTests = $true }
+        'test'     { $runTests = $true }
+        'tests'    { $runTests = $true }
         default    { Write-Host "Ignoring unknown option: $t" -ForegroundColor Yellow }
     }
 }
 
-if (-not ($startBackend -or $startAdmin -or $startApp)) {
+if (-not ($startBackend -or $startAdmin -or $startApp -or $runTests)) {
     Write-Host ""
     Write-Host "Nothing selected. Exiting." -ForegroundColor Yellow
     return
@@ -95,6 +100,16 @@ if ($startApp) {
     Start-InWindow -Title 'Salon Management App' -WorkingDir $AppDir -Command $appCmd
 }
 
+if ($runTests) {
+    Write-Host "Preparing Backend Tests..." -ForegroundColor Cyan
+    Write-Host "  Uses tests/test.env (independent of .env)." -ForegroundColor Gray
+    Write-Host "  Integration tests need the local Supabase stack ('supabase start');" -ForegroundColor Gray
+    Write-Host "  if it's not running they auto-skip and only the smoke tests run." -ForegroundColor Gray
+    # -NoExit (in Start-InWindow) keeps the window open so results stay visible.
+    $testCmd = '& .\.venv\Scripts\Activate.ps1; python -m pytest -v'
+    Start-InWindow -Title 'Backend Tests (pytest)' -WorkingDir $BackendDir -Command $testCmd
+}
+
 Write-Host ""
-Write-Host "Done. Selected apps are starting in separate windows." -ForegroundColor Green
+Write-Host "Done. Selected items are starting in separate windows." -ForegroundColor Green
 Write-Host ""

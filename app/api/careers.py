@@ -4,8 +4,7 @@ Handles job application submissions for RM and other positions
 """
 from fastapi import APIRouter, UploadFile, File, Form, Depends
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime
+from pydantic import EmailStr
 import logging
 
 from app.core.database import get_db_client

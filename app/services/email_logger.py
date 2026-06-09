@@ -75,7 +75,7 @@ class EmailLogger:
                 logger.info(f"Email log created: {log_id} ({email_type} to {recipient_email}) - Status: {status}")
                 return log_id
             else:
-                logger.error(f"Failed to create email log: No data returned")
+                logger.error("Failed to create email log: No data returned")
                 return None
                 
         except Exception as e:

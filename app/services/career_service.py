@@ -3,7 +3,7 @@ Career Service - Business Logic for Job Applications
 Handles career application submissions, status updates, and queries
 """
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from datetime import datetime
 import uuid
 
@@ -48,7 +48,7 @@ class CareerService:
         self, 
         db_client, 
         cloudinary_service: Optional[CloudinaryService] = None,
-        email_service: Optional[EmailService] = None
+        email_service_override: Optional[EmailService] = None
     ):
         """
         Initialize career service with media and email services
@@ -56,11 +56,11 @@ class CareerService:
         Args:
             db_client: Database client (Supabase client)
             cloudinary_service: Optional CloudinaryService instance (creates new if None)
-            email_service: Optional EmailService instance (uses global singleton if None)
+            email_service_override: Optional EmailService instance (uses global singleton if None)
         """
         self.db = db_client
         self.cloudinary = cloudinary_service or CloudinaryService()
-        self.email = email_service or globals()['email_service']
+        self.email = email_service_override or email_service
     
     @staticmethod
     def _get_db_column_name(form_field_name: str) -> str:

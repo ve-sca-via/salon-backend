@@ -264,7 +264,8 @@ class AvailableSlotsResponse(BaseModel):
     """Response for available booking slots"""
     salon_id: str
     date: str
-    available_slots: List[Dict[str, Any]]
+    # The endpoint returns display-formatted time strings, e.g. "09:00 AM".
+    available_slots: List[str]
 
 class NearbySalonsResponse(BaseModel):
     """Response for nearby salons search"""

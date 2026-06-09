@@ -8,9 +8,8 @@ Handles all customer-facing operations:
 - Cart operations
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from supabase import Client
 from app.core.auth import get_current_user, TokenData
 from app.core.database import get_db_client
@@ -19,12 +18,10 @@ from app.services.booking_service import BookingService
 from app.services.product_cart_service import ProductCartService
 from app.schemas import (
     CartResponse, CartOperationResponse, SuccessResponse, CartClearResponse,
-    CustomerBookingsResponse, BookingCancelResponse, SalonsBrowseResponse,
-    SalonsSearchResponse, SalonDetailsResponse, BookingResponse,
+    CustomerBookingsResponse, BookingCancelResponse, BookingResponse,
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
-    BookingCreate, BookingCancellation,
-    CartCheckoutCreate, FavoriteCreate
+    BookingCreate, CartCheckoutCreate, FavoriteCreate
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -263,6 +260,24 @@ async def get_my_bookings(
     return await customer_service.get_customer_bookings(current_user.user_id)
 
 
+@router.post("/bookings", response_model=BookingResponse, operation_id="customer_create_booking")
+async def create_booking(
+    booking_data: BookingCreate,
+    current_user: TokenData = Depends(get_current_user),
+    booking_service: BookingService = Depends(get_booking_service)
+):
+    """
+    Create a new booking for the current customer.
+
+    Canonical booking-creation endpoint (replaces the removed generic
+    `POST /bookings/`). Delegates to BookingService.create_booking.
+    """
+    return await booking_service.create_booking(
+        booking=booking_data,
+        current_user_id=current_user.user_id
+    )
+
+
 @router.put("/bookings/{booking_id}/cancel", response_model=BookingCancelResponse, operation_id="customer_cancel_booking")
 async def cancel_booking(
     booking_id: str,
@@ -280,57 +295,6 @@ async def cancel_booking(
         current_user_id=current_user.user_id,
         current_user_role=current_user.user_role or "customer",
     )
-
-
-# =====================================================
-# SALON BROWSING & SEARCH
-# =====================================================
-
-@router.get("/salons", response_model=SalonsBrowseResponse)
-async def get_salons(
-    city: Optional[str] = Query(None, description="Filter by city"),
-    service_type: Optional[str] = Query(None, description="Filter by service type"),
-    min_rating: Optional[float] = Query(None, description="Minimum rating"),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Browse salons with optional filters
-    Public endpoint - no authentication required
-    """
-    return await customer_service.browse_salons(
-        city=city,
-        min_rating=min_rating
-    )
-
-
-@router.get("/salons/search", response_model=SalonsSearchResponse)
-async def search_salons(
-    query: Optional[str] = Query(None, description="Search query"),
-    location: Optional[str] = Query(None, description="Location filter"),
-    service_type: Optional[str] = Query(None, description="Service type filter"),
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Search salons by name, location, or services
-    Public endpoint - no authentication required
-    """
-    return await customer_service.search_salons(
-        query=query,
-        location=location
-    )
-
-
-@router.get("/salons/{salon_id}", response_model=SalonDetailsResponse)
-async def get_salon_details(
-    salon_id: str,
-    customer_service: CustomerService = Depends(get_customer_service)
-):
-    """
-    Get detailed information about a specific salon
-    Includes services
-    Public endpoint - no authentication required
-    """
-    return await customer_service.get_salon_details(salon_id)
 
 
 # =====================================================
@@ -410,26 +374,6 @@ async def update_review(
 ):
     """Update an existing review written by the current customer."""
     return await customer_service.update_review(review_id, current_user.user_id, review_data)
-
-
-# =====================================================
-# BOOKINGS
-# =====================================================
-
-@router.post("/bookings", response_model=BookingResponse, operation_id="customer_create_booking")
-async def create_booking(
-    booking_data: BookingCreate,
-    current_user: TokenData = Depends(get_current_user),
-    booking_service: BookingService = Depends(get_booking_service)
-):
-    """
-    Create a new booking
-    Requires authentication
-    """
-    return await booking_service.create_booking(
-        booking=booking_data,
-        current_user_id=current_user.user_id
-    )
 
 
 

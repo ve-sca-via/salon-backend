@@ -70,7 +70,7 @@ from .response.vendor import (
     ServiceCategoryResponse, ServiceResponse, SalonPromoResponse,
     CompleteRegistrationResponse, VendorDashboardResponse, VendorAnalyticsResponse,
     PublicSalonsResponse, SalonDetailResponse, AvailableSlotsResponse,
-    NearbySalonsResponse, SearchSalonsResponse, SalonServicesResponse,
+    SearchSalonsResponse, SalonServicesResponse,
     PublicConfigResponse, ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
 )
 from .response.booking import (
@@ -110,4 +110,58 @@ from .response.rm import (
     RMSalonsListResponse, RMProfileUpdateResponse, RMDashboardStatistics,
     RMDashboardResponse, RMLeaderboardResponse
 )
+
+# Public schema surface. This package is an intentional aggregator: every name
+# above is re-exported for `from app.schemas import X`. Declaring __all__ makes
+# that explicit (and silences "imported but unused" on the re-exports).
+__all__ = [
+    # --- Domain models ---
+    "UserRole", "RequestStatus", "BookingStatus", "PaymentStatus", "PaymentType", "BusinessType",
+    "TimestampMixin", "ProfileBase", "ProfileCreate", "ProfileUpdate", "ProfileResponse",
+    "RMProfileBase", "RMProfileCreate", "RMProfileResponse", "RMScoreHistoryResponse",
+    # --- Request schemas ---
+    "LoginRequest", "SignupRequest", "LogoutAllRequest", "RefreshTokenRequest",
+    "PasswordResetRequest", "PasswordResetConfirm", "UserProfileUpdate",
+    "PhoneLoginSendOTPRequest", "PhoneLoginVerifyOTPRequest",
+    "PhoneVerificationSendOTPRequest", "PhoneVerificationConfirmRequest",
+    "PhoneSignupSendOTPRequest", "PhoneSignupVerifyOTPRequest",
+    "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
+    "BookingCreate", "BookingUpdate", "BookingCancellation", "CartCheckoutCreate",
+    "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate", "VendorJoinRequestUpdate",
+    "VendorApprovalRequest", "VendorRejectionRequest", "SalonBase", "SalonCreate", "SalonUpdate",
+    "ServiceCreate", "ServiceUpdate", "SalonPromoApplyRequest",
+    "PaymentBase", "BookingOrderCreate", "RazorpayOrderCreate", "PaymentVerification",
+    "SystemConfigUpdate",
+    "GeocodeRequest",
+    "ApplicationStatusUpdate",
+    "ProductCreate", "ProductUpdate",
+    # --- Response schemas ---
+    "SuccessResponse", "ErrorResponse", "ValidationErrorResponse",
+    "LoginResponse", "SignupResponse", "PasswordResetResponse", "PasswordResetConfirmResponse",
+    "PhoneLoginSendOTPResponse", "PhoneLoginVerifyOTPResponse",
+    "PhoneVerificationSendOTPResponse", "PhoneVerificationConfirmResponse",
+    "VendorJoinRequestResponse", "SalonResponse", "SalonListResponse",
+    "ServiceCategoryResponse", "ServiceResponse", "SalonPromoResponse",
+    "CompleteRegistrationResponse", "VendorDashboardResponse", "VendorAnalyticsResponse",
+    "PublicSalonsResponse", "SalonDetailResponse", "AvailableSlotsResponse",
+    "NearbySalonsResponse", "SearchSalonsResponse", "SalonServicesResponse",
+    "PublicConfigResponse", "ImageUploadResponse", "MultipleImageUploadResponse", "ImageDeleteResponse",
+    "BookingResponse", "BookingListResponse",
+    "RazorpayOrderResponse", "VendorRegistrationPaymentResponse", "BookingPaymentResponse",
+    "PaymentVerificationResponse", "VendorRegistrationVerificationResponse",
+    "PaymentHistoryResponse", "VendorEarningsResponse",
+    "SystemConfigResponse", "SystemConfigListResponse",
+    "GeocodeResponse",
+    "PopularCityResponse", "PopularCitiesResponse",
+    "CareerApplicationResponse",
+    "ProductResponse", "ProductListResponse", "ProductOperationResponse", "ProductDeleteResponse",
+    "FavoriteResponse", "CartResponse", "CartOperationResponse", "CartClearResponse",
+    "CustomerBookingsResponse", "BookingCancelResponse", "SalonsBrowseResponse",
+    "SalonsSearchResponse", "SalonDetailsResponse", "FavoritesResponse",
+    "FavoriteOperationResponse", "CustomerReviewsResponse", "ReviewOperationResponse",
+    "ReviewFeedbackContextResponse", "PublicSalonReviewsResponse",
+    "VendorRequestOperationResponse", "VendorRequestsListResponse",
+    "RMSalonsListResponse", "RMProfileUpdateResponse", "RMDashboardStatistics",
+    "RMDashboardResponse", "RMLeaderboardResponse",
+]
 
