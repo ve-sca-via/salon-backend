@@ -10,12 +10,10 @@ from fastapi import HTTPException, status
 
 from app.core.auth import create_review_feedback_token
 from app.core.config import settings
-from app.core.database import get_db
-from app.schemas import BookingCreate, BookingUpdate, BookingResponse
-from app.schemas.request.booking import ServiceSummary, Totals, BookingForUpdate, BookingForCancellation
+from app.schemas import BookingCreate
+from app.schemas.request.booking import ServiceSummary, Totals, BookingForCancellation
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
-from app.utils.location_text import cities_match
 
 logger = logging.getLogger(__name__)
 
@@ -33,128 +31,6 @@ class BookingService:
     # =====================================================
     # BOOKING RETRIEVAL
     # =====================================================
-    
-    async def get_bookings(
-        self,
-        user_id: Optional[str] = None,
-        salon_id: Optional[str] = None,
-        current_user_id: str = None,
-        current_user_role: str = None
-    ) -> Dict[str, Any]:
-        """
-        Get bookings filtered by user or salon.
-        
-        Args:
-            user_id: Filter by customer user ID
-            salon_id: Filter by salon ID
-            current_user_id: Current authenticated user ID
-            current_user_role: Current user role (admin, vendor, customer)
-            
-        Returns:
-            Dict with bookings list and count
-            
-        Raises:
-            HTTPException: If authorization fails or invalid parameters
-        """
-        try:
-            if user_id:
-                # Verify user can access these bookings
-                if current_user_role not in ["admin"] and current_user_id != user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Cannot access other users' bookings"
-                    )
-                
-                response = self.db.table("bookings").select(
-                    "*, profiles!customer_id(full_name, email, phone)"
-                ).eq(
-                    "customer_id", user_id
-                ).order("booking_date", desc=True).execute()
-                
-            elif salon_id:
-                # Verify salon access
-                if current_user_role in ["vendor", "regular_buyer"]:
-                    await self._verify_salon_ownership(salon_id, current_user_id)
-                elif current_user_role not in ["admin"]:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Insufficient permissions to view salon bookings"
-                    )
-                
-                response = self.db.table("bookings").select(
-                    "*, profiles!customer_id(full_name, email, phone)"
-                ).eq(
-                    "salon_id", salon_id
-                ).order("booking_date", desc=True).execute()
-                
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Must provide user_id or salon_id"
-                )
-            
-            bookings = response.data or []
-            
-            return {
-                "bookings": bookings,
-                "count": len(bookings)
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch bookings: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch bookings"
-            )
-    
-    async def get_booking(
-        self,
-        booking_id: str,
-        current_user_id: str,
-        current_user_role: str
-    ) -> Dict[str, Any]:
-        """
-        Get single booking by ID.
-        
-        Args:
-            booking_id: Booking ID
-            current_user_id: Current authenticated user ID
-            current_user_role: Current user role
-            
-        Returns:
-            Booking data with related info
-            
-        Raises:
-            HTTPException: If not found or access denied
-        """
-        try:
-            response = self.db.table("bookings").select(
-                "*, services(*), profiles!customer_id(id, full_name, email, phone)"
-            ).eq("id", booking_id).single().execute()
-            
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            booking = response.data
-            
-            # Verify access
-            await self._verify_booking_access(booking, current_user_id, current_user_role)
-            
-            return booking
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch booking: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch booking"
-            )
     
     async def get_admin_bookings(
         self,
@@ -437,7 +313,7 @@ class BookingService:
                 original_service_price += original_line_total
                 total_duration += line_duration
 
-            # Get convenience fee percentage from system config
+            # Get convenience fee percentage from system config (admin-managed; required, no silent default)
             try:
                 fee_config_response = self.db.table("system_config")\
                     .select("config_value")\
@@ -445,10 +321,13 @@ class BookingService:
                     .eq("is_active", True)\
                     .single()\
                     .execute()
-                
-                convenience_fee_percentage = float(fee_config_response.data["config_value"]) if fee_config_response.data else 6.0
-            except Exception:
-                convenience_fee_percentage = 6.0  # Default fallback
+                convenience_fee_percentage = float(fee_config_response.data["config_value"])
+            except Exception as e:
+                logger.error(f"convenience_fee_percentage config missing or invalid: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payment configuration not available. Please contact support."
+                )
             
             # Calculate convenience fee and totals
             totals = self._calculate_booking_totals_multi_service(
@@ -564,19 +443,6 @@ class BookingService:
                 logger.error(f"Failed to create service_payment record: {service_payment_exc}")
                 # Don't fail booking creation
             
-            # Prepare typed service summaries and totals for notification
-            service_summaries = [
-                ServiceSummary(
-                    service_id=svc["service_id"],
-                    quantity=svc["quantity"],
-                    unit_price=svc["unit_price"],
-                    line_total=svc["line_total"],
-                    duration_minutes=svc.get("duration_minutes")
-                )
-                for svc in processed_services
-            ]
-            totals_obj = Totals.model_validate(totals)
-
             # Send confirmation emails to customer and vendor
             try:
                 # 1. Send confirmation to customer
@@ -633,74 +499,13 @@ class BookingService:
         except Exception as e:
             logger.error(f"Failed to create booking: {str(e)}")
             from app.core.exceptions import ValidationError, DatabaseError
-            if isinstance(e, (ValidationError, DatabaseError)):
+            if isinstance(e, (HTTPException, ValidationError, DatabaseError)):
                 raise
             raise DatabaseError("create", f"Failed to create booking: {str(e)}")
     
     # =====================================================
     # BOOKING UPDATES
     # =====================================================
-    
-    async def update_booking(
-        self,
-        booking_id: str,
-        updates: BookingUpdate,
-        current_user_id: str,
-        current_user_role: str
-    ) -> Dict[str, Any]:
-        """
-        Update booking details.
-        
-        Args:
-            booking_id: Booking ID to update
-            updates: Update data
-            current_user_id: Current user ID
-            current_user_role: Current user role
-            
-        Returns:
-            Updated booking data
-            
-        Raises:
-            HTTPException: If not found or access denied
-        """
-        try:
-            # Get booking and verify access
-            booking = await self._get_booking_for_update(booking_id)
-            await self._verify_booking_access(booking, current_user_id, current_user_role)
-            
-            # Prepare update data
-            update_data = {}
-            if updates.status:
-                update_data["status"] = updates.status
-            if updates.notes is not None:
-                update_data["customer_notes"] = updates.notes
-            if updates.cancellation_reason:
-                update_data["cancellation_reason"] = updates.cancellation_reason
-                update_data["cancelled_at"] = datetime.utcnow().isoformat()
-                update_data["updated_by"] = current_user_id
-            update_data["updated_by"] = current_user_id
-            
-            # Update booking
-            response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
-            
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            logger.info(f"Booking {booking_id} updated by user {current_user_id}")
-            
-            return response.data[0]
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to update booking: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update booking"
-            )
     
     async def cancel_booking(
         self,
@@ -841,80 +646,6 @@ class BookingService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to cancel booking"
-            )
-    
-    async def complete_booking(
-        self,
-        booking_id: str,
-        current_user_id: str,
-        current_user_role: str
-    ) -> Dict[str, Any]:
-        """
-        Mark booking as completed (vendor only).
-        
-        Args:
-            booking_id: Booking ID to complete
-            current_user_id: Current user ID
-            current_user_role: Current user role
-            
-        Returns:
-            Success response
-            
-        Raises:
-            HTTPException: If not vendor's booking or not found
-        """
-        try:
-            # Get booking salon
-            booking_check = self.db.table("bookings").select("salon_id, convenience_fee_paid, service_paid").eq("id", booking_id).single().execute()
-            
-            if not booking_check.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            salon_id = str(booking_check.data["salon_id"])
-            
-            # Verify vendor owns the salon
-            if current_user_role in ["vendor", "regular_buyer"]:
-                await self._verify_salon_ownership(salon_id, current_user_id)
-            elif current_user_role not in ["admin"]:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only salon vendors and admins can complete bookings"
-                )
-            
-            # Complete booking and mark offline payment as collected
-            update_data = {
-                "status": "completed",
-                "service_paid": True,
-                "updated_by": current_user_id
-            }
-            if booking_check.data.get("convenience_fee_paid"):
-                update_data["payment_completed_at"] = datetime.utcnow().isoformat()
-            response = self.db.table("bookings").update(update_data).eq("id", booking_id).execute()
-            
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to complete booking"
-                )
-
-            logger.info(f"Booking {booking_id} completed by user {current_user_id}")
-            try:
-                await self._send_review_request_email(booking_id)
-            except Exception as email_error:
-                logger.error(f"Failed to send review request email for booking {booking_id}: {email_error}")
-            
-            return {"success": True, "message": "Booking completed"}
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to complete booking: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to complete booking"
             )
     
     # =====================================================
@@ -1308,178 +1039,3 @@ class BookingService:
                 logger.warning(f"Failed to send cancellation email to {customer_email}")
         except Exception as e:
             logger.warning(f"Error sending cancellation email: {str(e)}")
-    
-    async def _get_booking_for_update(self, booking_id: str) -> BookingForUpdate:
-        """Get booking for update operations.
-
-        Returns a lightweight `BookingForUpdate` model used for authorization
-        checks and update operations.
-        """
-        response = self.db.table("bookings").select("id, customer_id, salon_id").eq(
-            "id", booking_id
-        ).single().execute()
-
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Booking not found"
-            )
-
-        return BookingForUpdate.model_validate(response.data)
-    
-    async def _verify_salon_ownership(self, salon_id: str, vendor_id: str) -> None:
-        """Verify vendor owns the salon."""
-        salon_check = self.db.table("salons").select("vendor_id").eq("id", salon_id).single().execute()
-        
-        if not salon_check.data or str(salon_check.data["vendor_id"]) != vendor_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot access other salons' bookings"
-            )
-
-    # =====================================================
-    # AUTHORIZATION VERIFICATION METHODS
-    # =====================================================
-    
-    async def _verify_booking_access(
-        self,
-        booking: Dict[str, Any],
-        current_user_id: str,
-        current_user_role: str
-    ) -> None:
-        """
-        Verify that current user has access to the booking.
-        
-        Args:
-            booking: Booking data dictionary
-            current_user_id: Current user ID
-            current_user_role: Current user role
-            
-        Raises:
-            HTTPException: If access is denied
-        """
-        # Admins can access all bookings
-        if current_user_role == "admin":
-            return
-        
-        # Customers can only access their own bookings
-        if current_user_role == "customer":
-            if booking.get("customer_id") != current_user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Cannot access other customers' bookings"
-                )
-            return
-        
-        # Vendors can access bookings for salons they own
-        if current_user_role in ["vendor", "regular_buyer"]:
-            await self._verify_salon_ownership(booking.get("salon_id"), current_user_id)
-            return
-        
-        # Relationship managers can access bookings for salons in their region
-        if current_user_role == "relationship_manager":
-            await self._verify_rm_salon_access(booking.get("salon_id"), current_user_id)
-            return
-        
-        # Deny access for unknown roles
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions to access booking"
-        )
-    
-    async def _verify_salon_ownership(
-        self,
-        salon_id: int,
-        current_user_id: str
-    ) -> None:
-        """
-        Verify that current user owns the salon.
-        
-        Args:
-            salon_id: Salon ID to check
-            current_user_id: Current user ID
-            
-        Raises:
-            HTTPException: If user doesn't own the salon
-        """
-        try:
-            response = self.db.table("salons").select("owner_id").eq("id", salon_id).single().execute()
-            
-            if not response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Salon not found"
-                )
-            
-            if response.data["owner_id"] != current_user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You don't have permission to access this salon"
-                )
-                
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to verify salon ownership: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to verify salon access"
-            )
-    
-    async def _verify_rm_salon_access(
-        self,
-        salon_id: int,
-        current_user_id: str
-    ) -> None:
-        """
-        Verify that RM has access to the salon (same city/region).
-        
-        Args:
-            salon_id: Salon ID to check
-            current_user_id: Current RM user ID
-            
-        Raises:
-            HTTPException: If RM doesn't have access to the salon
-        """
-        try:
-            # Get RM's assigned city/region
-            rm_response = self.db.table("profiles").select("city, state").eq("id", current_user_id).single().execute()
-            
-            if not rm_response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="RM profile not found"
-                )
-            
-            rm_city = rm_response.data.get("city")
-            rm_state = rm_response.data.get("state")
-            
-            # Get salon's city/region
-            salon_response = self.db.table("salons").select("city, state").eq("id", salon_id).single().execute()
-            
-            if not salon_response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Salon not found"
-                )
-            
-            salon_city = salon_response.data.get("city")
-            salon_state = salon_response.data.get("state")
-            
-            # Allow access if RM is assigned to same city/state
-            if cities_match(rm_city, salon_city) and rm_state == salon_state:
-                return
-            
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to access salons in this region"
-            )
-                
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to verify RM salon access: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to verify regional access"
-            )

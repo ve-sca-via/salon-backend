@@ -4,8 +4,7 @@ All booking response models should be defined here for consistency
 """
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from datetime import datetime, date, time
-from ..domain.common import BookingStatus
+from datetime import datetime, date
 
 
 # =====================================================

@@ -6,7 +6,7 @@ Thread-safe implementation with automatic expiration.
 """
 
 import time
-from typing import Any, Optional, Callable, Tuple
+from typing import Any, Optional, Callable
 from threading import Lock
 import logging
 

@@ -80,7 +80,6 @@ class PaymentService:
 
         self._razorpay_key_id = razorpay_key_id
         self._razorpay_initialized = True
-        print("FINAL KEY USED:", razorpay_key_id)
         logger.info("Razorpay initialized with credentials from database")
     
     # =====================================================
@@ -485,13 +484,18 @@ class PaymentService:
                 )
             
             booking_fee = round(original_service_total * (convenience_fee_percentage / 100), 2)
-            total_payment = booking_fee
-            
-            if total_payment <= 0:
+
+            if booking_fee <= 0:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid payment amount"
                 )
+
+            # Razorpay rejects orders below ₹1 (100 paise). Floor the payable
+            # convenience fee to the gateway minimum so low-value bookings can
+            # still be paid online.
+            RAZORPAY_MIN_AMOUNT = 1.0
+            total_payment = max(booking_fee, RAZORPAY_MIN_AMOUNT)
             
             # Create Razorpay order with cart snapshot for validation
             import json

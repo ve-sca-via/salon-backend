@@ -4,7 +4,6 @@ All career response models should be defined here for consistency
 """
 from pydantic import BaseModel
 from typing import Optional, Any, Dict
-from datetime import datetime
 
 
 # =====================================================

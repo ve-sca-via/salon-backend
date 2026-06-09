@@ -2,7 +2,7 @@
 Response Pydantic schemas for customer endpoints
 All customer response models should be defined here for consistency
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 

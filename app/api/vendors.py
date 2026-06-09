@@ -2,15 +2,13 @@
 Vendor API Endpoints
 Handles vendor registration completion, salon management, services, and bookings
 """
-from fastapi import APIRouter, HTTPException, Depends, status, Body
+from fastapi import APIRouter, Depends, Body
 from typing import List, Optional
 from supabase import Client
 
-from app.core.config import settings
 from app.core.auth import (
     require_vendor,
-    TokenData,
-    get_current_user_id
+    TokenData
 )
 
 from app.schemas import (
@@ -25,7 +23,6 @@ from app.schemas import (
     CompleteRegistrationRequest,
     CompleteRegistrationResponse,
     SalonResponse,
-    VendorDashboardResponse,
     VendorAnalyticsResponse
 )
 from app.core.database import get_db_client
@@ -318,19 +315,6 @@ async def update_booking_status(
 # =====================================================
 # DASHBOARD
 # =====================================================
-
-@router.get("/dashboard", response_model=VendorDashboardResponse)
-async def get_vendor_dashboard(
-    current_user: TokenData = Depends(require_vendor),
-    vendor_service: VendorService = Depends(get_vendor_service)
-):
-    """
-    Get vendor dashboard statistics.
-    
-    Returns salon info, service counts, booking stats, and ratings.
-    """
-    return await vendor_service.get_dashboard_stats(vendor_id=current_user.user_id)
-
 
 @router.get("/analytics", response_model=VendorAnalyticsResponse)
 async def get_vendor_analytics(

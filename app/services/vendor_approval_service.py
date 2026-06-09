@@ -2,17 +2,15 @@
 Vendor Approval Service - Business Logic Layer
 Handles vendor join request approval workflow
 """
-import uuid
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from app.core.database import get_db
 from app.services.geocoding import geocoding_service
 from app.services.email import email_service
 from app.core.auth import create_registration_token
 from app.schemas.response.vendor import VendorJoinRequestResponse
-from app.schemas.request.vendor import Coordinates, ApprovalConfig
+from app.schemas.request.vendor import ApprovalConfig
 from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
@@ -250,7 +248,7 @@ class VendorApprovalService:
                 return {"latitude": latitude, "longitude": longitude}
             
             # Fallback to city-level geocoding
-            logger.warning(f"Full address geocoding failed, trying city...")
+            logger.warning("Full address geocoding failed, trying city...")
             city_coords = await geocoding_service.geocode_address(
                 f"{request_data.city}, {request_data.state}"
             )
@@ -262,7 +260,7 @@ class VendorApprovalService:
                 return {"latitude": latitude, "longitude": longitude}
             
             # Final fallback
-            logger.error(f"All geocoding failed")
+            logger.error("All geocoding failed")
             return {"latitude": 0.0, "longitude": 0.0}
             
         except Exception as e:

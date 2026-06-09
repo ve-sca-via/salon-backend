@@ -58,6 +58,10 @@ def setup_logging():
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
     logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
+    # Quiet noisy third-party loggers (one line per Supabase REST call otherwise).
+    for noisy in ("httpx", "httpcore", "hpack", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     return logging.getLogger(__name__)
 
 

@@ -2,7 +2,7 @@
 Admin Dashboard API Endpoints
 Handles admin dashboard statistics and analytics
 """
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, Depends
 from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client
 from app.services.admin_service import AdminService

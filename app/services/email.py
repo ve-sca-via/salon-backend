@@ -11,10 +11,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.services.email_logger import EmailLogger
 from app.services.activity_log_service import ActivityLogService
-from app.core.database import get_db
 import logging
 import asyncio
-import time
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -286,11 +284,11 @@ class EmailService:
             
             # Log registration URL for easy access (in all environments)
             logger.info("=" * 100)
-            logger.info(f"VENDOR APPROVAL EMAIL")
+            logger.info("VENDOR APPROVAL EMAIL")
             logger.info(f"To: {to_email}")
             logger.info(f"Subject: Congratulations! {salon_name} has been approved")
             logger.info("-" * 100)
-            logger.info(f"REGISTRATION URL:")
+            logger.info("REGISTRATION URL:")
             logger.info(f"   {registration_url}")
             logger.info("=" * 100)
             
@@ -817,7 +815,7 @@ class EmailService:
             
             # Log reminder
             logger.info("=" * 100)
-            logger.info(f"PAYMENT REMINDER EMAIL")
+            logger.info("PAYMENT REMINDER EMAIL")
             logger.info(f"To: {to_email}")
             logger.info(f"Salon: {salon_name}")
             logger.info(f"Amount: Rs. {registration_fee}")
