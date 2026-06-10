@@ -10,7 +10,6 @@ from datetime import datetime
 from fastapi import HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
-from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -406,7 +405,7 @@ class CustomerService:
                 .execute()
 
             # Delete all cart items for user
-            delete_response = self.db.table("cart_items")\
+            self.db.table("cart_items")\
                 .delete()\
                 .eq("user_id", customer_id)\
                 .execute()
@@ -522,9 +521,6 @@ class CustomerService:
                 for item in cart_items
             ]
             
-            # Calculate totals
-            total_amount = cart_response["total_amount"]
-            
             # Get system config for convenience fee percentage (dynamically set by admin)
             # Use actual column names `config_key` / `config_value` (not `key`/`value`)
             config_response = self.db.table("system_config")\
@@ -548,9 +544,7 @@ class CustomerService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Payment configuration not available. Please contact support."
                 )
-            
-            booking_fee = total_amount * (convenience_fee_percentage / 100)
-            
+
             # IDEMPOTENCY CHECK: Check if payment already used for a booking
             if checkout_data.get("razorpay_payment_id"):
                 existing_booking = self.db.table("bookings").select(
@@ -599,13 +593,13 @@ class CustomerService:
                         stored_cart_dict = {item["service_id"]: item["quantity"] for item in stored_cart}
                         
                         if current_cart != stored_cart_dict:
-                            logger.warning(f"Cart contents changed since payment order creation")
+                            logger.warning("Cart contents changed since payment order creation")
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="Your cart contents have changed since payment. Please try checkout again."
                             )
                         
-                        logger.info(f"Cart validation passed: snapshot matches current cart")
+                        logger.info("Cart validation passed: snapshot matches current cart")
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -626,7 +620,7 @@ class CustomerService:
                         razorpay_signature=checkout_data["razorpay_signature"]
                     )
                     logger.info(f"Payment verified for customer {customer_id}")
-                except HTTPException as e:
+                except HTTPException:
                     # Re-raise HTTPException as-is
                     raise
                 except Exception as e:
@@ -706,7 +700,7 @@ class CustomerService:
             response = self.db.table("bookings")\
                 .select(
                     "*, "
-                    "salons(business_name, city, address, phone), "
+                    "salons(business_name, city, address, phone, logo_url), "
                     "profiles(full_name, phone)"
                 )\
                 .eq("customer_id", customer_id)\
@@ -808,164 +802,6 @@ class CustomerService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to cancel booking: {str(e)}"
-            )
-    
-    # =====================================================
-    # SALON BROWSING
-    # =====================================================
-    
-    async def browse_salons(
-        self,
-        city: Optional[str] = None,
-        min_rating: Optional[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Get all active salons with optional filters.
-        
-        Args:
-            city: Filter by city
-            min_rating: Minimum rating filter
-            
-        Returns:
-            Dict with salons list and count
-            
-        Raises:
-            HTTPException: If query fails
-        """
-        try:
-            query = self.db.table("salons").select("*")
-            
-            # Apply filters
-            if city:
-                normalized_city = normalize_city_name(city)
-                if normalized_city:
-                    query = query.ilike("city", normalized_city)
-            
-            if min_rating:
-                query = query.gte("rating", min_rating)
-            
-            # Only show publicly visible salons
-            query = query.eq("is_active", True).eq("is_verified", True).eq("registration_fee_paid", True)
-            
-            # Order by rating
-            query = query.order("average_rating", desc=True)
-            
-            response = query.execute()
-            
-            salons = response.data or []
-            
-            logger.info(f"Browsed salons: {len(salons)} results (city={city}, min_rating={min_rating})")
-            
-            return {
-                "success": True,
-                "salons": salons,
-                "count": len(salons)
-            }
-        
-        except Exception as e:
-            logger.error(f"Failed to browse salons: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve salons: {str(e)}"
-            )
-    
-    async def search_salons(
-        self,
-        query: Optional[str] = None,
-        location: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Search salons by name, description, or location.
-        
-        Args:
-            query: Search term for name/description
-            location: Location search term
-            
-        Returns:
-            Dict with search results and count
-            
-        Raises:
-            HTTPException: If query fails
-        """
-        try:
-            salon_query = self.db.table("salons").select("*")
-            
-            # Text search
-            if query:
-                salon_query = salon_query.or_(
-                    f"name.ilike.%{query}%,description.ilike.%{query}%"
-                )
-            
-            # Location filter
-            if location:
-                salon_query = salon_query.or_(
-                    f"city.ilike.%{location}%,state.ilike.%{location}%,address.ilike.%{location}%"
-                )
-            
-            # Only show publicly visible salons
-            salon_query = salon_query.eq("is_active", True).eq("is_verified", True).eq("registration_fee_paid", True)
-            
-            # Order by rating
-            salon_query = salon_query.order("average_rating", desc=True)
-            
-            response = salon_query.execute()
-            
-            results = response.data or []
-            
-            logger.info(f"Searched salons: {len(results)} results (query={query}, location={location})")
-            
-            return {
-                "success": True,
-                "results": results,
-                "count": len(results)
-            }
-        
-        except Exception as e:
-            logger.error(f"Failed to search salons: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to search salons: {str(e)}"
-            )
-    
-    async def get_salon_details(self, salon_id: str) -> Dict[str, Any]:
-        """
-        Get detailed information about a specific salon.
-        
-        Args:
-            salon_id: Salon ID
-            
-        Returns:
-            Dict with salon details
-            
-        Raises:
-            HTTPException: If salon not found
-        """
-        try:
-            response = self.db.table("salons")\
-                .select("*")\
-                .eq("id", salon_id)\
-                .execute()
-            
-            if not response.data or len(response.data) == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Salon not found"
-                )
-            
-            logger.info(f"Retrieved salon details: {salon_id}")
-            
-            return {
-                "success": True,
-                "salon": response.data[0]
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get salon {salon_id}: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve salon: {str(e)}"
             )
     
     # =====================================================
@@ -1108,7 +944,7 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            response = self.db.table("favorites")\
+            self.db.table("favorites")\
                 .delete()\
                 .eq("user_id", customer_id)\
                 .eq("salon_id", salon_id)\
@@ -1511,6 +1347,7 @@ class CustomerService:
             'salon_city': salon_info.get('city'),
             'salon_address': salon_info.get('address'),
             'salon_phone': salon_info.get('phone'),
+            'salon_logo_url': salon_info.get('logo_url'),
             'customer_name': profile_info.get('full_name'),
             'customer_phone': profile_info.get('phone'),
             'all_booking_times': booking.get('booking_time')

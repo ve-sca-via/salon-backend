@@ -87,7 +87,6 @@ class ProductOrderService:
         order_number = f"ORD-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
 
         try:
-            from app.core.config import settings
             from app.services.payment import RazorpayService
 
             key_id, key_secret, is_dev_mode = await self._get_razorpay_creds()

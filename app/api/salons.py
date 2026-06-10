@@ -8,28 +8,19 @@ These endpoints leverage:
 - Clean Architecture principles
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Form
-from typing import Optional, List
-from decimal import Decimal
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 from supabase import Client
 import logging
 
-logger = logging.getLogger(__name__)
-
-from app.core.config import settings
 from app.core.database import get_db_client
-from app.core.auth import require_admin, TokenData
 from app.services.salon_service import SalonService
-from app.utils.location_text import normalize_city_name
 from app.schemas import (
     PublicSalonsResponse,
     SalonDetailResponse,
     SalonServicesResponse,
     AvailableSlotsResponse,
-    NearbySalonsResponse,
     SearchSalonsResponse,
-    SalonResponse,
-    SuccessResponse,
     PublicConfigResponse,
     PopularCitiesResponse,
     FeedbackReviewCreate,
@@ -38,6 +29,8 @@ from app.schemas import (
     ReviewOperationResponse
 )
 from app.services.customer_service import CustomerService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/salons", tags=["salons"])
 
@@ -345,17 +338,19 @@ async def get_available_slots(
         raise HTTPException(status_code=404, detail="Salon not available")
     
     # Parse service IDs if provided
-    service_id_list = service_ids.split(',') if service_ids else []
-    
-    # Calculate total duration if services provided
+    service_id_list = [s.strip() for s in service_ids.split(',') if s.strip()] if service_ids else []
+
+    # Calculate total duration if services provided (single query, not N calls)
     total_duration = 0
     if service_id_list:
-        from app.services.vendor_service import VendorService
-        vendor_service = VendorService(db_client=db)
-        for service_id in service_id_list:
-            service = await vendor_service.get_service(service_id.strip())
-            if service and service.get('is_active'):
-                total_duration += service.get('duration_minutes', 60)  # Default 60 minutes
+        svc_resp = db.table("services").select(
+            "duration_minutes, is_active"
+        ).in_("id", service_id_list).execute()
+        for svc in (svc_resp.data or []):
+            if svc.get("is_active"):
+                total_duration += svc.get("duration_minutes") or 60  # Default 60 minutes
+        if total_duration == 0:
+            total_duration = 60
     else:
         total_duration = 60  # Default duration if no services specified
     
@@ -434,65 +429,6 @@ async def get_available_slots(
 # NEARBY & SEARCH
 # ========================================
 
-@router.get("/search/nearby", response_model=NearbySalonsResponse, operation_id="public_get_nearby_salons")
-async def get_nearby_salons(
-    lat: float = Query(..., description="User's latitude"),
-    lon: float = Query(..., description="User's longitude"),
-    radius: float = Query(10.0, ge=0.5, le=50, description="Search radius in kilometers"),
-    limit: int = Query(50, ge=1, le=100, description="Maximum results"),
-    q: Optional[str] = Query(None, description="Optional search term"),
-    salon_service: SalonService = Depends(get_salon_service)
-):
-    """
-    Get nearby salons using PostGIS spatial queries.
-    
-    **Uses:**
-    - PostGIS ST_Distance for accurate distance calculation
-    - Database-level filtering for performance
-    - Only returns active, verified, paid salons
-    
-    **Parameters:**
-    - lat: User's current latitude (required)
-    - lon: User's current longitude (required)
-    - radius: Search radius in kilometers (0.5-50 km, default: 10)
-    - limit: Maximum number of results (1-100, default: 50)
-    - q: Optional search term to filter by salon name
-    
-    **Returns:**
-    - salons: Array with distance_km field added
-    - count: Number of results
-    - query: Echo of search parameters
-    """
-    from app.services.salon_service import NearbySearchParams, SalonSearchParams
-    
-    # Build search params
-    filters = None
-    if q:
-        filters = SalonSearchParams(search_term=q)
-    
-    params = NearbySearchParams(
-        latitude=lat,
-        longitude=lon,
-        radius_km=radius,
-        max_results=limit,
-        filters=filters
-    )
-    
-    salons = await salon_service.get_nearby_salons(params)
-    
-    return {
-        "salons": salons,
-        "count": len(salons),
-        "query": {
-            "lat": lat,
-            "lon": lon,
-            "radius": radius,
-            "limit": limit,
-            "q": q
-        }
-    }
-
-
 @router.get("/search/query", response_model=SearchSalonsResponse, operation_id="public_search_salons")
 async def search_salons(
     q: Optional[str] = Query(None, description="Search term for salon name"),
@@ -543,163 +479,6 @@ async def search_salons(
         "limit": limit
     }
 
-
-
-# ========================================
-# CREATE & UPDATE (Admin Only - RLS Enforced)
-# ========================================
-
-@router.post("/", response_model=SalonResponse)
-async def create_salon(
-    current_user: TokenData = Depends(require_admin),
-    db: Client = Depends(get_db_client),
-    name: str = Form(...),
-    description: Optional[str] = Form(None),
-    phone: str = Form(...),
-    email: Optional[str] = Form(None),
-    address_line1: str = Form(...),
-    city: str = Form(...),
-    state: str = Form(...),
-    pincode: str = Form(...),
-    latitude: Optional[float] = Form(None),
-    longitude: Optional[float] = Form(None),
-    cover_image: Optional[UploadFile] = File(None),
-    owner_id: Optional[str] = Form(None),
-    status: str = Form("pending")
-):
-    """
-    Create new salon - Admin only
-    
-    Authorization handled in Python via require_admin dependency
-    If cover_image provided, uploads to db Storage
-    """
-    # Prepare salon data
-    salon_data = {
-        "name": name,
-        "description": description,
-        "phone": phone,
-        "email": email,
-        "address_line1": address_line1,
-        "city": normalize_city_name(city),
-        "state": state,
-        "pincode": pincode,
-        "latitude": str(latitude) if latitude else None,
-        "longitude": str(longitude) if longitude else None,
-        "owner_id": owner_id,
-        "status": status
-    }
-    
-    # Create salon
-    salon = db.create_salon(salon_data)
-    
-    if not salon:
-        raise HTTPException(status_code=500, detail="Failed to create salon")
-    
-    # Upload cover image if provided
-    if cover_image:
-        try:
-            image_data = await cover_image.read()
-            cover_url = db.upload_salon_image(
-                salon_id=salon["id"],
-                image_data=image_data,
-                filename=f"cover.{cover_image.filename.split('.')[-1]}"
-            )
-            
-            # Update salon with cover image URL
-            salon = db.update_salon(salon["id"], {"cover_image": cover_url})
-        except Exception as img_error:
-            print(f"Warning: Failed to upload cover image: {img_error}")
-            # Don't fail the entire request if image upload fails
-    
-    return salon
-
-
-@router.patch("/{salon_id}", response_model=SalonResponse)
-async def update_salon(
-    salon_id: int,
-    db: Client = Depends(get_db_client),
-    name: Optional[str] = None,
-    description: Optional[str] = None,
-    phone: Optional[str] = None,
-    # ... other optional fields
-):
-    """
-    Update salon
-    
-    RLS ensures only salon owner or admin can update
-    """
-    updates = {}
-    if name is not None:
-        updates["name"] = name
-    if description is not None:
-        updates["description"] = description
-    if phone is not None:
-        updates["phone"] = phone
-    
-    salon = db.update_salon(salon_id, updates)
-    
-    if not salon:
-        raise HTTPException(status_code=404, detail="Salon not found")
-    
-    return salon
-
-
-@router.post("/{salon_id}/approve", response_model=SuccessResponse)
-async def approve_salon(
-    salon_id: int,
-    admin: TokenData = Depends(require_admin),
-    db: Client = Depends(get_db_client),
-    reviewed_by: str = Form(...),
-    rejection_reason: Optional[str] = Form(None)
-):
-    """
-    Approve or reject salon - Admin only
-    
-    Authorization handled in Python via require_admin dependency
-    """
-    success = db.approve_salon(
-        salon_id=salon_id,
-        reviewed_by=reviewed_by,
-        rejection_reason=rejection_reason
-    )
-    
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to approve salon")
-    
-    return {"success": True, "message": "Salon approved" if not rejection_reason else "Salon rejected"}
-
-
-# ========================================
-# IMAGE OPERATIONS
-# ========================================
-
-@router.post("/{salon_id}/images", response_model=SuccessResponse, operation_id="salons_upload_salon_image")
-async def upload_salon_image(
-    salon_id: int,
-    db: Client = Depends(get_db_client),
-    image: UploadFile = File(...),
-    image_type: str = Form("gallery")
-):
-    """
-    Upload image for salon to db Storage
-    
-    RLS ensures only salon owner or admin can upload
-    """
-    image_data = await image.read()
-    
-    # Upload to db Storage
-    url = db.upload_salon_image(
-        salon_id=salon_id,
-        image_data=image_data,
-        filename=f"{image_type}_{image.filename}",
-        content_type=image.content_type
-    )
-    
-    return {
-        "success": True,
-        "message": "Image uploaded successfully",
-        "data": {"url": url}
-    }
 
 
 # ========================================
@@ -756,7 +535,7 @@ async def get_public_configs(db: Client = Depends(get_db_client)):
             "configs": public_configs
         }
     
-    except Exception as e:
+    except Exception:
         # Fail gracefully with defaults
         return {
             "success": False,

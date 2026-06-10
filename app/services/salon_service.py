@@ -9,8 +9,6 @@ from app.schemas.request.payment import PaymentDetails
 from app.schemas.request.vendor import SalonUpdate
 from app.schemas.admin import ServiceCreate, ServiceUpdate
 from dataclasses import dataclass
-from app.core.config import settings
-from app.core.database import get_db
 from app.utils.location_text import normalize_city_name
 from app.services.service_taxonomy import ServiceTaxonomyResolver
 
@@ -487,7 +485,7 @@ class SalonService:
         """
         if hard_delete:
             # Hard delete - remove from database
-            response = self.db.table("salons").delete().eq("id", salon_id).execute()
+            self.db.table("salons").delete().eq("id", salon_id).execute()
             
             logger.warning(f"Salon {salon_id} permanently deleted")
             

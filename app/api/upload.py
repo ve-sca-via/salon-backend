@@ -7,13 +7,10 @@ import uuid
 import logging
 from typing import List
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status, Query
-from fastapi.responses import JSONResponse
-from supabase import Client, create_client
 
 from app.core.auth import get_current_user
 from app.core.auth import TokenData
-from app.core.config import settings
-from app.core.database import get_db_client, get_storage_client
+from app.core.database import get_storage_client
 from app.services.cloudinary_service import CloudinaryService
 from app.schemas import ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
 
@@ -288,7 +285,7 @@ async def upload_agreement_document(
     if file.content_type not in ALLOWED_DOCUMENT_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file type. Allowed types: PDF, JPEG, PNG, WebP"
+            detail="Invalid file type. Allowed types: PDF, JPEG, PNG, WebP"
         )
     
     # Check file extension

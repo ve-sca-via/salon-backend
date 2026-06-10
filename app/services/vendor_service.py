@@ -8,7 +8,6 @@ from typing import Dict, Any, Optional, List
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
 
-from app.core.database import get_db
 from app.core.auth import (
     verify_registration_token,
     create_access_token,
@@ -70,11 +69,8 @@ class VendorService:
             # Add registration fee amount from system config
             try:
                 registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-                logger.info(f"DEBUG: registration_fee_config = {registration_fee_config}")
                 config_value = registration_fee_config.get("config_value")
-                logger.info(f"DEBUG: config_value (raw) = {config_value}, type = {type(config_value)}")
                 salon_data["registration_fee_amount"] = float(config_value)
-                logger.info(f"DEBUG: salon_data['registration_fee_amount'] = {salon_data['registration_fee_amount']}")
             except Exception as e:
                 logger.error(f"CRITICAL: Failed to fetch registration fee config from database: {e}")
                 raise HTTPException(
@@ -608,104 +604,6 @@ class VendorService:
     # DASHBOARD & ANALYTICS
     # =====================================================
     
-    async def get_dashboard_stats(self, vendor_id: str) -> Dict[str, Any]:
-        """
-        Get vendor dashboard statistics.
-        
-        Args:
-            vendor_id: Vendor user ID
-            
-        Returns:
-            Dashboard data with salon info and statistics
-            
-        Raises:
-            HTTPException: If salon not found or query fails
-        """
-        try:
-            # Get salon
-            salon = await self.get_vendor_salon(vendor_id)
-            salon_id = str(salon["id"])
-            logger.info(f"Fetching dashboard stats for salon_id: {salon_id}")
-            
-            # Check if regular_buyer
-            is_regular_buyer = salon.get("salon_type") == "regular_buyer"
-
-            # Get product order stats (always relevant as vendors can also buy products)
-            total_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).execute()
-            pending_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
-            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
-            total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
-
-            # Recent orders
-            recent_orders_response = self.db.table("product_orders").select("*").eq("user_id", vendor_id).order("created_at", desc=True).limit(5).execute()
-            recent_orders = recent_orders_response.data or []
-
-            if is_regular_buyer:
-                return {
-                    "salon": salon,
-                    "statistics": {
-                        "total_services": 0,
-                        "total_bookings": 0, # Don't repurpose fields anymore
-                        "pending_bookings": 0,
-                        "today_bookings": 0,
-                        "average_rating": 0,
-                        "total_reviews": 0,
-                        "total_product_orders": total_orders.count if total_orders else 0,
-                        "pending_product_orders": pending_orders.count if pending_orders else 0,
-                        "total_product_spending": total_spending
-                    },
-                    "recent_bookings": recent_orders
-                }
-            
-            # Original salon logic
-            # Get counts
-            total_services = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).execute()
-            total_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).is_("deleted_at", "null").execute()
-            pending_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").is_("deleted_at", "null").execute()
-            
-            # Today's bookings
-            today_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).gte("booking_date", "today").is_("deleted_at", "null").execute()
-            
-            # Recent bookings (last 5) using bookings_with_payments view
-            recent_bookings_response = self.db.from_("bookings_with_payments").select("*").eq("salon_id", salon_id).is_("deleted_at", "null").order("created_at", desc=True).limit(5).execute()
-            
-            recent_bookings = []
-            for booking in (recent_bookings_response.data or []):
-                # Extract service names from services JSON
-                services = booking.get("services", [])
-                service_names = [s.get("name", "Unknown Service") for s in services] if services else []
-                
-                recent_bookings.append({
-                    **booking,
-                    "service_names": service_names,
-                    "service_names_str": ", ".join(service_names) if service_names else "No services"
-                })
-            
-            return {
-                "salon": salon,
-                "statistics": {
-                    "total_services": total_services.count if total_services else 0,
-                    "total_bookings": total_bookings.count if total_bookings else 0,
-                    "pending_bookings": pending_bookings.count if pending_bookings else 0,
-                    "today_bookings": today_bookings.count if today_bookings else 0,
-                    "average_rating": salon.get("average_rating", 0),
-                    "total_reviews": salon.get("total_reviews", 0),
-                    "total_product_orders": total_orders.count if total_orders else 0,
-                    "pending_product_orders": pending_orders.count if pending_orders else 0,
-                    "total_product_spending": total_spending
-                },
-                "recent_bookings": recent_bookings
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch dashboard stats: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch vendor dashboard"
-            )
-    
     async def get_analytics(self, vendor_id: str) -> Dict[str, Any]:
         """
         Get vendor analytics for dashboard.
@@ -917,7 +815,7 @@ class VendorService:
         response = self.db.table("salons").update(update_data).eq("id", salon_id).execute()
         
         logger.info(f"Vendor {user_id} linked to salon {salon_id}")
-        logger.info(f"Salon automatically verified upon vendor registration")
+        logger.info("Salon automatically verified upon vendor registration")
         
         return response.data[0] if response.data else update_data
     
@@ -938,7 +836,6 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        from datetime import datetime
         
         # Get vendor's salon
         salon = await self.get_vendor_salon(vendor_id)
@@ -955,7 +852,7 @@ class VendorService:
         }
         
         # Update salon with payment info
-        response = self.db.table("salons").update(payment_data).eq("id", salon_id).execute()
+        self.db.table("salons").update(payment_data).eq("id", salon_id).execute()
         
         logger.info(f"Payment processed successfully for salon: {business_name}")
         

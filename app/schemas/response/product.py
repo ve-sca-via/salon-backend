@@ -3,8 +3,7 @@ Response Pydantic schemas for Product endpoints
 Defines response contracts for product API
 """
 from pydantic import BaseModel
-from typing import Optional, List, Any
-from datetime import datetime
+from typing import Optional, List
 
 
 # =====================================================

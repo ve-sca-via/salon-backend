@@ -1,14 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
-from pydantic import BaseModel
-from typing import Optional
 from supabase import Client
 
-from app.core.config import settings
 from app.core.database import get_db_client
 from app.services.geocoding import geocoding_service
+from app.services.salon_service import SalonService, NearbySearchParams
 from app.schemas import (
-    GeocodeRequest,
-    GeocodeResponse,
     NearbySalonsResponse,
 )
 
@@ -16,23 +12,9 @@ from app.schemas import (
 router = APIRouter(prefix="/location", tags=["location"])
 
 
-@router.post("/geocode", response_model=GeocodeResponse)
-async def geocode_address(request: GeocodeRequest):
-    """
-    Convert address to coordinates
-    Keeps API key secure on backend
-    """
-    coordinates = await geocoding_service.geocode_address(request.address)
-    
-    if not coordinates:
-        raise HTTPException(status_code=404, detail="Address not found")
-    
-    lat, lon = coordinates
-    return {
-        "latitude": lat,
-        "longitude": lon,
-        "address": request.address
-    }
+def get_salon_service(db: Client = Depends(get_db_client)) -> SalonService:
+    """Dependency injection for SalonService"""
+    return SalonService(db_client=db)
 
 
 @router.get("/reverse-geocode")
@@ -44,10 +26,10 @@ async def reverse_geocode(
     Convert coordinates to address
     """
     address = await geocoding_service.reverse_geocode(lat, lon)
-    
+
     if not address:
         raise HTTPException(status_code=404, detail="Location not found")
-    
+
     return {"address": address, "latitude": lat, "longitude": lon}
 
 
@@ -57,38 +39,24 @@ async def get_salons_nearby(
     lon: float = Query(..., description="User longitude"),
     radius: float = Query(10.0, description="Search radius in kilometers", ge=0.5, le=50),
     limit: int = Query(50, description="Maximum results", ge=1, le=100),
-    db: Client = Depends(get_db_client)
+    salon_service: SalonService = Depends(get_salon_service)
 ):
     """
-    Get salons near the specified location
-    Uses PostGIS function for efficient distance calculation
-    Much faster than Python-based Haversine calculation
+    Get salons near the specified location (canonical nearby-salons endpoint).
+
+    Delegates to SalonService.get_nearby_salons, which uses the PostGIS
+    `get_nearby_salons` function, excludes regular_buyer salons, and attaches
+    discount flags.
     """
-    # Query approved salons within radius using PostGIS
-    response = db.rpc(
-        'get_nearby_salons',
-        {
-            'user_lat': lat,
-            'user_lon': lon,
-            'radius_km': radius,
-            'max_results': limit
-        }
-    ).execute()
-    
-    salons = response.data if response.data else []
-    
-    # Exclude regular_buyer salons — they can only buy products, not offer services
-    # Note: The RPC function doesn't return salon_type, so we do a secondary lookup
-    if salons:
-        salon_ids = [s["id"] for s in salons if s.get("id")]
-        if salon_ids:
-            type_response = db.table("salons").select("id, salon_type").in_("id", salon_ids).execute()
-            regular_buyer_ids = {
-                row["id"] for row in (type_response.data or [])
-                if row.get("salon_type") == "regular_buyer"
-            }
-            salons = [s for s in salons if s["id"] not in regular_buyer_ids]
-    
+    salons = await salon_service.get_nearby_salons(
+        NearbySearchParams(
+            latitude=lat,
+            longitude=lon,
+            radius_km=radius,
+            max_results=limit,
+        )
+    )
+
     return {
         "salons": salons,
         "count": len(salons),

@@ -5,7 +5,6 @@ Handles admin-specific operations including dashboard statistics and vendor requ
 from typing import List, Optional, Dict, Any
 from app.schemas.admin import ServiceCreate, ServiceUpdate
 from datetime import date, datetime
-from app.core.database import get_db
 import logging
 
 logger = logging.getLogger(__name__)
@@ -483,7 +482,7 @@ class AdminService:
             Exception: If deletion fails
         """
         try:
-            response = self.db.table("services").delete().eq("id", service_id).execute()
+            self.db.table("services").delete().eq("id", service_id).execute()
             
             logger.info(f"Deleted service: {service_id}")
             return True

@@ -206,7 +206,7 @@ def verify_token(token: str, db) -> TokenPayload:
         if jti:
             blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
             if blacklist_check.data:
-                logger.warning(f"Blocked attempt to use blacklisted token")
+                logger.warning("Blocked attempt to use blacklisted token")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token has been revoked",

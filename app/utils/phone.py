@@ -109,6 +109,21 @@ def extract_country_code_and_phone(phone: str) -> Tuple[str, str]:
     return "91", phone
 
 
+def split_e164(normalized_phone: str, country_code: str = "91") -> Tuple[str, str]:
+    """
+    Split a normalized E.164 number into (country_code_without_plus, local_number).
+
+    Only strips the country code when it actually appears as a prefix.
+
+    Example:
+        split_e164("+918791464313", "91") -> ("91", "8791464313")
+    """
+    cc = country_code.lstrip("+")
+    digits = str(normalized_phone).lstrip("+")
+    local = digits[len(cc):] if digits.startswith(cc) else digits
+    return cc, local
+
+
 def phone_lookup_variants(phone: Optional[str], country_code: str = "91") -> list[str]:
     """
     Return possible stored phone values for DB lookup (canonical + legacy formats).

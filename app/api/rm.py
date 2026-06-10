@@ -7,17 +7,13 @@ from typing import List, Optional
 import logging
 from supabase import Client
 
-logger = logging.getLogger(__name__)
-
-from app.core.auth import require_rm, TokenData, get_current_user_id
+from app.core.auth import require_rm, TokenData
 from app.schemas.user import UserProfileUpdate
 from app.schemas import (
     VendorJoinRequestCreate,
     VendorJoinRequestResponse,
     RMProfileResponse,
     RMScoreHistoryResponse,
-    SuccessResponse,
-    # RM Response Models
     VendorRequestOperationResponse,
     VendorRequestsListResponse,
     RMSalonsListResponse,
@@ -27,7 +23,8 @@ from app.schemas import (
 )
 from app.core.database import get_db_client
 from app.services.rm_service import RMService
-from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rm", tags=["Relationship Manager"])
 
