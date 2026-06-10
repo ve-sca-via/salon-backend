@@ -314,7 +314,20 @@ async def get_agreement_document_signed_url(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to generate signed URL for {path}: {str(e)}")
+        error_str = str(e)
+        # Legacy agreement objects that were never persisted (historical upload
+        # failures) or were removed report as "not found" -> surface a clean 404
+        # so the panel can show "document unavailable" instead of a server error.
+        if "not_found" in error_str or "not found" in error_str.lower():
+            # NOTE: Supabase also returns "Object not found" when service_role lacks
+            # SELECT on storage.objects (a masked permission error), so this can mean
+            # either the object is gone OR the storage RLS policy isn't applied.
+            logger.warning(f"Legacy agreement object not retrievable for {path}: {error_str}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agreement document could not be retrieved."
+            )
+        logger.error(f"Failed to generate signed URL for {path}: {error_str}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate signed URL"

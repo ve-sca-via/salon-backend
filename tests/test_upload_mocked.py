@@ -49,6 +49,8 @@ class _FakeBucketOps:
         return f"https://fake.supabase/storage/v1/object/public/{self.bucket}/{path}"
 
     def create_signed_url(self, path, expires_in):
+        if self.store.sign_not_found:
+            raise Exception("{'statusCode': 400, 'error': 'not_found', 'message': 'Object not found'}")
         if self.store.sign_should_fail:
             raise Exception("supabase signing boom")
         return {
@@ -77,6 +79,7 @@ class FakeStorageClient:
         self.upload_should_fail = False
         self.upload_error = "storage boom"
         self.sign_should_fail = False
+        self.sign_not_found = False
         self.storage = _FakeStorage(self)
 
 
@@ -314,6 +317,17 @@ def test_signed_url_legacy_supabase_failure_returns_500(mock_upload):
         params={"path": "agreements/legacy-abc.pdf"},
     )
     assert r.status_code == 500, r.text
+
+
+def test_signed_url_legacy_object_not_found_returns_404(mock_upload):
+    # A legacy path whose object was never persisted / was removed -> Supabase
+    # reports "not found" -> clean 404 (not a 500) so the panel degrades nicely.
+    mock_upload.storage.sign_not_found = True
+    r = mock_upload.client.get(
+        f"{API}/upload/agreement-document/signed-url",
+        params={"path": "agreements/missing-file.jpeg"},
+    )
+    assert r.status_code == 404, r.text
 
 
 def test_signed_url_missing_path_param(mock_upload):
