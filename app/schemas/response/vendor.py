@@ -302,28 +302,3 @@ class ImageUploadResponse(BaseModel):
     url: str
     path: str
     filename: str
-
-
-class UploadedImageInfo(BaseModel):
-    """Information about a single uploaded image"""
-    url: str
-    path: str
-    filename: str
-    original_name: str
-
-
-class MultipleImageUploadResponse(BaseModel):
-    """Response for multiple image upload"""
-    success: bool = True
-    uploaded: List[UploadedImageInfo]
-    failed: List[Dict[str, Any]]
-    total: int
-    successful_count: int
-    failed_count: int
-
-
-class ImageDeleteResponse(BaseModel):
-    """Response for image deletion"""
-    success: bool = True
-    message: str
-    path: str
