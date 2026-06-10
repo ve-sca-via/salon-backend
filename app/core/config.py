@@ -148,9 +148,15 @@ class Settings(BaseSettings):
     # OTP SERVICE (MESSAGECENTRAL)
     # =====================================================
     MESSAGECENTRAL_CUSTOMER_ID: str
-    MESSAGECENTRAL_KEY: str
-    MESSAGECENTRAL_EMAIL: str
-    MESSAGECENTRAL_BASE_URL: str
+    # Preferred: the long-lived Auth Token shown in the MessageCentral dashboard
+    # (used directly as the `authToken` header). When set, the app skips the
+    # legacy password/key token-generation call.
+    MESSAGECENTRAL_AUTH_TOKEN: str = ""
+    # Legacy token-generation flow (Base64-encoded password + email). Only used as
+    # a fallback when MESSAGECENTRAL_AUTH_TOKEN is not set.
+    MESSAGECENTRAL_KEY: str = ""
+    MESSAGECENTRAL_EMAIL: str = ""
+    MESSAGECENTRAL_BASE_URL: str = ""
     MESSAGECENTRAL_DEFAULT_COUNTRY_CODE: str
     MESSAGECENTRAL_OTP_LENGTH: int
     MESSAGECENTRAL_OTP_EXPIRY_SECONDS: int
