@@ -2,7 +2,7 @@
 Admin Bookings Management API Endpoints
 Handles booking CRUD operations and status management for admins
 """
-from fastapi import APIRouter, HTTPException, Depends, status, Query
+from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client

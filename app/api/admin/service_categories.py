@@ -234,7 +234,7 @@ async def delete_service_category(
         deleted_category = category_response.data
         
         # Delete the category
-        response = db.table("service_categories").delete().eq("id", category_id).execute()
+        db.table("service_categories").delete().eq("id", category_id).execute()
         
         # Auto-reorder: decrement display_order for all categories that came after the deleted one
         # This removes gaps in the ordering
@@ -306,7 +306,7 @@ async def upload_service_category_icon(
         if file.content_type not in allowed_types:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid file type. Allowed types: JPEG, PNG, WebP, SVG"
+                detail="Invalid file type. Allowed types: JPEG, PNG, WebP, SVG"
             )
         
         # Check file size (max 5MB)

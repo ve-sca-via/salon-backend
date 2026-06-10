@@ -8,8 +8,8 @@ from datetime import datetime
 import html
 import logging
 import asyncio
+import httpx
 
-from app.core.database import get_auth_client, get_db
 from app.core.auth import create_access_token, create_refresh_token, revoke_token, verify_refresh_token
 from app.core.config import settings
 from app.services.activity_log_service import ActivityLogService
@@ -24,6 +24,24 @@ class AuthService:
         """Initialize service with database clients"""
         self.db = db_client
         self.auth_client = auth_client
+
+    @staticmethod
+    def format_public_user(profile: dict, email: str | None = None) -> dict:
+        """Build sanitized user payload returned from auth endpoints."""
+        phone = profile.get("phone") or ""
+        return {
+            "id": profile.get("id"),
+            "email": email or profile.get("email"),
+            "full_name": html.escape(profile.get("full_name") or ""),
+            "user_role": profile.get("user_role", "customer"),
+            "role": profile.get("user_role", "customer"),
+            "phone": html.escape(phone) if phone else "",
+            "age": profile.get("age"),
+            "gender": profile.get("gender"),
+            "created_at": profile.get("created_at"),
+            "phone_verified": profile.get("phone_verified", False),
+            "is_active": profile.get("is_active", True),
+        }
     
     async def authenticate_user(self, email: str, password: str) -> Dict:
         """
@@ -53,11 +71,13 @@ class AuthService:
                     detail="Invalid credentials"
                 )
             
-            # Fetch user profile
+            # Fetch user profile. Use maybe_single() so a missing profile returns
+            # empty data (-> 404 below) instead of raising PGRST116, which the
+            # broad except would otherwise mask as a generic 500.
             profile_response = self.db.table("profiles").select(
                 "*"
-            ).eq("id", user.id).single().execute()
-            
+            ).eq("id", user.id).maybe_single().execute()
+
             if not profile_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -84,15 +104,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Sanitize user data (XSS protection)
-            user_data = {
-                "id": user.id,
-                "email": user.email,
-                "full_name": html.escape(profile.get("full_name") or ""),
-                "user_role": profile.get("user_role", "customer"),
-                "role": profile.get("user_role", "customer"),  # Backward compatibility for frontend
-                "phone": html.escape(profile.get("phone") or ""),
-                "is_active": profile.get("is_active", True)
-            }
+            user_data = self.format_public_user(profile, email=user.email)
             
             logger.info(f"User authenticated: {user.email} (role: {profile.get('user_role')})")
             
@@ -173,10 +185,16 @@ class AuthService:
 
             # Normalize phone to E.164 format if provided
             if sanitized_phone:
-                from app.utils.phone import normalize_phone
+                from app.utils.phone import normalize_phone, find_profile_by_phone
                 normalized_phone = normalize_phone(sanitized_phone)
                 if normalized_phone:
                     sanitized_phone = normalized_phone
+                    existing_phone, _ = find_profile_by_phone(self.db, sanitized_phone)
+                    if existing_phone and existing_phone.get("phone_verified"):
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Phone number already registered"
+                        )
                 # If normalization fails, keep original (user can verify later)
 
             
@@ -233,6 +251,7 @@ class AuthService:
                 "email": email,
                 "password": password,
                 "options": {
+                    "email_redirect_to": f"{settings.FRONTEND_URL.rstrip('/')}/",
                     "data": {
                         "full_name": sanitized_full_name,
                         "phone": sanitized_phone,
@@ -271,7 +290,7 @@ class AuthService:
             
             try:
                 # Try insert first
-                profile_response = self.db.table("profiles").insert(profile_data).execute()
+                self.db.table("profiles").insert(profile_data).execute()
             except Exception as insert_error:
                 error_str = str(insert_error)
                 
@@ -287,7 +306,7 @@ class AuthService:
                 
                 # Try update if insert fails (trigger might have created it)
                 try:
-                    profile_response = self.db.table("profiles").update(profile_data).eq("id", user.id).execute()
+                    self.db.table("profiles").update(profile_data).eq("id", user.id).execute()
                 except Exception as update_error:
                     logger.error(f"Profile update also failed: {update_error}")
                     raise HTTPException(
@@ -306,18 +325,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Build user response
-            user_data = {
-                "id": user.id,
-                "email": email,
-                "full_name": sanitized_full_name,
-                "user_role": user_role,
-                "role": user_role,  # Backward compatibility for frontend
-                "phone": sanitized_phone,
-                "phone_verified": phone_verified,
-                "age": age,
-                "gender": sanitized_gender,
-                "is_active": True
-            }
+            user_data = self.format_public_user(profile_data, email=email)
             
             logger.info(f"New user registered: {email}")
             
@@ -360,7 +368,7 @@ class AuthService:
         """
         Send OTP for unauthenticated phone signup
         """
-        from app.utils.phone import normalize_phone, mask_phone
+        from app.utils.phone import normalize_phone, mask_phone, find_profile_by_phone, split_e164
         from app.services.otp_service import OTPService
 
         try:
@@ -372,21 +380,16 @@ class AuthService:
                 )
 
             # Check if phone is already registered and verified
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="This phone number is already registered to an account. Please sign in."
                 )
 
-            country_code_clean = country_code.lstrip("+")
-            normalized_digits = normalized_phone.lstrip("+")
-            if normalized_digits.startswith(country_code_clean):
-                clean_phone = normalized_digits[len(country_code_clean):]
-            else:
-                clean_phone = normalized_digits
+            country_code_clean, clean_phone = split_e164(normalized_phone, country_code)
 
-            logger.info(f"Sending phone signup OTP to unauthenticated user")
+            logger.info("Sending phone signup OTP to unauthenticated user")
             otp_result = await OTPService.send_otp(
                 phone=clean_phone,
                 country_code=country_code_clean
@@ -424,14 +427,14 @@ class AuthService:
                     detail="Invalid OTP format. Please enter 6 digits."
                 )
 
-            logger.info(f"Verifying phone signup OTP for phone: {phone}")
+            logger.info(f"Verifying phone signup OTP for phone: ****{str(phone)[-4:]}")
             is_valid = await OTPService.verify_otp(
                 verification_id=verification_id,
                 otp_code=otp
             )
 
             if not is_valid:
-                logger.warning(f"Invalid signup OTP attempt")
+                logger.warning("Invalid signup OTP attempt")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid or expired OTP. Please try again."
@@ -445,8 +448,9 @@ class AuthService:
                 )
 
             # Optional: check again if registered
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            from app.utils.phone import find_profile_by_phone
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="This phone number is already registered to an account. Please sign in."
@@ -470,7 +474,230 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to verify phone number. Please try again."
             )
-    
+
+    async def send_phone_login_otp(self, phone: str, country_code: str = "91") -> Dict:
+        """
+        Send OTP for phone-based login (CUSTOMERS ONLY).
+
+        Validates that the phone exists, is verified, and belongs to an active
+        customer account, then dispatches an OTP via MessageCentral.
+        """
+        from app.utils.phone import (
+            normalize_phone,
+            find_profile_by_phone,
+            reconcile_profile_phone,
+            split_e164,
+        )
+        from app.services.otp_service import OTPService
+
+        try:
+            canonical_phone = normalize_phone(phone.strip(), country_code)
+            if not canonical_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Please enter a valid 10-digit phone number."
+                )
+
+            logger.info(f"Checking phone in database: {canonical_phone[-4:]}")
+
+            profile, _ = find_profile_by_phone(
+                self.db,
+                phone.strip(),
+                country_code=country_code,
+                select="id, email, full_name, phone, phone_verified, user_role, is_active",
+            )
+
+            if not profile:
+                logger.warning("Phone login attempt for non-existent phone")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Phone number not registered. Please sign up first."
+                )
+
+            reconcile_profile_phone(self.db, profile["id"], profile.get("phone"), country_code)
+            profile["phone"] = canonical_phone
+
+            _, clean_phone = split_e164(canonical_phone, country_code)
+
+            # Check if phone is verified
+            if not profile.get("phone_verified", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Phone number not verified. Please verify your phone first."
+                )
+
+            # CRITICAL: Only allow customers to login via phone
+            if profile.get("user_role") != "customer":
+                logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Phone login is only available for customer accounts. Please use email login."
+                )
+
+            # Check if user is active
+            if not profile.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is inactive. Please contact support."
+                )
+
+            # Send OTP via MessageCentral
+            logger.info(f"Sending OTP to verified phone for user: {profile.get('id')}")
+            otp_result = await OTPService.send_otp(
+                phone=clean_phone,
+                country_code=country_code
+            )
+
+            return {
+                "success": True,
+                "message": f"OTP sent successfully to {otp_result['phone']}",
+                "verification_id": otp_result["verification_id"],
+                "expires_in": otp_result["expires_in"],
+                "phone": otp_result["phone"],
+                "customer_name": html.escape(profile.get("full_name") or "")
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error sending phone login OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP. Please try again."
+            )
+
+    async def verify_phone_login_otp(
+        self,
+        phone: str,
+        otp: str,
+        verification_id: str,
+        country_code: str = "91"
+    ) -> Dict:
+        """
+        Verify a login OTP and issue JWT tokens (CUSTOMERS ONLY).
+
+        Mirrors the email-login response shape on success.
+        """
+        from app.utils.phone import (
+            normalize_phone,
+            find_profile_by_phone,
+            reconcile_profile_phone,
+        )
+        from app.services.otp_service import OTPService
+
+        try:
+            clean_otp = otp.strip()
+            verification_id = verification_id.strip()
+
+            canonical_phone = normalize_phone(phone.strip(), country_code)
+            if not canonical_phone:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Please enter a valid 10-digit phone number."
+                )
+
+            # OTP format (6 digits) is already enforced by the request schema.
+
+            # Verify OTP with MessageCentral
+            logger.info(f"Verifying OTP for verificationId: {verification_id}")
+            is_valid = await OTPService.verify_otp(
+                verification_id=verification_id,
+                otp_code=clean_otp
+            )
+
+            if not is_valid:
+                logger.warning(f"Invalid OTP attempt for verificationId: {verification_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired OTP. Please try again."
+                )
+
+            profile, _ = find_profile_by_phone(
+                self.db,
+                phone.strip(),
+                country_code=country_code,
+                select="*",
+            )
+
+            if not profile:
+                logger.error("Phone verified but profile not found for phone")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="User not found. Please contact support."
+                )
+
+            if not profile.get("phone_verified", False):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Phone number not verified. Please verify your phone first."
+                )
+
+            reconcile_profile_phone(self.db, profile["id"], profile.get("phone"), country_code)
+            profile["phone"] = canonical_phone
+
+            # Validate user role (MUST be customer)
+            if profile.get("user_role") != "customer":
+                logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Phone login is only available for customer accounts."
+                )
+
+            # Check if user is active
+            if not profile.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is inactive. Please contact support."
+                )
+
+            # Generate JWT tokens
+            token_data = {
+                "sub": profile["id"],
+                "email": profile["email"],
+                "user_role": profile.get("user_role", "customer")
+            }
+
+            access_token = create_access_token(token_data)
+            refresh_token = create_refresh_token(token_data)
+
+            # Sanitize user data for response
+            user_data = self.format_public_user(profile)
+
+            logger.info(f"User logged in via phone OTP: {profile['email']}")
+
+            # Log activity for phone login (best-effort)
+            try:
+                await ActivityLogService.log(
+                    user_id=profile["id"],
+                    action="phone_login",
+                    entity_type="auth",
+                    entity_id=profile["id"],
+                    details={
+                        "login_method": "phone_otp",
+                        "phone": profile.get("phone", "")[-4:]  # Last 4 digits only
+                    }
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to log phone login activity: {log_error}")
+
+            return {
+                "success": True,
+                "message": "Login successful",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": "bearer",
+                "user": user_data
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying phone login OTP: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to verify OTP. Please try again."
+            )
+
     async def refresh_user_session(self, refresh_token: str) -> Dict:
         """
         Refresh access token using refresh token
@@ -488,10 +715,10 @@ class AuthService:
             # Verify refresh token
             token_data = verify_refresh_token(refresh_token, self.db)
             
-            # Fetch current user profile
+            # Fetch current user profile (maybe_single -> empty data, not PGRST116, when missing)
             profile_response = self.db.table("profiles").select(
                 "*"
-            ).eq("id", token_data["sub"]).single().execute()
+            ).eq("id", token_data["sub"]).maybe_single().execute()
             
             if not profile_response.data:
                 raise HTTPException(
@@ -552,7 +779,7 @@ class AuthService:
         try:
             response = self.db.table("profiles").select(
                 "*"
-            ).eq("id", user_id).single().execute()
+            ).eq("id", user_id).maybe_single().execute()
             
             if not response.data:
                 raise HTTPException(
@@ -607,7 +834,15 @@ class AuthService:
             if "full_name" in profile_data and profile_data["full_name"] is not None:
                 update_data["full_name"] = html.escape(profile_data["full_name"].strip())
             if "phone" in profile_data and profile_data["phone"] is not None:
-                update_data["phone"] = html.escape(profile_data["phone"].strip())
+                from app.utils.phone import normalize_phone
+                raw_phone = html.escape(profile_data["phone"].strip())
+                normalized = normalize_phone(raw_phone)
+                if not normalized:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Please enter a valid 10-digit phone number."
+                    )
+                update_data["phone"] = normalized
             if "age" in profile_data and profile_data["age"] is not None:
                 update_data["age"] = profile_data["age"]
             if "gender" in profile_data and profile_data["gender"] is not None:
@@ -754,15 +989,17 @@ class AuthService:
             
             logger.warning(f"All tokens invalidated for user {user_id} via token_valid_after: {now.isoformat()}")
             
-            # Log activity for security audit
-            await ActivityLogService.log(
-                db=self.db,
-                user_id=user_id,
-                action="logout_all_devices",
-                entity_type="auth",
-                entity_id=user_id,
-                details={"timestamp": now.isoformat(), "method": "token_valid_after"}
-            )
+            # Log activity for security audit (best-effort: never fail logout on log error)
+            try:
+                await ActivityLogService.log(
+                    user_id=user_id,
+                    action="logout_all_devices",
+                    entity_type="auth",
+                    entity_id=user_id,
+                    details={"timestamp": now.isoformat(), "method": "token_valid_after"}
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to log logout_all_devices activity: {log_error}")
             
             return {
                 "success": True,
@@ -793,11 +1030,11 @@ class AuthService:
         """
         try:
             # Check if user exists
-            response = self.db.table("profiles").select("id, email").eq("email", email).single().execute()
+            response = self.db.table("profiles").select("id, email").eq("email", email).maybe_single().execute()
             
             if not response.data:
                 # Don't reveal if email exists for security
-                logger.info(f"Password reset requested for non-existent email (redacted)")
+                logger.info("Password reset requested for non-existent email (redacted)")
                 return {
                     "success": True,
                     "message": "If an account with this email exists, a password reset link has been sent."
@@ -910,10 +1147,10 @@ class AuthService:
                     detail="Failed to update password"
                 )
             
-            # Fetch user profile
+            # Fetch user profile (maybe_single -> empty data, not PGRST116, when missing)
             profile_response = self.db.table("profiles").select(
                 "*"
-            ).eq("id", user_id).single().execute()
+            ).eq("id", user_id).maybe_single().execute()
             
             if not profile_response.data:
                 raise HTTPException(
@@ -934,15 +1171,7 @@ class AuthService:
             refresh_token = create_refresh_token(token_data)
             
             # Sanitize user data
-            user_data = {
-                "id": user_id,
-                "email": user_email,
-                "full_name": html.escape(profile.get("full_name") or ""),
-                "user_role": profile.get("user_role", "customer"),
-                "role": profile.get("user_role", "customer"),
-                "phone": html.escape(profile.get("phone") or ""),
-                "is_active": profile.get("is_active", True)
-            }
+            user_data = self.format_public_user(profile, email=user_email)
             
             logger.info(f"Password reset confirmed for user: {user_id}")
             
@@ -962,6 +1191,95 @@ class AuthService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to reset password"
             )
+    def _email_verification_redirect_url(self) -> str:
+        return f"{settings.FRONTEND_URL.rstrip('/')}/"
+
+    def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
+        """Return True/False when known, or None if auth user could not be loaded."""
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+        }
+        try:
+            response = httpx.get(url, headers=headers, timeout=15.0)
+            if response.status_code != 200:
+                logger.warning(
+                    "Could not load auth user %s for verification check: %s %s",
+                    user_id,
+                    response.status_code,
+                    response.text,
+                )
+                return None
+            data = response.json()
+            return bool(data.get("email_confirmed_at"))
+        except Exception as exc:
+            logger.warning("Auth user lookup failed for %s: %s", user_id, exc)
+            return None
+
+    async def _supabase_resend_signup_confirmation(self, email: str) -> None:
+        """
+        Call Supabase GoTrue /resend directly.
+
+        supabase==2.0.3 does not expose auth.resend on the Python client, so the
+        previous implementation always failed while still returning success.
+        """
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/resend"
+        headers = {
+            "apikey": settings.SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "type": "signup",
+            "email": email,
+            "options": {
+                "email_redirect_to": self._email_verification_redirect_url(),
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+        if response.status_code < 400:
+            return
+
+        try:
+            error_body = response.json()
+        except Exception:
+            error_body = {}
+
+        error_text = (
+            error_body.get("msg")
+            or error_body.get("error_description")
+            or error_body.get("message")
+            or response.text
+            or "Unknown error"
+        ).lower()
+        logger.error(
+            "Supabase resend failed for %s: status=%s body=%s",
+            email,
+            response.status_code,
+            error_body or response.text,
+        )
+
+        if response.status_code == 429 or "rate" in error_text:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many verification emails requested. Please try again later.",
+            )
+
+        if "already" in error_text and ("confirm" in error_text or "verified" in error_text):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This email address is already verified.",
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not send verification email right now. Please try again in a few minutes.",
+        )
+
     async def resend_verification_email(self, user_id: str, email: str) -> Dict:
         """
         Resend email verification link to user
@@ -976,30 +1294,21 @@ class AuthService:
         Raises:
             HTTPException: If resend fails
         """
-        try:
-            # Use Supabase's resend functionality
-            response = self.auth_client.auth.resend({
-                "type": "signup",
-                "email": email,
-                "options": {
-                    "email_redirect_to": f"{settings.FRONTEND_URL}"
-                }
-            })
-            
-            logger.info(f"Verification email resent to: {email}")
-            
+        email_confirmed = self._is_auth_user_email_confirmed(user_id)
+        if email_confirmed is True:
             return {
                 "success": True,
-                "message": "Verification email sent successfully. Please check your inbox."
+                "already_verified": True,
+                "message": "Your email is already verified.",
             }
-            
-        except Exception as e:
-            logger.error(f"Failed to resend verification email: {str(e)}")
-            # Don't expose detailed error to user
-            return {
-                "success": True,
-                "message": "If your email is registered and unverified, you will receive a verification email shortly."
-            }
+
+        await self._supabase_resend_signup_confirmation(email)
+
+        logger.info("Verification email resent to: %s", email)
+        return {
+            "success": True,
+            "message": "Verification email sent successfully. Please check your inbox.",
+        }
 
     async def send_phone_verification_otp(self, user_id: str, phone: str, country_code: str = "91") -> Dict:
         """
@@ -1016,7 +1325,7 @@ class AuthService:
         Raises:
             HTTPException: If user not found or OTP sending fails
         """
-        from app.utils.phone import normalize_phone, mask_phone
+        from app.utils.phone import normalize_phone, mask_phone, find_profile_by_phone, split_e164
         from app.services.otp_service import OTPService
 
         try:
@@ -1037,23 +1346,17 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 # Check if it's not the same user
-                if existing_phone.data[0]["id"] != user_id:
+                if existing_phone["id"] != user_id:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="This phone number is already registered"
                     )
 
             # Extract country code and local phone number from normalized E.164.
-            # Important: only strip country code if it appears as a prefix.
-            country_code_clean = country_code.lstrip("+")
-            normalized_digits = normalized_phone.lstrip("+")
-            if normalized_digits.startswith(country_code_clean):
-                clean_phone = normalized_digits[len(country_code_clean):]
-            else:
-                clean_phone = normalized_digits
+            country_code_clean, clean_phone = split_e164(normalized_phone, country_code)
 
             # Send OTP via MessageCentral
             logger.info(f"Sending phone verification OTP for user: {user_id}")
@@ -1145,10 +1448,11 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            existing_phone = self.db.table("profiles").select("id").eq("phone", normalized_phone).eq("phone_verified", True).execute()
-            if existing_phone.data:
+            from app.utils.phone import find_profile_by_phone
+            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+            if existing_phone and existing_phone.get("phone_verified"):
                 # Check if it's not the same user
-                if existing_phone.data[0]["id"] != user_id:
+                if existing_phone["id"] != user_id:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="This phone number is already registered by another user"

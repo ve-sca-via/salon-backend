@@ -89,7 +89,7 @@ class AlreadyExistsError(AppException):
 class ValidationError(AppException):
     """Input validation failed"""
     def __init__(self, detail: str, field: str = None):
-        error_detail = f"Validation error"
+        error_detail = "Validation error"
         if field:
             error_detail += f" for field '{field}'"
         error_detail += f": {detail}"

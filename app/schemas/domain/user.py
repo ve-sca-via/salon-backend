@@ -2,7 +2,7 @@
 Domain models for user and profile entities
 Core business entities for user management
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from .common import UserRole, TimestampMixin, ProfileBase

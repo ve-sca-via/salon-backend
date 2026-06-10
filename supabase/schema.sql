@@ -378,13 +378,14 @@ BEGIN
             pending_requests_count = CASE WHEN NEW.status = 'pending' THEN pending_requests_count + 1 ELSE pending_requests_count END,
             approved_requests_count = CASE WHEN NEW.status = 'approved' THEN approved_requests_count + 1 ELSE approved_requests_count END,
             rejected_requests_count = CASE WHEN NEW.status = 'rejected' THEN rejected_requests_count + 1 ELSE rejected_requests_count END,
-            total_salons_added = CASE WHEN NEW.status = 'approved' THEN total_salons_added + 1 ELSE total_salons_added END,
+            -- total_salons_added counts ALL submissions (denominator for approval rate)
+            total_salons_added = total_salons_added + 1,
             total_approved_salons = CASE WHEN NEW.status = 'approved' THEN total_approved_salons + 1 ELSE total_approved_salons END,
             updated_at = NOW()
         WHERE id = NEW.rm_id;
-        
+
         RETURN NEW;
-        
+
     ELSIF TG_OP = 'UPDATE' THEN
         -- Status changed
         IF OLD.status IS DISTINCT FROM NEW.status THEN
@@ -405,13 +406,9 @@ BEGIN
                     WHEN NEW.status = 'rejected' THEN rejected_requests_count + 1 
                     ELSE rejected_requests_count 
                 END,
-                total_salons_added = CASE 
-                    WHEN OLD.status != 'approved' AND NEW.status = 'approved' THEN total_salons_added + 1 
-                    WHEN OLD.status = 'approved' AND NEW.status != 'approved' THEN total_salons_added - 1 
-                    ELSE total_salons_added 
-                END,
-                total_approved_salons = CASE 
-                    WHEN OLD.status != 'approved' AND NEW.status = 'approved' THEN total_approved_salons + 1 
+                -- total_salons_added does not change on status transitions (already counted at submission)
+                total_approved_salons = CASE
+                    WHEN OLD.status != 'approved' AND NEW.status = 'approved' THEN total_approved_salons + 1
                     WHEN OLD.status = 'approved' AND NEW.status != 'approved' THEN total_approved_salons - 1 
                     ELSE total_approved_salons 
                 END,
@@ -429,7 +426,8 @@ BEGIN
             pending_requests_count = CASE WHEN OLD.status = 'pending' THEN GREATEST(pending_requests_count - 1, 0) ELSE pending_requests_count END,
             approved_requests_count = CASE WHEN OLD.status = 'approved' THEN GREATEST(approved_requests_count - 1, 0) ELSE approved_requests_count END,
             rejected_requests_count = CASE WHEN OLD.status = 'rejected' THEN GREATEST(rejected_requests_count - 1, 0) ELSE rejected_requests_count END,
-            total_salons_added = CASE WHEN OLD.status = 'approved' THEN GREATEST(total_salons_added - 1, 0) ELSE total_salons_added END,
+            -- any deleted submission decrements total_salons_added
+            total_salons_added = GREATEST(total_salons_added - 1, 0),
             total_approved_salons = CASE WHEN OLD.status = 'approved' THEN GREATEST(total_approved_salons - 1, 0) ELSE total_approved_salons END,
             updated_at = NOW()
         WHERE id = OLD.rm_id;
@@ -468,11 +466,18 @@ CREATE OR REPLACE FUNCTION "public"."update_salon_rating"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     AS $$
 BEGIN
-  -- Update salon's average rating
+  -- Update salon's average rating and review count
   UPDATE salons
-  SET 
-    average_rating = (
+  SET
+    average_rating = COALESCE((
       SELECT ROUND(AVG(rating)::numeric, 2)
+      FROM reviews
+      WHERE salon_id = COALESCE(NEW.salon_id, OLD.salon_id)
+        AND deleted_at IS NULL
+        AND is_hidden = false
+    ), 0),
+    total_reviews = (
+      SELECT COUNT(*)
       FROM reviews
       WHERE salon_id = COALESCE(NEW.salon_id, OLD.salon_id)
         AND deleted_at IS NULL
@@ -480,7 +485,7 @@ BEGIN
     ),
     updated_at = now()
   WHERE id = COALESCE(NEW.salon_id, OLD.salon_id);
-  
+
   RETURN COALESCE(NEW, OLD);
 END;
 $$;

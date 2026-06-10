@@ -7,28 +7,24 @@ from typing import List, Optional
 import logging
 from supabase import Client
 
-logger = logging.getLogger(__name__)
-
-from app.core.auth import require_rm, TokenData, get_current_user_id
+from app.core.auth import require_rm, TokenData
 from app.schemas.user import UserProfileUpdate
 from app.schemas import (
     VendorJoinRequestCreate,
     VendorJoinRequestResponse,
     RMProfileResponse,
     RMScoreHistoryResponse,
-    SuccessResponse,
-    # RM Response Models
     VendorRequestOperationResponse,
     VendorRequestsListResponse,
     RMSalonsListResponse,
     RMProfileUpdateResponse,
     RMDashboardResponse,
     RMLeaderboardResponse,
-    ServiceCategoriesResponse,
 )
 from app.core.database import get_db_client
 from app.services.rm_service import RMService
-from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/rm", tags=["Relationship Manager"])
 
@@ -236,25 +232,4 @@ async def get_rm_leaderboard(
         "message": "RM leaderboard retrieved successfully",
         "data": leaderboard,
         "total": len(leaderboard)
-    }
-
-
-# =====================================================
-# SERVICE CATEGORIES
-# =====================================================
-
-@router.get("/service-categories", response_model=ServiceCategoriesResponse, operation_id="rm_get_service_categories")
-async def get_service_categories(
-    current_user: TokenData = Depends(require_rm),
-    rm_service: RMService = Depends(get_rm_service)
-):
-    """Get all active service categories for salon submission forms"""
-    categories = await rm_service.get_service_categories()
-    
-    logger.info(f"RM {current_user.user_id} fetched {len(categories)} service categories")
-    
-    return {
-        "success": True,
-        "message": "Service categories fetched successfully",
-        "data": categories
     }

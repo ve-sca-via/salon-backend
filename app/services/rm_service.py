@@ -2,18 +2,15 @@
 Relationship Manager (RM) Service - Business Logic Layer
 Handles RM profile management, scoring, and vendor request tracking
 """
-import uuid
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from datetime import datetime
 from fastapi import HTTPException, status
 
-from app.core.config import settings
-from app.core.database import get_db
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
-from app.services.activity_log_service import ActivityLogger, ActivityLogService
+from app.services.activity_log_service import ActivityLogService
+from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
 
@@ -151,79 +148,6 @@ class RMService:
         response = query.execute()
         
         return response.data or []
-    
-    async def update_rm_profile(
-        self,
-        rm_id: str,
-        updates: RMProfileUpdate
-    ) -> Dict[str, Any]:
-        """
-        Update RM profile with both profile fields and RM-specific fields.
-        
-        Args:
-            rm_id: RM profile ID
-            updates: RMProfileUpdate with fields to update
-            
-        Returns:
-            Updated RM profile data
-        """
-        try:
-            # First, check if RM exists
-            rm_check = self.db.table("rm_profiles").select("id").eq("id", rm_id).single().execute()
-            if not rm_check.data:
-                raise ValueError(f"RM profile {rm_id} not found")
-            
-            # Update profile table fields (name, email, phone, is_active)
-            profile_updates = {}
-            if updates.full_name is not None:
-                profile_updates["full_name"] = updates.full_name
-            if updates.email is not None:
-                profile_updates["email"] = updates.email
-            if updates.phone is not None:
-                profile_updates["phone"] = updates.phone
-            if updates.is_active is not None:
-                profile_updates["is_active"] = updates.is_active
-            
-            if profile_updates:
-                profile_updates["updated_at"] = datetime.utcnow().isoformat()
-                profile_response = self.db.table("profiles").update(
-                    profile_updates
-                ).eq("id", rm_id).execute()
-                
-                if not profile_response.data:
-                    logger.warning(f"Profile update returned no data for RM {rm_id}")
-            
-            # Update rm_profiles table fields (employee_id, territories, joining_date, manager_notes)
-            rm_updates = {}
-            if updates.employee_id is not None:
-                rm_updates["employee_id"] = updates.employee_id
-            if updates.assigned_territories is not None:
-                rm_updates["assigned_territories"] = updates.assigned_territories
-            if updates.joining_date is not None:
-                rm_updates["joining_date"] = updates.joining_date
-            if updates.manager_notes is not None:
-                rm_updates["manager_notes"] = updates.manager_notes
-            
-            if rm_updates:
-                rm_updates["updated_at"] = datetime.utcnow().isoformat()
-                rm_response = self.db.table("rm_profiles").update(
-                    rm_updates
-                ).eq("id", rm_id).execute()
-                
-                if not rm_response.data:
-                    logger.warning(f"RM profile update returned no data for RM {rm_id}")
-            
-            # Fetch and return updated profile with joined data
-            updated_profile = await self.get_rm_profile(rm_id)
-            
-            logger.info(f"Successfully updated RM profile {rm_id}")
-            return updated_profile
-            
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"Error updating RM profile {rm_id}: {str(e)}")
-            raise ValueError(f"Failed to update RM profile: {str(e)}")
     
     async def update_rm_score(
         self,
@@ -543,15 +467,13 @@ class RMService:
                     detail="RM account is inactive"
                 )
             
-            print(f"DEBUG: Creating vendor request. Full request_data: {request_data.model_dump()}")
-            
             # Prepare request data (mode='json' converts time objects to strings)
             db_data = request_data.model_dump(mode='json')
             db_data["rm_id"] = rm_id
             db_data["status"] = "draft" if is_draft else "pending"
-            
-            print(f"DEBUG: db_data for insert: {db_data.get('request_type')}")
-            
+            if db_data.get("city"):
+                db_data["city"] = normalize_city_name(db_data["city"])
+
             # Create request
             response = self.db.table("vendor_join_requests").insert(db_data).execute()
             
@@ -641,10 +563,9 @@ class RMService:
             
             # Prepare update data (mode='json' converts time objects to strings)
             update_data = request_data.model_dump(mode='json')
-            
-            print(f"DEBUG: Updating vendor request {request_id}. request_type in request_data: {request_data.request_type}")
-            print(f"DEBUG: update_data for update: {update_data.get('request_type')}")
-            
+            if update_data.get("city"):
+                update_data["city"] = normalize_city_name(update_data["city"])
+
             # Change status if submitting for approval
             if submit_for_approval:
                 update_data["status"] = "pending"
@@ -747,7 +668,7 @@ class RMService:
             await self._cleanup_vendor_request_images(existing_request)
             
             # Delete the request
-            delete_response = self.db.table("vendor_join_requests").delete().eq(
+            self.db.table("vendor_join_requests").delete().eq(
                 "id", request_id
             ).execute()
             
@@ -806,54 +727,7 @@ class RMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch vendor request"
             )
-    
-    async def get_service_categories(self) -> List[Dict[str, Any]]:
-        """
-        Get all active service categories with their active subcategories.
-        
-        Returns:
-            List of active service categories with nested subcategories
-        """
-        try:
-            # Fetch parent categories
-            response = self.db.table("service_categories").select(
-                "id, name, description, icon_url, display_order"
-            ).eq("is_active", True).order("display_order").execute()
-            
-            categories = response.data or []
-            
-            if not categories:
-                return categories
-            
-            # Fetch all active subcategories in a single query
-            subcategories_response = self.db.table("service_subcategories").select(
-                "id, parent_category_id, name, description, icon_url, display_order"
-            ).eq("is_active", True).order("display_order").execute()
-            
-            subcategories = subcategories_response.data or []
-            
-            # Group subcategories by parent_category_id
-            subcats_by_parent = {}
-            for sub in subcategories:
-                parent_id = sub.get("parent_category_id")
-                if parent_id not in subcats_by_parent:
-                    subcats_by_parent[parent_id] = []
-                subcats_by_parent[parent_id].append(sub)
-            
-            # Attach subcategories to their parent categories
-            for cat in categories:
-                cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
-            
-            return categories
-        
-        except Exception as e:
-            logger.error(f"Failed to fetch service categories: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch service categories"
-            )
 
-    
     async def get_rm_dashboard(self, rm_id: str) -> Dict[str, Any]:
         """
         Get comprehensive dashboard statistics for RM.

@@ -1,7 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Dict, Any, List
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from app.core.auth import require_admin
 from app.core.database import get_db_client
 from app.services.product_order_service import ProductOrderService
 from supabase import Client

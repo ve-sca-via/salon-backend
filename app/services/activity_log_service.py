@@ -8,6 +8,9 @@ from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
 
+# Auth login events are excluded from the admin dashboard feed (too noisy).
+DASHBOARD_EXCLUDED_ACTIONS = ("phone_login", "email_login")
+
 
 class ActivityLogService:
     """Service for logging and retrieving user/system activities"""
@@ -59,12 +62,16 @@ class ActivityLogService:
             return False
     
     @staticmethod
-    async def get_recent(limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_recent(
+        limit: int = 10,
+        exclude_actions: Optional[tuple] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Get recent activity logs
         
         Args:
             limit: Number of recent logs to fetch
+            exclude_actions: Action names to omit (e.g. login noise on dashboard)
             
         Returns:
             List of activity log entries with user details
@@ -72,10 +79,12 @@ class ActivityLogService:
         try:
             db = get_db()
             
-            # Join with profiles to get user names
-            response = db.table("activity_logs").select(
+            query = db.table("activity_logs").select(
                 "*, profiles(full_name, email)"
-            ).order("created_at", desc=True).limit(limit).execute()
+            )
+            if exclude_actions:
+                query = query.not_.in_("action", list(exclude_actions))
+            response = query.order("created_at", desc=True).limit(limit).execute()
             
             return response.data or []
             

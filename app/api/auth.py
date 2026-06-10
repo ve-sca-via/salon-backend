@@ -27,10 +27,8 @@ from app.schemas import (
     PhoneSignupVerifyOTPRequest
 )
 from app.services.auth_service import AuthService
-from app.services.otp_service import OTPService
 from app.core.database import get_db_client, get_auth_client
 import logging
-import html
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +140,6 @@ async def update_current_user_profile(
     - Returns updated user data
     """
     if current_user.user_role != 'customer':
-        from fastapi import HTTPException, status
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only customers can update their profile via this endpoint"
@@ -306,7 +303,8 @@ async def verify_phone_signup_otp(
 async def send_phone_login_otp(
     request: Request,  # Required for rate limiter
     phone_data: PhoneLoginSendOTPRequest,
-    db: Client = Depends(get_db_client)
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
 ):
     """
     Send OTP to phone number for login (CUSTOMERS ONLY)
@@ -320,82 +318,11 @@ async def send_phone_login_otp(
     **Note**: Only customer accounts can log in via phone. Admin, RM, and Vendor
     users must use email login.
     """
-    try:
-        # Sanitize and clean phone number
-        clean_phone = html.escape(phone_data.phone.strip())
-        clean_phone = clean_phone.replace("+", "").replace(" ", "").replace("-", "")
-        country_code = phone_data.country_code or "91"
-
-        # Remove country code if present at start
-        if clean_phone.startswith(country_code):
-            clean_phone = clean_phone[len(country_code):]
-
-        # Build full phone number for database lookup
-        full_phone = f"+{country_code}{clean_phone}"
-
-        # Check if phone exists in profiles table
-        logger.info(f"Checking phone in database: {full_phone[-4:]}")  # Log last 4 digits only
-
-        profile_response = db.table("profiles").select(
-            "id, email, full_name, phone, phone_verified, user_role, is_active"
-        ).eq("phone", full_phone).execute()
-
-        if not profile_response.data or len(profile_response.data) == 0:
-            # Don't reveal if phone exists for security
-            logger.warning(f"Phone login attempt for non-existent phone")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Phone number not registered. Please sign up first."
-            )
-
-        profile = profile_response.data[0]
-
-        # Check if phone is verified
-        if not profile.get("phone_verified", False):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Phone number not verified. Please verify your phone first."
-            )
-
-        # CRITICAL: Only allow customers to login via phone
-        if profile.get("user_role") != "customer":
-            logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Phone login is only available for customer accounts. Please use email login."
-            )
-
-        # Check if user is active
-        if not profile.get("is_active", True):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive. Please contact support."
-            )
-
-        # Send OTP via MessageCentral
-        logger.info(f"Sending OTP to verified phone for user: {profile.get('id')}")
-        otp_result = await OTPService.send_otp(
-            phone=clean_phone,
-            country_code=country_code
-        )
-
-        return PhoneLoginSendOTPResponse(
-            success=True,
-            message=f"OTP sent successfully to {otp_result['phone']}",
-            verification_id=otp_result["verification_id"],
-            expires_in=otp_result["expires_in"],
-            phone=otp_result["phone"],
-            customer_name=html.escape(profile.get("full_name") or "")
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error sending phone login OTP: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP. Please try again."
-        )
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.send_phone_login_otp(
+        phone=phone_data.phone,
+        country_code=phone_data.country_code or "91"
+    )
 
 
 @router.post("/login/phone/verify-otp", response_model=PhoneLoginVerifyOTPResponse)
@@ -417,132 +344,13 @@ async def verify_phone_login_otp(
 
     **Note**: Only customer accounts can log in via phone.
     """
-    try:
-        # Sanitize inputs
-        clean_phone = html.escape(verify_data.phone.strip())
-        clean_phone = clean_phone.replace("+", "").replace(" ", "").replace("-", "")
-        clean_otp = verify_data.otp.strip()
-        verification_id = verify_data.verification_id.strip()
-
-        # Validate OTP format (6 digits)
-        if not clean_otp.isdigit() or len(clean_otp) != 6:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid OTP format. Please enter 6 digits."
-            )
-
-        # Verify OTP with MessageCentral
-        logger.info(f"Verifying OTP for verificationId: {verification_id}")
-        is_valid = await OTPService.verify_otp(
-            verification_id=verification_id,
-            otp_code=clean_otp
-        )
-
-        if not is_valid:
-            logger.warning(f"Invalid OTP attempt for verificationId: {verification_id}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired OTP. Please try again."
-            )
-
-        # OTP is valid - fetch user profile
-        # Try to find by phone (try with and without + prefix)
-        phone_variants = [
-            clean_phone,
-            f"+{clean_phone}",
-            f"+91{clean_phone}" if not clean_phone.startswith("91") else clean_phone
-        ]
-
-        profile = None
-        for phone_variant in phone_variants:
-            profile_response = db.table("profiles").select(
-                "*"
-            ).eq("phone", phone_variant).eq("phone_verified", True).execute()
-
-            if profile_response.data and len(profile_response.data) > 0:
-                profile = profile_response.data[0]
-                break
-
-        if not profile:
-            logger.error(f"Phone verified but profile not found for phone")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found. Please contact support."
-            )
-
-        # Validate user role (MUST be customer)
-        if profile.get("user_role") != "customer":
-            logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Phone login is only available for customer accounts."
-            )
-
-        # Check if user is active
-        if not profile.get("is_active", True):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive. Please contact support."
-            )
-
-        # Generate JWT tokens
-        from app.core.auth import create_access_token, create_refresh_token
-
-        token_data = {
-            "sub": profile["id"],
-            "email": profile["email"],
-            "user_role": profile.get("user_role", "customer")
-        }
-
-        access_token = create_access_token(token_data)
-        refresh_token = create_refresh_token(token_data)
-
-        # Sanitize user data for response
-        user_data = {
-            "id": profile["id"],
-            "email": profile["email"],
-            "full_name": html.escape(profile.get("full_name") or ""),
-            "user_role": profile.get("user_role", "customer"),
-            "role": profile.get("user_role", "customer"),  # Backward compatibility
-            "phone": html.escape(profile.get("phone") or ""),
-            "is_active": profile.get("is_active", True)
-        }
-
-        logger.info(f"User logged in via phone OTP: {profile['email']}")
-
-        # Log activity for phone login
-        from app.services.activity_log_service import ActivityLogService
-        try:
-            await ActivityLogService.log(
-                user_id=profile["id"],
-                action="phone_login",
-                entity_type="auth",
-                entity_id=profile["id"],
-                details={
-                    "login_method": "phone_otp",
-                    "phone": profile.get("phone", "")[-4:]  # Last 4 digits only
-                }
-            )
-        except Exception as log_error:
-            logger.warning(f"Failed to log phone login activity: {log_error}")
-
-        return PhoneLoginVerifyOTPResponse(
-            success=True,
-            message="Login successful",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="bearer",
-            user=user_data
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error verifying phone login OTP: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to verify OTP. Please try again."
-        )
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.verify_phone_login_otp(
+        phone=verify_data.phone,
+        otp=verify_data.otp,
+        verification_id=verify_data.verification_id,
+        country_code=verify_data.country_code or "91"
+    )
 
 
 # =====================================================

@@ -3,11 +3,11 @@ Vendor Service - Business Logic Layer
 Handles vendor salon management, services CRUD
 """
 import logging
+from datetime import date, datetime
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
 
-from app.core.database import get_db
 from app.core.auth import (
     verify_registration_token,
     create_access_token,
@@ -16,11 +16,13 @@ from app.core.auth import (
 from app.schemas import (
     ServiceCreate,
     ServiceUpdate,
-    SalonUpdate
+    SalonUpdate,
+    SalonPromoApplyRequest,
 )
 from app.services.booking_service import BookingService
 from app.services.activity_log_service import ActivityLogService
 from app.services.config_service import ConfigService
+from app.services.service_taxonomy import ServiceTaxonomyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +69,8 @@ class VendorService:
             # Add registration fee amount from system config
             try:
                 registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-                logger.info(f"DEBUG: registration_fee_config = {registration_fee_config}")
                 config_value = registration_fee_config.get("config_value")
-                logger.info(f"DEBUG: config_value (raw) = {config_value}, type = {type(config_value)}")
                 salon_data["registration_fee_amount"] = float(config_value)
-                logger.info(f"DEBUG: salon_data['registration_fee_amount'] = {salon_data['registration_fee_amount']}")
             except Exception as e:
                 logger.error(f"CRITICAL: Failed to fetch registration fee config from database: {e}")
                 raise HTTPException(
@@ -191,7 +190,8 @@ class VendorService:
         try:
             # Get salon ID
             salon_id = await self.get_vendor_salon_id(vendor_id)
-            
+            await self._sync_promotions_if_needed(salon_id)
+
             # Get services with category and subcategory details
             response = self.db.table("services").select(
                 "*, service_categories(*), service_subcategories(*)"
@@ -230,16 +230,39 @@ class VendorService:
             # Get salon ID and verify vendor owns a salon
             salon_id = await self.get_vendor_salon_id(vendor_id)
             
-            # Validate category_id if provided
-            if service.category_id:
-                await self._validate_service_category(service.category_id)
-            
-            # Validate subcategory_id if provided
-            if service.subcategory_id:
-                await self._validate_service_subcategory(service.subcategory_id, service.category_id)
-            
-            # Create service with auto-assigned salon_id
-            service_data = service.model_dump(exclude={'salon_id'})  # Exclude client-provided salon_id
+            category_id, subcategory_id = await self._resolve_service_category_fields(
+                category_id=service.category_id,
+                subcategory_id=service.subcategory_id,
+                sub_subcategory_id=service.sub_subcategory_id,
+                category_name=service.category_name,
+                subcategory_name=service.subcategory_name,
+                sub_subcategory_name=service.sub_subcategory_name,
+            )
+
+            # A service must belong to a category (services.category_id is NOT NULL).
+            # Fail with a clear 400 rather than letting the DB raise on insert.
+            if not category_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A service category is required",
+                )
+
+            await self._validate_service_category(category_id)
+
+            if subcategory_id:
+                await self._validate_service_subcategory(subcategory_id, category_id)
+
+            # Create service with auto-assigned salon_id.
+            # subcategory_id holds the DEEPEST taxonomy node; sub_subcategory_* are
+            # resolver inputs only and are not columns on the services table.
+            service_data = service.model_dump(
+                exclude={
+                    'salon_id', 'category_name', 'subcategory_name',
+                    'sub_subcategory_id', 'sub_subcategory_name',
+                }
+            )
+            service_data['category_id'] = category_id
+            service_data['subcategory_id'] = subcategory_id
             service_data['salon_id'] = salon_id  # Auto-assign from authenticated vendor
             service_data = self._apply_discount_fields(service_data)
             
@@ -290,16 +313,50 @@ class VendorService:
             # Verify service belongs to vendor's salon
             await self._verify_service_ownership(service_id, salon_id)
             
-            # Validate category_id if being updated
-            if update.category_id is not None:
-                await self._validate_service_category(update.category_id)
-            
-            # Validate subcategory_id if being updated
-            if update.subcategory_id is not None:
-                await self._validate_service_subcategory(update.subcategory_id, update.category_id)
-            
-            # Prepare update data
-            update_data = update.model_dump(exclude_unset=True)
+            update_data = update.model_dump(
+                exclude_unset=True,
+                exclude={
+                    'category_name', 'subcategory_name',
+                    'sub_subcategory_id', 'sub_subcategory_name',
+                },
+            )
+
+            taxonomy_touched = (
+                update.category_id is not None
+                or update.subcategory_id is not None
+                or update.sub_subcategory_id is not None
+                or update.category_name is not None
+                or update.subcategory_name is not None
+                or update.sub_subcategory_name is not None
+            )
+            if taxonomy_touched:
+                resolved_category_id, resolved_subcategory_id = await self._resolve_service_category_fields(
+                    category_id=update.category_id,
+                    subcategory_id=update.subcategory_id,
+                    sub_subcategory_id=update.sub_subcategory_id,
+                    category_name=update.category_name,
+                    subcategory_name=update.subcategory_name,
+                    sub_subcategory_name=update.sub_subcategory_name,
+                )
+                if update.category_id is not None or update.category_name is not None:
+                    update_data['category_id'] = resolved_category_id
+                # The deepest selected node becomes the stored leaf reference.
+                if (
+                    update.subcategory_id is not None
+                    or update.subcategory_name is not None
+                    or update.sub_subcategory_id is not None
+                    or update.sub_subcategory_name is not None
+                ):
+                    update_data['subcategory_id'] = resolved_subcategory_id
+
+            if update_data.get('category_id'):
+                await self._validate_service_category(update_data['category_id'])
+
+            if update_data.get('subcategory_id'):
+                await self._validate_service_subcategory(
+                    update_data['subcategory_id'],
+                    update_data.get('category_id'),
+                )
             
             if not update_data:
                 raise HTTPException(
@@ -547,104 +604,6 @@ class VendorService:
     # DASHBOARD & ANALYTICS
     # =====================================================
     
-    async def get_dashboard_stats(self, vendor_id: str) -> Dict[str, Any]:
-        """
-        Get vendor dashboard statistics.
-        
-        Args:
-            vendor_id: Vendor user ID
-            
-        Returns:
-            Dashboard data with salon info and statistics
-            
-        Raises:
-            HTTPException: If salon not found or query fails
-        """
-        try:
-            # Get salon
-            salon = await self.get_vendor_salon(vendor_id)
-            salon_id = str(salon["id"])
-            logger.info(f"Fetching dashboard stats for salon_id: {salon_id}")
-            
-            # Check if regular_buyer
-            is_regular_buyer = salon.get("salon_type") == "regular_buyer"
-
-            # Get product order stats (always relevant as vendors can also buy products)
-            total_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).execute()
-            pending_orders = self.db.table("product_orders").select("id", count="exact").eq("user_id", vendor_id).eq("status", "pending").execute()
-            completed_orders = self.db.table("product_orders").select("total_amount").eq("user_id", vendor_id).eq("payment_status", "completed").execute()
-            total_spending = sum([o.get("total_amount", 0) for o in completed_orders.data]) if completed_orders.data else 0
-
-            # Recent orders
-            recent_orders_response = self.db.table("product_orders").select("*").eq("user_id", vendor_id).order("created_at", desc=True).limit(5).execute()
-            recent_orders = recent_orders_response.data or []
-
-            if is_regular_buyer:
-                return {
-                    "salon": salon,
-                    "statistics": {
-                        "total_services": 0,
-                        "total_bookings": 0, # Don't repurpose fields anymore
-                        "pending_bookings": 0,
-                        "today_bookings": 0,
-                        "average_rating": 0,
-                        "total_reviews": 0,
-                        "total_product_orders": total_orders.count if total_orders else 0,
-                        "pending_product_orders": pending_orders.count if pending_orders else 0,
-                        "total_product_spending": total_spending
-                    },
-                    "recent_bookings": recent_orders
-                }
-            
-            # Original salon logic
-            # Get counts
-            total_services = self.db.table("services").select("id", count="exact").eq("salon_id", salon_id).execute()
-            total_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).is_("deleted_at", "null").execute()
-            pending_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).eq("status", "pending").is_("deleted_at", "null").execute()
-            
-            # Today's bookings
-            today_bookings = self.db.table("bookings").select("id", count="exact").eq("salon_id", salon_id).gte("booking_date", "today").is_("deleted_at", "null").execute()
-            
-            # Recent bookings (last 5) using bookings_with_payments view
-            recent_bookings_response = self.db.from_("bookings_with_payments").select("*").eq("salon_id", salon_id).is_("deleted_at", "null").order("created_at", desc=True).limit(5).execute()
-            
-            recent_bookings = []
-            for booking in (recent_bookings_response.data or []):
-                # Extract service names from services JSON
-                services = booking.get("services", [])
-                service_names = [s.get("name", "Unknown Service") for s in services] if services else []
-                
-                recent_bookings.append({
-                    **booking,
-                    "service_names": service_names,
-                    "service_names_str": ", ".join(service_names) if service_names else "No services"
-                })
-            
-            return {
-                "salon": salon,
-                "statistics": {
-                    "total_services": total_services.count if total_services else 0,
-                    "total_bookings": total_bookings.count if total_bookings else 0,
-                    "pending_bookings": pending_bookings.count if pending_bookings else 0,
-                    "today_bookings": today_bookings.count if today_bookings else 0,
-                    "average_rating": salon.get("average_rating", 0),
-                    "total_reviews": salon.get("total_reviews", 0),
-                    "total_product_orders": total_orders.count if total_orders else 0,
-                    "pending_product_orders": pending_orders.count if pending_orders else 0,
-                    "total_product_spending": total_spending
-                },
-                "recent_bookings": recent_bookings
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch dashboard stats: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch vendor dashboard"
-            )
-    
     async def get_analytics(self, vendor_id: str) -> Dict[str, Any]:
         """
         Get vendor analytics for dashboard.
@@ -718,55 +677,33 @@ class VendorService:
     # HELPER METHODS
     # =====================================================
     
+    def _taxonomy(self) -> ServiceTaxonomyResolver:
+        """Shared category/subcategory/sub-subcategory resolver."""
+        return ServiceTaxonomyResolver(self.db)
+
+    async def _resolve_service_category_fields(
+        self,
+        category_id: Optional[str] = None,
+        subcategory_id: Optional[str] = None,
+        sub_subcategory_id: Optional[str] = None,
+        category_name: Optional[str] = None,
+        subcategory_name: Optional[str] = None,
+        sub_subcategory_name: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        return await self._taxonomy().resolve_fields(
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            sub_subcategory_id=sub_subcategory_id,
+            category_name=category_name,
+            subcategory_name=subcategory_name,
+            sub_subcategory_name=sub_subcategory_name,
+        )
+
     async def _validate_service_category(self, category_id: str) -> None:
-        """
-        Validate that category_id exists.
-        
-        Args:
-            category_id: Category UUID to validate
-            
-        Raises:
-            HTTPException: If category not found
-        """
-        category_check = self.db.table("service_categories").select("id").eq(
-            "id", category_id
-        ).execute()
-        
-        if not category_check.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid category_id: {category_id}"
-            )
-    
+        await self._taxonomy().validate_category(category_id)
+
     async def _validate_service_subcategory(self, subcategory_id: str, category_id: str = None) -> None:
-        """
-        Validate that subcategory_id exists and optionally belongs to the given category.
-        
-        Args:
-            subcategory_id: Subcategory UUID to validate
-            category_id: Optional parent category UUID for consistency check
-            
-        Raises:
-            HTTPException: If subcategory not found or parent mismatch
-        """
-        subcategory_check = self.db.table("service_subcategories").select(
-            "id, parent_category_id"
-        ).eq("id", subcategory_id).execute()
-        
-        if not subcategory_check.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid subcategory_id: {subcategory_id}"
-            )
-        
-        # If category_id is also provided, verify parent-child relationship
-        if category_id:
-            actual_parent = subcategory_check.data[0].get("parent_category_id")
-            if actual_parent != category_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Subcategory {subcategory_id} does not belong to category {category_id}"
-                )
+        await self._taxonomy().validate_subcategory(subcategory_id, category_id)
     
     async def _verify_service_ownership(self, service_id: str, salon_id: str) -> None:
         """
@@ -878,7 +815,7 @@ class VendorService:
         response = self.db.table("salons").update(update_data).eq("id", salon_id).execute()
         
         logger.info(f"Vendor {user_id} linked to salon {salon_id}")
-        logger.info(f"Salon automatically verified upon vendor registration")
+        logger.info("Salon automatically verified upon vendor registration")
         
         return response.data[0] if response.data else update_data
     
@@ -899,7 +836,6 @@ class VendorService:
         Raises:
             HTTPException: If salon not found
         """
-        from datetime import datetime
         
         # Get vendor's salon
         salon = await self.get_vendor_salon(vendor_id)
@@ -916,7 +852,7 @@ class VendorService:
         }
         
         # Update salon with payment info
-        response = self.db.table("salons").update(payment_data).eq("id", salon_id).execute()
+        self.db.table("salons").update(payment_data).eq("id", salon_id).execute()
         
         logger.info(f"Payment processed successfully for salon: {business_name}")
         
@@ -1152,44 +1088,62 @@ class VendorService:
     
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
-        Get all active service categories with their active subcategories.
-        
+        Get all active service categories with their subcategories nested as a
+        3-level taxonomy tree:
+
+            category
+              subcategories[]        (level-2 nodes; parent_subcategory_id IS NULL)
+                subcategories[]      (level-3 sub-subcategory children)
+
         Returns:
-            List of service categories ordered by display_order,
-            each with a 'subcategories' list nested inside.
+            List of categories ordered by display_order, each level ordered by
+            display_order. Level-2 nodes always carry a 'subcategories' list
+            (possibly empty) so clients can render the picker uniformly.
         """
         # Fetch parent categories
         response = self.db.table("service_categories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
-        
+
         categories = response.data or []
-        
+
         if not categories:
             logger.info(" Retrieved 0 service categories")
             return categories
-        
-        # Fetch all active subcategories in a single query
+
+        # Fetch all active subcategories (both levels) in a single query
         subcategories_response = self.db.table("service_subcategories").select(
             "*"
         ).eq("is_active", True).order("display_order").execute()
-        
+
         subcategories = subcategories_response.data or []
-        
-        # Group subcategories by parent_category_id
-        subcats_by_parent = {}
+
+        # First pass: bucket level-3 children by their parent subcategory id.
+        children_by_parent = {}
         for sub in subcategories:
-            parent_id = sub.get("parent_category_id")
-            if parent_id not in subcats_by_parent:
-                subcats_by_parent[parent_id] = []
-            subcats_by_parent[parent_id].append(sub)
-        
-        # Attach subcategories to their parent categories
+            parent_sub_id = sub.get("parent_subcategory_id")
+            if parent_sub_id:
+                children_by_parent.setdefault(parent_sub_id, []).append(sub)
+
+        # Second pass: collect level-2 nodes by category and attach their children.
+        top_subcats_by_category = {}
+        for sub in subcategories:
+            if sub.get("parent_subcategory_id"):
+                continue  # level-3 node, attached below
+            sub["subcategories"] = children_by_parent.get(sub["id"], [])
+            top_subcats_by_category.setdefault(
+                sub.get("parent_category_id"), []
+            ).append(sub)
+
+        # Attach level-2 subcategories to their parent categories
         for cat in categories:
-            cat["subcategories"] = subcats_by_parent.get(cat["id"], [])
-        
-        logger.info(f" Retrieved {len(categories)} service categories with {len(subcategories)} total subcategories")
-        
+            cat["subcategories"] = top_subcats_by_category.get(cat["id"], [])
+
+        logger.info(
+            f" Retrieved {len(categories)} service categories with "
+            f"{len(subcategories)} total subcategories (incl. sub-subcategories)"
+        )
+
         return categories
 
 
@@ -1251,3 +1205,224 @@ class VendorService:
         data["discount_percentage"] = float(normalized_discount)
         data["discounted_price"] = float(discounted_price)
         return data
+
+    # =====================================================
+    # SALON-WIDE DISCOUNT PROMOTIONS
+    # =====================================================
+
+    def _parse_promo_date(self, value: str, field_name: str) -> date:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid {field_name}. Use YYYY-MM-DD format.",
+            ) from exc
+
+    def _promo_status(self, promo: Dict[str, Any], today: date) -> str:
+        start = promo.get("start_date")
+        end = promo.get("end_date")
+        if isinstance(start, str):
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+        if end and isinstance(end, str):
+            end = datetime.strptime(end, "%Y-%m-%d").date()
+
+        if not promo.get("is_active"):
+            return "inactive"
+        if start and today < start:
+            return "scheduled"
+        if end and today > end:
+            return "expired"
+        return "active"
+
+    def _serialize_promo(self, promo: Dict[str, Any], today: date, services_updated: int = 0) -> Dict[str, Any]:
+        start = promo.get("start_date")
+        end = promo.get("end_date")
+        if hasattr(start, "isoformat"):
+            start = start.isoformat()
+        if end and hasattr(end, "isoformat"):
+            end = end.isoformat()
+
+        return {
+            **promo,
+            "start_date": start,
+            "end_date": end,
+            "status": self._promo_status(promo, today),
+            "services_updated": services_updated,
+        }
+
+    async def _clear_salon_service_discounts(self, salon_id: str) -> None:
+        services = self.db.table("services").select("id, price").eq(
+            "salon_id", salon_id
+        ).is_("deleted_at", "null").execute()
+        for svc in services.data or []:
+            payload = self._apply_discount_fields({
+                "price": svc.get("price", 0),
+                "discount_percentage": None,
+            })
+            self.db.table("services").update(payload).eq("id", svc["id"]).execute()
+
+    def _discount_percentage_for_service(
+        self,
+        price: float,
+        discount_type: str,
+        discount_value: float,
+    ) -> Optional[float]:
+        if price <= 0:
+            return None
+        if discount_type == "percentage":
+            return min(float(discount_value), 100.0)
+        flat = float(discount_value)
+        pct = (flat / float(price)) * 100
+        return min(round(pct, 2), 100.0)
+
+    async def _apply_promo_to_all_services(
+        self,
+        salon_id: str,
+        discount_type: str,
+        discount_value: float,
+    ) -> int:
+        services = self.db.table("services").select("id, price").eq(
+            "salon_id", salon_id
+        ).is_("deleted_at", "null").execute()
+        updated = 0
+        for svc in services.data or []:
+            pct = self._discount_percentage_for_service(
+                float(svc.get("price") or 0),
+                discount_type,
+                discount_value,
+            )
+            if pct is None or pct <= 0:
+                continue
+            payload = self._apply_discount_fields({
+                "price": svc.get("price", 0),
+                "discount_percentage": pct,
+            })
+            self.db.table("services").update(payload).eq("id", svc["id"]).execute()
+            updated += 1
+        return updated
+
+    async def _sync_promotions_if_needed(self, salon_id: str) -> None:
+        today = date.today()
+        promos = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).execute()
+
+        expired_any = False
+        for promo in promos.data or []:
+            if self._promo_status(promo, today) == "expired":
+                self.db.table("salon_discount_promotions").update(
+                    {"is_active": False}
+                ).eq("id", promo["id"]).execute()
+                expired_any = True
+
+        if expired_any:
+            await self._clear_salon_service_discounts(salon_id)
+
+        latest_resp = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).limit(1).execute()
+
+        latest = latest_resp.data[0] if latest_resp.data else None
+        if not latest:
+            return
+
+        start = latest.get("start_date")
+        if isinstance(start, str):
+            start = datetime.strptime(start, "%Y-%m-%d").date()
+
+        status_label = self._promo_status(latest, today)
+        if status_label in ("active", "scheduled") and start and today >= start:
+            await self._apply_promo_to_all_services(
+                salon_id,
+                latest["discount_type"],
+                float(latest["discount_value"]),
+            )
+
+    async def apply_salon_promotion(
+        self,
+        vendor_id: str,
+        promo: SalonPromoApplyRequest,
+    ) -> Dict[str, Any]:
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        today = date.today()
+        start = self._parse_promo_date(promo.start_date, "start_date")
+        end = self._parse_promo_date(promo.end_date, "end_date") if promo.end_date else None
+
+        if end and end < start:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="End date must be on or after start date",
+            )
+        if end and end < today:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="End date cannot be in the past",
+            )
+        if promo.discount_type == "percentage" and promo.discount_value > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Percentage discount cannot exceed 100",
+            )
+        if promo.min_booking_amount is not None and promo.max_discount_limit is not None:
+            if promo.max_discount_limit < promo.min_booking_amount:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Max discount limit should be greater than or equal to minimum booking amount",
+                )
+
+        await self._sync_promotions_if_needed(salon_id)
+
+        self.db.table("salon_discount_promotions").update(
+            {"is_active": False}
+        ).eq("salon_id", salon_id).eq("is_active", True).execute()
+
+        insert_data = {
+            "salon_id": salon_id,
+            "title": promo.title.strip(),
+            "discount_type": promo.discount_type,
+            "discount_value": promo.discount_value,
+            "min_booking_amount": promo.min_booking_amount,
+            "max_discount_limit": promo.max_discount_limit,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat() if end else None,
+            "is_active": True,
+        }
+        created = self.db.table("salon_discount_promotions").insert(insert_data).execute()
+        record = created.data[0] if created.data else None
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create promotion",
+            )
+
+        services_updated = 0
+        if today >= start and (end is None or today <= end):
+            services_updated = await self._apply_promo_to_all_services(
+                salon_id,
+                promo.discount_type,
+                promo.discount_value,
+            )
+        else:
+            await self._clear_salon_service_discounts(salon_id)
+
+        logger.info(
+            f"Vendor {vendor_id} applied salon promo '{promo.title}' "
+            f"({promo.discount_type}={promo.discount_value}), services_updated={services_updated}"
+        )
+        return self._serialize_promo(record, today, services_updated)
+
+    async def get_active_salon_promotion(self, vendor_id: str) -> Optional[Dict[str, Any]]:
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        await self._sync_promotions_if_needed(salon_id)
+        today = date.today()
+
+        response = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).eq("is_active", True).order("created_at", desc=True).limit(1).execute()
+
+        if not response.data:
+            return None
+
+        promo = response.data[0]
+        return self._serialize_promo(promo, today)

@@ -3,7 +3,6 @@ FastAPI application factory and orchestrator.
 Imports modular concerns (logging, middleware, exception handlers, background tasks, endpoints)
 and registers them with the FastAPI app instance.
 """
-import logging
 
 from fastapi import FastAPI
 from slowapi.errors import RateLimitExceeded
@@ -14,7 +13,7 @@ from app.core.middleware import setup_middleware
 from app.core.handlers import register_exception_handlers
 from app.core.tasks import lifespan
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
-from app.api import location, auth, salons, bookings, admin, rm, vendors, payments, customers, careers, upload, products, product_orders
+from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, upload, products, product_orders
 from app.api.health import router as health_router
 
 # Setup logging
@@ -56,7 +55,6 @@ register_exception_handlers(app)
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(location.router, prefix=settings.API_PREFIX)
 app.include_router(salons.router, prefix=settings.API_PREFIX)
-app.include_router(bookings.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(rm.router, prefix=settings.API_PREFIX)
 app.include_router(vendors.router, prefix=settings.API_PREFIX)

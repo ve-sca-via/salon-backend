@@ -45,7 +45,6 @@ from .rm import (
     RMProfileUpdateResponse,
     RMDashboardResponse,
     RMLeaderboardResponse,
-    ServiceCategoriesResponse,
 )
 
 __all__ = [
@@ -69,5 +68,5 @@ __all__ = [
     "CareerApplicationResponse",
     # RM
     "VendorRequestOperationResponse", "VendorRequestsListResponse", "RMSalonsListResponse",
-    "RMProfileUpdateResponse", "RMDashboardResponse", "RMLeaderboardResponse", "ServiceCategoriesResponse",
+    "RMProfileUpdateResponse", "RMDashboardResponse", "RMLeaderboardResponse",
 ]

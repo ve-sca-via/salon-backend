@@ -38,6 +38,8 @@ wheels/
 # BUT allow these templates (use ! to negate)
 !.env.example
 !.env.*.example
+# Committed dummy config for tests/CI (no real secrets — see tests/test.env)
+!tests/test.env
 
 # IDEs
 .vscode/
@@ -63,3 +65,7 @@ logs/
 
 # OS
 Thumbs.db
+
+# Generated outputs / presentation assets
+outputs/
+presentation_assets/

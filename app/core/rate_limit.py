@@ -15,7 +15,7 @@ Usage:
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from fastapi import Request, Response
+from fastapi import Request
 from fastapi.responses import JSONResponse
 import logging
 
@@ -31,6 +31,18 @@ limiter = Limiter(
 )
 
 
+def _rate_limit_user_message(path: str) -> str:
+    """User-facing message for auth rate limits (login/signup)."""
+    path_lower = path.lower()
+    if "signup" in path_lower:
+        return "Too many signup attempts. Please wait a minute and try again."
+    if "login" in path_lower:
+        return "Too many login attempts. Please wait a minute and try again."
+    if "password" in path_lower or "reset" in path_lower:
+        return "Too many password reset attempts. Please try again later."
+    return "Too many requests. Please wait a moment and try again."
+
+
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     """
     Custom handler for rate limit exceeded errors
@@ -39,16 +51,18 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSO
     """
     logger.warning(
         f"Rate limit exceeded for {get_remote_address(request)} "
-        f"on {request.method} {request.url.path}"
+        f"on {request.method} {request.url.path}: {exc.detail}"
     )
-    
+
+    user_message = _rate_limit_user_message(request.url.path)
+
     return JSONResponse(
         status_code=429,
         content={
             "success": False,
             "error": "rate_limit_exceeded",
-            "message": "Too many requests. Please try again later.",
-            "detail": str(exc.detail)
+            "message": user_message,
+            "detail": user_message,
         }
     )
 

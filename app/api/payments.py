@@ -8,8 +8,7 @@ Handles Razorpay payment routing:
 
 All business logic in PaymentService (service layer pattern)
 """
-from fastapi import APIRouter, HTTPException, Depends, status, Query, Request
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 
 from app.core.auth import get_current_user_id, TokenData, get_current_user
 from app.core.database import get_db_client

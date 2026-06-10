@@ -23,7 +23,7 @@ async def cleanup_expired_tokens_task(shutdown_event: asyncio.Event):
     
     while not shutdown_event.is_set():
         try:
-            logger.info("Running scheduled token cleanup...")
+            logger.debug("Running scheduled token cleanup...")
             cleaned_count = cleanup_expired_tokens(db)
             if cleaned_count > 0:
                 logger.info(f"Cleaned up {cleaned_count} expired tokens")

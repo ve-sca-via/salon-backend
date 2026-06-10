@@ -4,7 +4,6 @@ All response models should be defined here for consistency
 """
 from pydantic import BaseModel
 from typing import Optional, List, Any
-from datetime import datetime
 
 
 # =====================================================

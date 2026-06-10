@@ -43,4 +43,8 @@ pytz==2023.3
 rich==13.7.0  # Rich terminal output for logging
 
 # Cloudinary Storage
-cloudinary==1.42.0
+cloudinary==1.41.0
+
+# Testing (CI + local integration tests)
+pytest==8.3.4
+pytest-asyncio==0.24.0
