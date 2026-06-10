@@ -71,7 +71,7 @@ from .response.vendor import (
     CompleteRegistrationResponse, VendorDashboardResponse, VendorAnalyticsResponse,
     PublicSalonsResponse, SalonDetailResponse, AvailableSlotsResponse,
     SearchSalonsResponse, SalonServicesResponse,
-    PublicConfigResponse, ImageUploadResponse, MultipleImageUploadResponse, ImageDeleteResponse
+    PublicConfigResponse, ImageUploadResponse
 )
 from .response.booking import (
     BookingResponse, BookingListResponse
@@ -145,7 +145,7 @@ __all__ = [
     "CompleteRegistrationResponse", "VendorDashboardResponse", "VendorAnalyticsResponse",
     "PublicSalonsResponse", "SalonDetailResponse", "AvailableSlotsResponse",
     "NearbySalonsResponse", "SearchSalonsResponse", "SalonServicesResponse",
-    "PublicConfigResponse", "ImageUploadResponse", "MultipleImageUploadResponse", "ImageDeleteResponse",
+    "PublicConfigResponse", "ImageUploadResponse",
     "BookingResponse", "BookingListResponse",
     "RazorpayOrderResponse", "VendorRegistrationPaymentResponse", "BookingPaymentResponse",
     "PaymentVerificationResponse", "VendorRegistrationVerificationResponse",

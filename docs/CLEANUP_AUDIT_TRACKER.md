@@ -77,6 +77,55 @@ Legend: `[x]` done & validated · `[~]` in progress · `[ ]` todo · `[?]` needs
 
 ---
 
+## Module: `storage_service`  ✅ COMPLETE (audited, cleaned, tested — 24/24 mocked)
+
+Audited `app/services/storage_service.py` + `app/api/upload.py` + the admin
+service-category icon upload, against all three frontends.
+
+### Root cause found (the recurring prod failure)
+- The agreement-document upload was the **only** file type still on Supabase Storage
+  (product images + career docs already use Cloudinary). It depended on `service_role`
+  RLS-bypass + **hand-run** dashboard SQL (`20260221120000_add_storage_policies.sql`),
+  which drifts/resets in prod → intermittent failures. The error handler then
+  **relabelled** any RLS/permission error as a misleading 401 "Authentication expired"
+  (upload.py), sending months of debugging down the wrong path. A `STORAGE_CLIENT_TTL`
+  "1-hour token expiry" assumption (database.py:91) reinforced the wrong theory
+  (service_role keys are multi-year).
+
+### Changes
+- [x] **Migrated agreement-document upload → Cloudinary (private)**, reusing the existing
+  career-doc pattern (`CloudinaryService.upload_file(folder="agreements")` +
+  `generate_download_url`). Reuses `CAREER_CLOUDINARY_*` settings (no new env). Dropped
+  the misleading 401 remap; real failures now surface as 500.
+- [x] **Dual-read** on `GET /upload/agreement-document/signed-url`: Cloudinary URLs →
+  Cloudinary signed download; legacy Supabase paths → existing Supabase signed URL
+  (old docs keep working, no data migration). Frontends unchanged (a Cloudinary URL
+  passes through `extractStoragePath` untouched).
+- [x] Removed orphaned endpoint `POST /upload/salon-images/multiple` (0 callers anywhere)
+- [x] Removed orphaned endpoint `DELETE /upload/salon-image` (0 callers; deletion happens
+  in `rm_service`)
+- [x] Removed dead schemas `MultipleImageUploadResponse`, `ImageDeleteResponse`,
+  `UploadedImageInfo` (+ `__init__.py` exports)
+- [x] `StorageService`: removed unused `create_signed_url()` + `delete_file()`, dead class
+  constants (`ALLOWED_*`/`MAX_FILE_SIZE` — never referenced), and the unused `max_retries`
+  param + misleading "retry logic" docstring. Kept `upload_file()` (used by the admin icon
+  upload).
+- [x] Added `tests/test_upload_mocked.py` (24 tests, no-stack tier): every remaining
+  endpoint happy + error paths, the dual-read contract, the "failure is 500 not fake-401"
+  regression, and regressions asserting the two removed endpoints are gone (404/405).
+- Validation: `pytest -m "not integration"` → **67 passed**.
+
+### Noted, not changed (out of this module's scope)
+- [ ] `STORAGE_CLIENT_TTL` / "1-hour expiry" misconception in `database.py:91` (now only
+  affects salon images + icons, which still use Supabase)
+- [ ] `FILE_UPLOAD` rate limit (`rate_limit.py:83`) defined but never applied to upload routes
+- [ ] `lubist_mobile_application/API_INTEGRATION_TRACKER.md` still lists the two removed
+  endpoints (all rows were ⬜/unintegrated) — doc hygiene
+- [ ] Future: user intends to move salon images (and remaining Supabase usage) to Cloudinary
+  too; this pass left salon images on Supabase per current intent.
+
+---
+
 ## Out of scope / noted for later (not part of the audit)
 - [ ] Frontend unused-import lint (eslint) — not run this pass; the dead exported hooks were the higher-value finding
 - [ ] Pydantic v2 deprecation warnings (`.dict()`, class-based `Config`) across handlers/schemas — pre-existing tech debt
