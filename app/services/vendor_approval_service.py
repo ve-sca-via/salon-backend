@@ -10,7 +10,6 @@ from app.services.geocoding import geocoding_service
 from app.services.email import email_service
 from app.core.auth import create_registration_token
 from app.schemas.response.vendor import VendorJoinRequestResponse
-from app.schemas.request.vendor import ApprovalConfig
 from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,14 @@ class VendorApprovalService:
     def __init__(self, db_client):
         """Initialize service - uses centralized db client"""
         self.db = db_client
-    
+
+    @staticmethod
+    def _ensure_request_pending(request_data: Dict[str, Any]) -> None:
+        """Raise ValueError if the vendor request is not in 'pending' state."""
+        current_status = request_data.get("status")
+        if current_status != "pending":
+            raise ValueError(f"Request already {current_status}")
+
     async def approve_vendor_request(
         self,
         request_id: str,
@@ -153,8 +159,7 @@ class VendorApprovalService:
 
         request_data = response.data
 
-        if request_data.get("status") != "pending":
-            raise ValueError(f"Request already {request_data.get('status')}")
+        self._ensure_request_pending(request_data)
 
         # Convert to response model for typed access, allow extra DB fields
         try:
@@ -272,7 +277,7 @@ class VendorApprovalService:
         request_id: str,
         request_data: VendorJoinRequestResponse,
         coordinates: Dict[str, float],
-        config: ApprovalConfig
+        config: Dict[str, Any]
     ) -> str:
         """Create salon entry in database"""
         # Extract documents JSON
@@ -398,7 +403,7 @@ class VendorApprovalService:
         request_id: str,
         salon_id: str,
         request_data: VendorJoinRequestResponse,
-        config: ApprovalConfig,
+        config: Dict[str, Any],
         rm_email: Optional[str] = None
     ) -> None:
         """Send approval email to vendor with registration link"""
@@ -537,10 +542,9 @@ class VendorApprovalService:
             raise ValueError("Request not found")
         
         request_data = request_response.data
-        
-        if request_data.get("status") != "pending":
-            raise ValueError(f"Request already {request_data.get('status')}")
-        
+
+        self._ensure_request_pending(request_data)
+
         # Update status
         update_data = {
             "status": "rejected",
@@ -566,16 +570,14 @@ class VendorApprovalService:
         except Exception as e:
             logger.error(f"Failed to penalize RM score: {str(e)}", exc_info=True)
         
-        # Get RM details and send email
-        rm_response = self.db.table("rm_profiles").select(
-            "*, profiles(email, full_name)"
-        ).eq("id", request_data["rm_id"]).single().execute()
-        
-        if rm_response.data and rm_response.data.get("profiles"):
-            rm_email = rm_response.data["profiles"]["email"]
-            rm_name = rm_response.data["profiles"]["full_name"]
-            
-            # Send rejection email to RM
+        # Get RM details and send rejection email (reuse shared fetch helper).
+        # A missing RM profile is non-fatal: the request is still rejected and we
+        # simply skip the notification email (preserves prior behavior).
+        try:
+            rm_details = await self._get_rm_details(request_data["rm_id"])
+            rm_email = rm_details["email"]
+            rm_name = rm_details["name"]
+
             email_sent = await email_service.send_vendor_rejection_email(
                 to_email=rm_email,
                 rm_name=rm_name,
@@ -584,9 +586,11 @@ class VendorApprovalService:
                 rejection_reason=admin_notes,
                 request_id=request_id
             )
-            
+
             if not email_sent:
                 logger.warning(f"Failed to send rejection email to {rm_email}")
+        except Exception as e:
+            logger.warning(f"Could not send RM rejection notification: {str(e)}")
         
         logger.info(f"Vendor request {request_id} rejected")
         

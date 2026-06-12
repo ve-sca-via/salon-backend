@@ -12,7 +12,6 @@ from app.schemas.user import UserProfileUpdate
 from app.schemas import (
     VendorJoinRequestCreate,
     VendorJoinRequestResponse,
-    RMProfileResponse,
     RMScoreHistoryResponse,
     VendorRequestOperationResponse,
     VendorRequestsListResponse,
@@ -135,9 +134,10 @@ async def get_rm_salons(
         rm_id=current_user.user_id,
         include_inactive=include_inactive
     )
-    
+
     return {
         "success": True,
+        "message": "Salons fetched successfully",
         "data": salons,
         "count": len(salons)
     }
@@ -147,15 +147,6 @@ async def get_rm_salons(
 # PROFILE & SCORE MANAGEMENT
 # =====================================================
 
-@router.get("/profile", response_model=RMProfileResponse)
-async def get_own_profile(
-    current_user: TokenData = Depends(require_rm),
-    rm_service: RMService = Depends(get_rm_service)
-):
-    """Get own RM profile with scores"""
-    return await rm_service.get_rm_profile(current_user.user_id)
-
-
 @router.put("/profile", response_model=RMProfileUpdateResponse)
 async def update_own_profile(
     profile_data: UserProfileUpdate,
@@ -163,8 +154,8 @@ async def update_own_profile(
     rm_service: RMService = Depends(get_rm_service)
 ):
     """Update own RM profile - limited fields allowed"""
-    # Validate allowed fields
-    allowed_fields = {"full_name", "phone", "address", "city", "state", "pincode"}
+    # Only fields the service routes to the profiles table are accepted here.
+    allowed_fields = {"full_name", "phone"}
     update_data = profile_data.model_dump(exclude_none=True)
     update_data = {k: v for k, v in update_data.items() if k in allowed_fields}
     

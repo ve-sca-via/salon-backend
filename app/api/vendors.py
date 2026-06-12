@@ -300,9 +300,9 @@ async def update_booking_status(
 ):
     """
     Update booking status (confirm, complete, no-show).
-    
-    Valid statuses: confirmed, completed, no_show, cancelled
-    
+
+    Valid statuses: confirmed, completed, no_show
+
     Request body: {"status": "completed"}
     """
     return await vendor_service.update_booking_status(

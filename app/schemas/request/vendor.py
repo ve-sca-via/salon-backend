@@ -77,16 +77,6 @@ class VendorRejectionRequest(BaseModel):
     admin_notes: str = Field(..., min_length=1, max_length=500, description="Rejection reason (required)")
 
 
-# Helper models for approval workflow
-class Coordinates(BaseModel):
-    latitude: float
-    longitude: float
-
-
-class ApprovalConfig(BaseModel):
-    rm_score: int
-    registration_fee: float
-
 # =====================================================
 # SALON REQUEST SCHEMAS
 # =====================================================

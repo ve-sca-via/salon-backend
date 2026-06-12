@@ -205,28 +205,6 @@ class SalonPromoResponse(BaseModel):
 # DASHBOARD RESPONSE SCHEMAS
 # =====================================================
 
-class DashboardStatistics(BaseModel):
-    """Statistics section of dashboard response"""
-    total_services: int
-    total_bookings: int
-    pending_bookings: int
-    today_bookings: int
-    average_rating: float
-    total_reviews: int
-    # Product stats (B2B)
-    total_product_orders: int = 0
-    pending_product_orders: int = 0
-    total_product_spending: float = 0.0
-
-class VendorDashboardResponse(BaseModel):
-    """Response for vendor dashboard endpoint"""
-    salon: Dict[str, Any]  # Full salon data
-    statistics: DashboardStatistics
-
-    class Config:
-        extra = "allow"
-
-
 class VendorAnalyticsResponse(BaseModel):
     """Response for vendor analytics endpoint"""
     total_bookings: int

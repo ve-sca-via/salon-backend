@@ -3,13 +3,14 @@ Career Service - Business Logic for Job Applications
 Handles career application submissions, status updates, and queries
 """
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, get_args
 from datetime import datetime
 import uuid
 
 from fastapi import HTTPException, status, UploadFile
 from pydantic import validate_email, ValidationError
 from app.core.config import settings
+from app.schemas.request.career import ApplicationStatusUpdate
 from app.services.cloudinary_service import CloudinaryService
 from app.services.email import EmailService, email_service
 from app.services.activity_log_service import ActivityLogger
@@ -23,22 +24,16 @@ class CareerService:
     Handles submission, status updates, document management, and queries.
     """
     
-    VALID_STATUSES = {
-        'pending', 'under_review', 'shortlisted', 
-        'interview_scheduled', 'rejected', 'hired'
-    }
+    # Single source of truth: the allowed values are defined on the
+    # ApplicationStatusUpdate.status Literal and derived here at runtime.
+    VALID_STATUSES = set(get_args(ApplicationStatusUpdate.model_fields['status'].annotation))
     
     # Document field name mappings (centralized for consistency)
     DOCUMENT_FIELD_MAPPING = {
         # Form field name -> Database column name
         'resume': 'resume_url',
         'aadhaar_card': 'aadhaar_url',
-        'pan_card': 'pan_url',
         'photo': 'photo_url',
-        'address_proof': 'address_proof_url',
-        'experience_letter': 'experience_letter_url',
-        'salary_slip': 'salary_slip_url',
-        'educational_certificates': 'educational_certificates_url'
     }
     
     # Required document fields that must be present
@@ -122,22 +117,20 @@ class CareerService:
         education: Dict[str, Any],
         additional_info: Dict[str, Any],
         required_documents: Dict[str, UploadFile],
-        optional_documents: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Submit a new career application
-        
+
         Args:
-            personal_info: Dict with name, email, phone, address, etc.
-            job_details: Dict with position, experience, salary expectations, etc.
-            education: Dict with qualifications, university, graduation year
-            additional_info: Dict with cover letter, LinkedIn, portfolio
-            required_documents: Dict with keys: resume, aadhaar_card, pan_card, photo, address_proof
-            optional_documents: Dict with keys: educational_certificates (list), experience_letter, salary_slip
-        
+            personal_info: Dict with name, email, phone, address, age
+            job_details: Dict with position, experience_years
+            education: Dict with highest_qualification
+            additional_info: Dict with cover_letter
+            required_documents: Dict with keys: resume, aadhaar_card, photo
+
         Returns:
             Dict with application_id, application_number, message
-        
+
         Raises:
             HTTPException on validation or processing errors
         """
@@ -199,42 +192,7 @@ class CareerService:
                     # Use centralized mapping
                     column_name = self._get_db_column_name(doc_type)
                     document_urls[column_name] = url
-            
-            # Upload optional documents
-            educational_certs_urls = []
-            if optional_documents.get('educational_certificates'):
-                for idx, cert in enumerate(optional_documents['educational_certificates']):
-                    ext = self._get_file_extension(cert.filename)
-                    url = await self.cloudinary.upload_file(
-                        file=cert,
-                        folder=folder,
-                        custom_filename=f"educational_cert_{idx}{ext}"
-                    )
-                    educational_certs_urls.append(url)
-            
-            if educational_certs_urls:
-                document_urls['educational_certificates_url'] = educational_certs_urls
-            
-            if optional_documents.get('experience_letter'):
-                ext = self._get_file_extension(optional_documents['experience_letter'].filename)
-                url = await self.cloudinary.upload_file(
-                    file=optional_documents['experience_letter'],
-                    folder=folder,
-                    custom_filename=f"experience_letter{ext}"
-                )
-                column_name = self._get_db_column_name('experience_letter')
-                document_urls[column_name] = url
-            
-            if optional_documents.get('salary_slip'):
-                ext = self._get_file_extension(optional_documents['salary_slip'].filename)
-                url = await self.cloudinary.upload_file(
-                    file=optional_documents['salary_slip'],
-                    folder=folder,
-                    custom_filename=f"salary_slip{ext}"
-                )
-                column_name = self._get_db_column_name('salary_slip')
-                document_urls[column_name] = url
-            
+
             # List of columns that currently exist in the DB (schema source of truth)
             EXISTING_DB_COLUMNS = {
                 "id", "application_number", "full_name", "email", "phone",
@@ -391,7 +349,6 @@ class CareerService:
                         "email",
                         "phone",
                         "application_number",
-                        "current_city",
                     ):
                         try:
                             rows = (
@@ -470,39 +427,6 @@ class CareerService:
             raise
         except Exception as e:
             logger.error(f"Error fetching application {application_id}: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch application"
-            )
-    
-    def get_application_by_number(self, application_number: str) -> Dict[str, Any]:
-        """
-        Get a specific career application by application number
-        
-        Args:
-            application_number: Application number (e.g., CA-20260112-A1B2C3D4)
-        
-        Returns:
-            Application data dict
-        
-        Raises:
-            HTTPException if not found
-        """
-        try:
-            result = self.db.table("career_applications").select("*").eq("application_number", application_number).execute()
-            
-            if not result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Application with number {application_number} not found"
-                )
-            
-            return result.data[0]
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching application by number {application_number}: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch application"

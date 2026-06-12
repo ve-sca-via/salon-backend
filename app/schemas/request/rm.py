@@ -15,7 +15,7 @@ class RMProfileUpdate(BaseModel):
     is_active: Optional[bool] = Field(None, description="Updates profiles.is_active")
     
     # RM-specific fields (will be routed to rm_profiles table)
-    employee_id: Optional[str] = Field(None, max_length=50, description="Updates rm_profiles.employee_id - Company employee ID")
+    # NOTE: employee_id is system-generated and immutable (not updatable here).
     assigned_territories: Optional[List[str]] = Field(None, description="Updates rm_profiles.assigned_territories")
     joining_date: Optional[str] = Field(None, description="Updates rm_profiles.joining_date - ISO date string (YYYY-MM-DD)")
     manager_notes: Optional[str] = Field(None, description="Updates rm_profiles.manager_notes")
