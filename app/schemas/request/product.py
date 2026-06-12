@@ -6,6 +6,16 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 import re
 
+# Slug format: lowercase letters/numbers, single hyphens between segments
+_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _validate_slug_format(v):
+    """Shared slug validator for product create/update schemas."""
+    if v is not None and not _SLUG_PATTERN.match(v):
+        raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
+    return v
+
 
 class ProductCreate(BaseModel):
     """Schema for creating a new product"""
@@ -31,11 +41,7 @@ class ProductCreate(BaseModel):
     @field_validator("slug", mode="before")
     @classmethod
     def validate_slug(cls, v):
-        if v is not None:
-            # Only allow lowercase letters, numbers, and hyphens
-            if not re.match(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", v):
-                raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
-        return v
+        return _validate_slug_format(v)
 
     @field_validator("discount_price", mode="before")
     @classmethod
@@ -78,7 +84,4 @@ class ProductUpdate(BaseModel):
     @field_validator("slug", mode="before")
     @classmethod
     def validate_slug(cls, v):
-        if v is not None:
-            if not re.match(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", v):
-                raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
-        return v
+        return _validate_slug_format(v)

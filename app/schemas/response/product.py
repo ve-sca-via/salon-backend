@@ -38,3 +38,34 @@ class ProductDeleteResponse(BaseModel):
     success: bool = True
     message: str
     product_id: str
+
+
+# =====================================================
+# PRODUCT CART RESPONSE SCHEMAS
+# =====================================================
+
+class ProductCartItem(BaseModel):
+    """A single processed product-cart line item."""
+    id: str
+    product_id: str
+    name: Optional[str] = None
+    price: float
+    quantity: int
+    image_url: Optional[str] = None
+    image_urls: List[str] = []
+    total: float
+    is_b2b_price: bool = False
+
+
+class ProductCartResponse(BaseModel):
+    """Full product cart with computed totals."""
+    success: bool = True
+    items: List[ProductCartItem]
+    total_amount: float
+    item_count: int
+
+
+class ProductCartOperationResponse(BaseModel):
+    """Generic add/update/remove/clear acknowledgement."""
+    success: bool = True
+    message: str

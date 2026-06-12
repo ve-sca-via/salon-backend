@@ -32,13 +32,9 @@ from .vendor import (
 )
 from .booking import (
     BookingCreate,
-    BookingUpdate,
     BookingCancellation,
 )
 from .payment import (
-    PaymentBase,
-    BookingOrderCreate,
-    RazorpayOrderCreate,
     PaymentVerification,
 )
 from .location import (
@@ -46,10 +42,6 @@ from .location import (
 )
 from .career import (
     ApplicationStatusUpdate,
-    PersonalInfo,
-    JobDetails,
-    Education,
-    AdditionalInfo,
 )
 from .rm import (
     RMProfileUpdate,
@@ -66,15 +58,14 @@ __all__ = [
     "SalonBase", "SalonCreate", "SalonUpdate", "ServiceCreate", "ServiceUpdate",
     "SalonPromoApplyRequest",
     # Booking
-    "BookingCreate", "BookingUpdate", "BookingCancellation",
+    "BookingCreate", "BookingCancellation",
     # Payment
-    "PaymentBase", "BookingOrderCreate", "RazorpayOrderCreate", "PaymentVerification",
+    "PaymentVerification",
     # Admin
     "SystemConfigUpdate",
     # Location
     "GeocodeRequest",
     # Career
     "ApplicationStatusUpdate",
-    "PersonalInfo", "JobDetails", "Education", "AdditionalInfo",
     "RMProfileUpdate",
 ]

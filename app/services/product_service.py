@@ -30,6 +30,55 @@ def _generate_slug(name: str) -> str:
     return slug
 
 
+def _compute_discount_pct(price: Optional[float], sale_price: Optional[float]) -> Optional[float]:
+    """
+    Compute a discount percentage from a base price and a sale price.
+
+    Returns None when it can't be computed (no sale price, or non-positive price)
+    so callers can leave the existing percentage untouched.
+    """
+    if sale_price is None or not price or price <= 0:
+        return None
+    return round(((price - sale_price) / price) * 100, 2)
+
+
+def is_b2b_role(user_role: Optional[str]) -> bool:
+    """Roles that receive wholesale (B2B) pricing. Shared across product modules."""
+    return user_role in ("vendor", "regular_buyer")
+
+
+def effective_unit_price(product: Dict[str, Any], user_role: Optional[str]) -> float:
+    """
+    The unit price actually charged for a product, given the buyer's role.
+
+    Prefers the standard discount_price, then the base price; B2B roles with a
+    b2b_discount_price set get that instead. Shared by the cart and order modules
+    so the price a buyer sees in the cart matches what they're charged at checkout.
+    """
+    price = product.get("discount_price") or product.get("price") or 0.0
+    if is_b2b_role(user_role) and product.get("b2b_discount_price") is not None:
+        price = product["b2b_discount_price"]
+    return price
+
+
+def _apply_b2b_pricing(product: Dict[str, Any], user_role: Optional[str]) -> Dict[str, Any]:
+    """
+    Swap standard discount pricing for B2B pricing on a product dict, in place.
+
+    For B2B roles (vendor, regular_buyer) with a b2b_discount_price set, the
+    standard discount_price is preserved under `original_discount_price` and the
+    B2B values take its place. Always sets the `is_b2b_price` flag.
+    """
+    if is_b2b_role(user_role) and product.get("b2b_discount_price") is not None:
+        product["original_discount_price"] = product.get("discount_price")
+        product["discount_price"] = product["b2b_discount_price"]
+        product["discount_percentage"] = product.get("b2b_discount_percentage")
+        product["is_b2b_price"] = True
+    else:
+        product["is_b2b_price"] = False
+    return product
+
+
 class ProductService:
     """
     Service class for product operations.
@@ -96,16 +145,8 @@ class ProductService:
             products = response.data or []
             
             # Apply B2B pricing if applicable
-            is_b2b = user_role in ['vendor', 'regular_buyer']
             for p in products:
-                if is_b2b and p.get('b2b_discount_price') is not None:
-                    # Swap standard discount price with B2B price for the response
-                    p['original_discount_price'] = p.get('discount_price')
-                    p['discount_price'] = p['b2b_discount_price']
-                    p['discount_percentage'] = p.get('b2b_discount_percentage')
-                    p['is_b2b_price'] = True
-                else:
-                    p['is_b2b_price'] = False
+                _apply_b2b_pricing(p, user_role)
 
             total = response.count if response.count is not None else len(products)
 
@@ -147,26 +188,20 @@ class ProductService:
                 self.db.table("products")
                 .select("*")
                 .eq("id", product_id)
-                .single()
+                .maybe_single()
                 .execute()
             )
 
-            if not response.data:
+            if not response or not response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Product not found: {product_id}",
                 )
 
             product = response.data
-            
+
             # Apply B2B pricing if applicable
-            if user_role in ['vendor', 'regular_buyer'] and product.get('b2b_discount_price') is not None:
-                product['original_discount_price'] = product.get('discount_price')
-                product['discount_price'] = product['b2b_discount_price']
-                product['discount_percentage'] = product.get('b2b_discount_percentage')
-                product['is_b2b_price'] = True
-            else:
-                product['is_b2b_price'] = False
+            _apply_b2b_pricing(product, user_role)
 
             return product
 
@@ -198,26 +233,20 @@ class ProductService:
                 .select("*")
                 .eq("slug", slug)
                 .eq("is_active", True)
-                .single()
+                .maybe_single()
                 .execute()
             )
 
-            if not response.data:
+            if not response or not response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Product not found: {slug}",
                 )
 
             product = response.data
-            
+
             # Apply B2B pricing if applicable
-            if user_role in ['vendor', 'regular_buyer'] and product.get('b2b_discount_price') is not None:
-                product['original_discount_price'] = product.get('discount_price')
-                product['discount_price'] = product['b2b_discount_price']
-                product['discount_percentage'] = product.get('b2b_discount_percentage')
-                product['is_b2b_price'] = True
-            else:
-                product['is_b2b_price'] = False
+            _apply_b2b_pricing(product, user_role)
 
             return product
 
@@ -289,27 +318,19 @@ class ProductService:
             if (
                 product_data.get("discount_price") is not None
                 and product_data.get("discount_percentage") is None
-                and product_data.get("price")
             ):
-                price = product_data["price"]
-                discount_price = product_data["discount_price"]
-                if price > 0:
-                    product_data["discount_percentage"] = round(
-                        ((price - discount_price) / price) * 100, 2
-                    )
+                pct = _compute_discount_pct(product_data.get("price"), product_data["discount_price"])
+                if pct is not None:
+                    product_data["discount_percentage"] = pct
 
             # Auto-calculate b2b_discount_percentage
             if (
                 product_data.get("b2b_discount_price") is not None
                 and product_data.get("b2b_discount_percentage") is None
-                and product_data.get("price")
             ):
-                price = product_data["price"]
-                b2b_price = product_data["b2b_discount_price"]
-                if price > 0:
-                    product_data["b2b_discount_percentage"] = round(
-                        ((price - b2b_price) / price) * 100, 2
-                    )
+                pct = _compute_discount_pct(product_data.get("price"), product_data["b2b_discount_price"])
+                if pct is not None:
+                    product_data["b2b_discount_percentage"] = pct
 
             response = self.db.table("products").insert(product_data).execute()
 
@@ -385,28 +406,23 @@ class ProductService:
                         detail=f"Slug '{safe_updates['slug']}' is already in use",
                     )
 
-            # Auto-recalculate discount_percentage if needed
-            if "discount_price" in safe_updates or "price" in safe_updates:
-                # Fetch current product for context
+            # Auto-recalculate discount percentages if price or any sale price changed.
+            # Fetch current product once for context (used by both calculations below).
+            if {"discount_price", "b2b_discount_price", "price"} & safe_updates.keys():
                 current = await self.get_product_by_id(product_id)
                 price = safe_updates.get("price", current.get("price"))
-                discount_price = safe_updates.get("discount_price", current.get("discount_price"))
 
-                if discount_price is not None and price and price > 0:
-                    safe_updates["discount_percentage"] = round(
-                        ((price - discount_price) / price) * 100, 2
-                    )
+                if "discount_price" in safe_updates or "price" in safe_updates:
+                    discount_price = safe_updates.get("discount_price", current.get("discount_price"))
+                    pct = _compute_discount_pct(price, discount_price)
+                    if pct is not None:
+                        safe_updates["discount_percentage"] = pct
 
-            # Auto-recalculate b2b_discount_percentage if needed
-            if "b2b_discount_price" in safe_updates or "price" in safe_updates:
-                current = await self.get_product_by_id(product_id)
-                price = safe_updates.get("price", current.get("price"))
-                b2b_price = safe_updates.get("b2b_discount_price", current.get("b2b_discount_price"))
-
-                if b2b_price is not None and price and price > 0:
-                    safe_updates["b2b_discount_percentage"] = round(
-                        ((price - b2b_price) / price) * 100, 2
-                    )
+                if "b2b_discount_price" in safe_updates or "price" in safe_updates:
+                    b2b_price = safe_updates.get("b2b_discount_price", current.get("b2b_discount_price"))
+                    pct = _compute_discount_pct(price, b2b_price)
+                    if pct is not None:
+                        safe_updates["b2b_discount_percentage"] = pct
 
             response = (
                 self.db.table("products")

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from typing import Literal
 from app.core.database import get_db_client
 from app.services.product_order_service import ProductOrderService
 from supabase import Client
@@ -7,7 +8,7 @@ from supabase import Client
 router = APIRouter()
 
 class UpdateStatusRequest(BaseModel):
-    status: str
+    status: Literal["pending", "paid", "shipped", "delivered", "cancelled"]
 
 def get_product_order_service(db: Client = Depends(get_db_client)) -> ProductOrderService:
     """Dependency injection for ProductOrderService"""

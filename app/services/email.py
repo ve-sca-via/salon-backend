@@ -9,11 +9,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
-from app.services.email_logger import EmailLogger
 from app.services.activity_log_service import ActivityLogService
 import logging
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +55,11 @@ def _format_booking_services_html(services: list) -> str:
 class EmailService:
     """Email service for sending templated emails"""
     
-    def __init__(self, email_logger: Optional[EmailLogger] = None):
+    def __init__(self):
         # Use shared Jinja2 template environment (singleton)
         # This prevents creating new environments on every instantiation
         self.env = _jinja2_env
-        # Email logger for tracking sent emails
-        self.email_logger = email_logger
-        
+
     async def _send_email(
         self,
         to_email: str,
@@ -73,12 +70,11 @@ class EmailService:
         retry_delay: float = 1.0,
         email_type: str = "unknown",
         related_entity_type: Optional[str] = None,
-        related_entity_id: Optional[str] = None,
-        email_data: Optional[Dict[str, Any]] = None
+        related_entity_id: Optional[str] = None
     ) -> bool:
         """
         Send email via SMTP with retry logic (async)
-        
+
         Args:
             to_email: Recipient email address
             subject: Email subject
@@ -86,30 +82,14 @@ class EmailService:
             text_body: Plain text email body (optional)
             max_retries: Maximum number of retry attempts
             retry_delay: Initial delay between retries (exponential backoff)
-            email_type: Type of email for logging (vendor_approval, booking_confirmation, etc.)
+            email_type: Type of email for activity logging (vendor_approval, booking_confirmation, etc.)
             related_entity_type: Type of related entity (booking, salon, payment, etc.)
             related_entity_id: UUID of related entity
-            email_data: Template variables for email (for resending)
-            
+
         Returns:
             bool: True if email sent successfully, False otherwise
         """
-        log_id = None
-        
         try:
-            # Log email attempt (pending status)
-            if self.email_logger:
-                log_id = await self.email_logger.log_email_attempt(
-                    recipient_email=to_email,
-                    email_type=email_type,
-                    subject=subject,
-                    status="pending",
-                    related_entity_type=related_entity_type,
-                    related_entity_id=related_entity_id,
-                    email_data=email_data,
-                    retry_count=0
-                )
-            
             # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
@@ -130,10 +110,6 @@ class EmailService:
                 try:
                     success = await asyncio.to_thread(self._send_email_sync, msg, to_email, subject)
                     if success:
-                        # Update log status to sent
-                        if self.email_logger and log_id:
-                            await self.email_logger.update_email_status(log_id, "sent")
-                        
                         # Log activity for admin dashboard
                         try:
                             await ActivityLogService.log(
@@ -169,24 +145,10 @@ class EmailService:
             
             # All retries exhausted
             logger.error(f"Failed to send email to {to_email} after {max_retries + 1} attempts")
-            
-            # Update log status to failed
-            if self.email_logger and log_id:
-                await self.email_logger.update_email_status(
-                    log_id, 
-                    "failed", 
-                    f"Failed after {max_retries + 1} attempts"
-                )
-            
             return False
-            
+
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            
-            # Update log status to failed
-            if self.email_logger and log_id:
-                await self.email_logger.update_email_status(log_id, "failed", str(e))
-            
             return False
     
     def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
@@ -309,12 +271,7 @@ class EmailService:
                 html_body,
                 email_type="vendor_approval",
                 related_entity_type="salon",
-                related_entity_id=salon_id,
-                email_data={
-                    "owner_name": owner_name,
-                    "salon_name": salon_name,
-                    "registration_fee": registration_fee
-                }
+                related_entity_id=salon_id
             )
             
         except Exception as e:
@@ -373,13 +330,7 @@ class EmailService:
                 html_body,
                 email_type="rm_notification",
                 related_entity_type="salon",
-                related_entity_id=salon_id,
-                email_data={
-                    "rm_name": rm_name,
-                    "salon_name": salon_name,
-                    "points_awarded": points_awarded,
-                    "new_total_score": new_total_score
-                }
+                related_entity_id=salon_id
             )
             
         except Exception as e:
@@ -429,96 +380,11 @@ class EmailService:
                 html_body,
                 email_type="vendor_rejection",
                 related_entity_type="vendor_request",
-                related_entity_id=request_id,
-                email_data={
-                    "rm_name": rm_name,
-                    "salon_name": salon_name,
-                    "rejection_reason": rejection_reason
-                }
+                related_entity_id=request_id
             )
             
         except Exception as e:
             logger.error(f"Failed to send vendor rejection email: {str(e)}")
-            return False
-    
-    async def send_booking_confirmation_email(
-        self,
-        to_email: str,
-        customer_name: str,
-        salon_name: str,
-        services: list,
-        booking_date: str,
-        booking_time: str,
-        total_amount: float,
-        booking_id: str
-    ) -> bool:
-        """
-        Send booking confirmation email
-        
-        Args:
-            to_email: Customer email
-            customer_name: Customer name
-            salon_name: Salon name
-            services: List of service dictionaries with 'name' and 'price' keys
-            booking_date: Booking date
-            booking_time: Booking time
-            total_amount: Total payment amount
-            booking_id: Booking ID
-            
-        Returns:
-            bool: Success status
-        """
-        try:
-            template = self.env.get_template('booking_confirmation.html')
-            
-            # Format services for template
-            services_list = []
-            for service in services:
-                if isinstance(service, dict):
-                    services_list.append({
-                        'name': service.get('name', 'Unknown Service'),
-                        'price': service.get('unit_price', 0)  # Use unit_price from booking service
-                    })
-                else:
-                    # Handle legacy string format
-                    services_list.append({
-                        'name': str(service),
-                        'price': 0
-                    })
-            
-            html_body = template.render(
-                customer_name=customer_name,
-                salon_name=salon_name,
-                services=services_list,
-                booking_date=booking_date,
-                booking_time=booking_time,
-                total_amount=total_amount,
-                booking_id=booking_id,
-                support_email=settings.EMAIL_FROM,
-                current_year=2025
-            )
-            
-            subject = f"Booking Confirmed at {salon_name}"
-            
-            return await self._send_email(
-                to_email, 
-                subject, 
-                html_body,
-                email_type="booking_confirmation",
-                related_entity_type="booking",
-                related_entity_id=booking_id,
-                email_data={
-                    "customer_name": customer_name,
-                    "salon_name": salon_name,
-                    "booking_date": booking_date,
-                    "booking_time": booking_time,
-                    "services": services_list,
-                    "total_amount": total_amount
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to send booking confirmation email: {str(e)}")
             return False
     
     async def send_booking_cancellation_email(
@@ -570,13 +436,7 @@ class EmailService:
                 html_body,
                 email_type="booking_cancellation",
                 related_entity_type="booking",
-                related_entity_id=booking_id,
-                email_data={
-                    "customer_name": customer_name,
-                    "salon_name": salon_name,
-                    "service_name": service_name,
-                    "booking_number": booking_number,
-                }
+                related_entity_id=booking_id
             )
             
         except Exception as e:
@@ -646,135 +506,13 @@ class EmailService:
                 html_body,
                 email_type="booking_cancellation_vendor",
                 related_entity_type="booking",
-                related_entity_id=booking_id,
-                email_data={
-                    "salon_name": salon_name,
-                    "customer_name": customer_name,
-                    "customer_phone": customer_phone,
-                    "booking_number": booking_number,
-                    "booking_date": booking_date,
-                    "booking_time": booking_time,
-                },
+                related_entity_id=booking_id
             )
             logger.info(f"Booking cancellation notification sent to vendor {vendor_email} for booking {booking_number}")
             return result
 
         except Exception as e:
             logger.error(f"Failed to send vendor booking cancellation notification: {str(e)}")
-            return False
-    
-    async def send_payment_receipt_email(
-        self,
-        to_email: str,
-        customer_name: str,
-        payment_id: str,
-        payment_type: str,
-        amount: float,
-        service_amount: float = None,
-        convenience_fee: float = None,
-        payment_date: str = None,
-        salon_name: str = None
-    ) -> bool:
-        """
-        Send payment receipt email
-        
-        Args:
-            to_email: Customer email
-            customer_name: Customer name
-            payment_id: Razorpay payment ID
-            payment_type: Type of payment (registration/booking)
-            amount: Total amount paid
-            service_amount: Service amount (for booking)
-            convenience_fee: Convenience fee (for booking)
-            payment_date: Payment date
-            salon_name: Salon name (for vendor registration)
-            
-        Returns:
-            bool: Success status
-        """
-        try:
-            template = self.env.get_template('payment_receipt.html')
-            
-            html_body = template.render(
-                customer_name=customer_name,
-                payment_id=payment_id,
-                payment_type=payment_type,
-                amount=amount,
-                service_amount=service_amount,
-                convenience_fee=convenience_fee,
-                payment_date=payment_date,
-                salon_name=salon_name,
-                support_email=settings.EMAIL_FROM,
-                current_year=2025
-            )
-            
-            subject = f"Payment Receipt - {payment_id}"
-            
-            return await self._send_email(
-                to_email, 
-                subject, 
-                html_body,
-                email_type="payment_receipt",
-                related_entity_type="payment",
-                related_entity_id=payment_id,
-                email_data={
-                    "customer_name": customer_name,
-                    "payment_type": payment_type,
-                    "amount": amount
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to send payment receipt email: {str(e)}")
-            return False
-    
-    async def send_welcome_vendor_email(
-        self,
-        to_email: str,
-        owner_name: str,
-        salon_name: str
-    ) -> bool:
-        """
-        Send welcome email to vendor after payment completion
-        
-        Args:
-            to_email: Vendor email
-            owner_name: Salon owner name
-            salon_name: Salon name
-            
-        Returns:
-            bool: Success status
-        """
-        try:
-            template = self.env.get_template('welcome_vendor.html')
-            
-            vendor_portal_url = settings.VENDOR_PORTAL_URL
-            
-            html_body = template.render(
-                owner_name=owner_name,
-                salon_name=salon_name,
-                vendor_portal_url=vendor_portal_url,
-                support_email=settings.EMAIL_FROM,
-                current_year=2025
-            )
-            
-            subject = f"Welcome to Salon Platform - {salon_name} is now active!"
-            
-            return await self._send_email(
-                to_email, 
-                subject, 
-                html_body,
-                email_type="welcome_vendor",
-                related_entity_type="salon",
-                related_entity_id=None,  # Would need salon_id passed in
-                email_data={
-                    "owner_name": owner_name,
-                    "salon_name": salon_name
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to send welcome vendor email: {str(e)}")
             return False
     
     async def send_payment_reminder_email(
@@ -837,11 +575,7 @@ class EmailService:
                 html_body,
                 email_type="payment_reminder",
                 related_entity_type="salon",
-                related_entity_id=salon_id,
-                email_data={
-                    "salon_name": salon_name,
-                    "registration_fee": registration_fee
-                }
+                related_entity_id=salon_id
             )
             
         except Exception as e:
@@ -890,19 +624,14 @@ class EmailService:
                 html_body,
                 email_type="career_application_confirmation",
                 related_entity_type="career_application",
-                related_entity_id=None,  # Would need application_id passed in
-                email_data={
-                    "applicant_name": applicant_name,
-                    "position": position,
-                    "application_number": application_number
-                }
+                related_entity_id=None  # Would need application_id passed in
             )
             
         except Exception as e:
             logger.error(f"Failed to send career application confirmation: {str(e)}")
             return False
     
-    def send_new_career_application_notification(
+    async def send_new_career_application_notification(
         self,
         applicant_name: str,
         position: str,
@@ -949,10 +678,17 @@ class EmailService:
                 has_salary_slip=experience_years > 0
             )
             
-            subject = f" New Career Application - {position}"
-            
-            return self._send_email(admin_email, subject, html_body)
-            
+            subject = f"New Career Application - {position}"
+
+            return await self._send_email(
+                admin_email,
+                subject,
+                html_body,
+                email_type="career_application_admin",
+                related_entity_type="career_application",
+                related_entity_id=application_id
+            )
+
         except Exception as e:
             logger.error(f"Failed to send career application admin notification: {str(e)}")
             return False
@@ -1032,17 +768,7 @@ class EmailService:
                 html_body,
                 email_type="booking_confirmation_customer",
                 related_entity_type="booking",
-                related_entity_id=None,  # Would need booking_id passed in
-                email_data={
-                    "customer_name": customer_name,
-                    "salon_name": salon_name,
-                    "booking_number": booking_number,
-                    "booking_date": booking_date,
-                    "booking_time": booking_time,
-                    "total_amount": total_amount,
-                    "convenience_fee": convenience_fee,
-                    "service_price": service_price
-                }
+                related_entity_id=None  # Would need booking_id passed in
             )
             logger.info(f"Booking confirmation email sent to {customer_email} for booking {booking_number}")
             return result
@@ -1138,16 +864,7 @@ class EmailService:
                 html_body,
                 email_type="booking_notification_vendor",
                 related_entity_type="booking",
-                related_entity_id=booking_id,
-                email_data={
-                    "salon_name": salon_name,
-                    "customer_name": customer_name,
-                    "customer_phone": customer_phone,
-                    "booking_number": booking_number,
-                    "booking_date": booking_date,
-                    "booking_time": booking_time,
-                    "service_price": service_price,
-                }
+                related_entity_id=booking_id
             )
             logger.info(f"New booking notification email sent to vendor {vendor_email} for booking {booking_number}")
             return result
@@ -1188,14 +905,7 @@ class EmailService:
                 html_body,
                 email_type="review_request_customer",
                 related_entity_type="booking",
-                related_entity_id=booking_id,
-                email_data={
-                    "customer_name": customer_name,
-                    "salon_name": salon_name,
-                    "booking_number": booking_number,
-                    "booking_date": booking_date,
-                    "feedback_url": feedback_url
-                }
+                related_entity_id=booking_id
             )
         except Exception as e:
             logger.error(f"Failed to send review request email: {str(e)}")

@@ -141,43 +141,6 @@ async def get_popular_cities(
     }
 
 
-@router.get("/", response_model=PublicSalonsResponse, operation_id="public_get_salons")
-async def get_salons(
-    status: Optional[str] = Query(None, description="Filter by status: 'approved' or 'pending'"),
-    city: Optional[str] = Query(None, description="Filter by city"),
-    limit: int = Query(50, ge=1, le=100, description="Maximum results"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    salon_service: SalonService = Depends(get_salon_service)
-):
-    """
-    Get salons with optional status filter.
-    
-    **Status Options:**
-    - approved: Verified and payment completed salons
-    - pending: Salons awaiting admin approval
-    - none: Returns approved salons by default
-    
-    **Note:** 
-    This endpoint may be protected by RLS policies depending on user role.
-    Public users see only approved salons.
-    Admins can see pending salons.
-    """
-    if status == "approved" or not status:
-        salons = await salon_service.get_approved_salons(limit, offset)
-    elif status == "pending":
-        # This should be protected by auth middleware for admin-only access
-        salons = await salon_service.get_pending_verification_salons(limit)
-    else:
-        raise HTTPException(status_code=400, detail="Invalid status. Use 'approved' or 'pending'")
-    
-    return {
-        "salons": salons,
-        "count": len(salons),
-        "offset": offset,
-        "limit": limit
-    }
-
-
 @router.get("/{salon_id}", response_model=SalonDetailResponse)
 async def get_salon(
     salon_id: str,
@@ -220,9 +183,9 @@ async def get_salon(
     
     # Service layer will raise ValueError if not found
     # Check if salon is publicly visible
-    if not (salon_data.get('is_active') and salon_data.get('is_verified') and salon_data.get('registration_fee_paid')):
+    if not salon_service.is_publicly_visible(salon_data):
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail="Salon not available. It may be inactive, unverified, or payment pending."
         )
     
@@ -333,8 +296,8 @@ async def get_available_slots(
     """
     # Verify salon exists and is public
     salon = await salon_service.get_salon(salon_id)
-    
-    if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
+
+    if not salon_service.is_publicly_visible(salon):
         raise HTTPException(status_code=404, detail="Salon not available")
     
     # Parse service IDs if provided
@@ -355,9 +318,12 @@ async def get_available_slots(
         total_duration = 60  # Default duration if no services specified
     
     # Get existing bookings for this date
+    # NOTE: the Supabase client here is synchronous — do NOT await .execute()
+    # (a stray await previously made this always throw, silently disabling
+    # conflict detection so every slot looked free).
     try:
-        bookings_result = await db.table('bookings').select('time_slots, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
-        existing_bookings = bookings_result.data
+        bookings_result = db.table('bookings').select('time_slots, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
+        existing_bookings = bookings_result.data or []
     except Exception as e:
         logger.warning(f"Could not fetch existing bookings: {e}")
         existing_bookings = []
@@ -391,14 +357,21 @@ async def get_available_slots(
             slot_end = current + timedelta(minutes=total_duration)
             
             for booking in existing_bookings:
-                # Use first time slot from the array
-                time_slots = booking.get('time_slots', [])
-                if not time_slots:
+                # Use first time slot from the array. Parse each booking
+                # defensively so one malformed row can't void the whole
+                # slot calculation (which would fall back to sample slots).
+                try:
+                    time_slots = booking.get('time_slots') or []
+                    if not time_slots:
+                        continue
+                    booking_time = datetime.strptime(time_slots[0], "%H:%M:%S").time()
+                    booking_start = datetime.combine(datetime.today(), booking_time)
+                    booking_duration = booking.get('duration_minutes') or total_duration
+                    booking_end = booking_start + timedelta(minutes=booking_duration)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Skipping unparsable booking in slot calc: {e}")
                     continue
-                booking_time = datetime.strptime(time_slots[0], "%H:%M:%S").time()
-                booking_start = datetime.combine(datetime.today(), booking_time)
-                booking_end = booking_start + timedelta(minutes=booking['duration_minutes'])
-                
+
                 # Check for overlap
                 if (current < booking_end and slot_end > booking_start):
                     conflict = True

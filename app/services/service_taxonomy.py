@@ -10,7 +10,7 @@ It is shared by the vendor service flow and the admin salon-service flow so the
 logic lives in one place.
 """
 import logging
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
@@ -20,6 +20,61 @@ logger = logging.getLogger(__name__)
 class ServiceTaxonomyResolver:
     def __init__(self, db):
         self.db = db
+
+    async def build_category_tree(self) -> List[Dict[str, Any]]:
+        """
+        Fetch all active categories and subcategories and assemble them into a
+        3-level taxonomy tree:
+
+            category
+              subcategories[]        (level-2 nodes; parent_subcategory_id IS NULL)
+                subcategories[]      (level-3 sub-subcategory children)
+
+        Categories and each level are ordered by display_order. Level-2 nodes
+        always carry a 'subcategories' list (possibly empty) so clients can render
+        the picker uniformly.
+        """
+        response = self.db.table("service_categories").select(
+            "*"
+        ).eq("is_active", True).order("display_order").execute()
+
+        categories = response.data or []
+        if not categories:
+            logger.info(" Retrieved 0 service categories")
+            return categories
+
+        subcategories_response = self.db.table("service_subcategories").select(
+            "*"
+        ).eq("is_active", True).order("display_order").execute()
+
+        subcategories = subcategories_response.data or []
+
+        # First pass: bucket level-3 children by their parent subcategory id.
+        children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
+        for sub in subcategories:
+            parent_sub_id = sub.get("parent_subcategory_id")
+            if parent_sub_id:
+                children_by_parent.setdefault(parent_sub_id, []).append(sub)
+
+        # Second pass: collect level-2 nodes by category and attach their children.
+        top_subcats_by_category: Dict[str, List[Dict[str, Any]]] = {}
+        for sub in subcategories:
+            if sub.get("parent_subcategory_id"):
+                continue  # level-3 node, attached below
+            sub["subcategories"] = children_by_parent.get(sub["id"], [])
+            top_subcats_by_category.setdefault(
+                sub.get("parent_category_id"), []
+            ).append(sub)
+
+        for cat in categories:
+            cat["subcategories"] = top_subcats_by_category.get(cat["id"], [])
+
+        logger.info(
+            f" Retrieved {len(categories)} service categories with "
+            f"{len(subcategories)} total subcategories (incl. sub-subcategories)"
+        )
+
+        return categories
 
     async def resolve_fields(
         self,
