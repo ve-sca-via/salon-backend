@@ -28,7 +28,8 @@ from .request.auth import (
     PhoneSignupSendOTPRequest, PhoneSignupVerifyOTPRequest
 )
 from .request.customer import (
-    ReviewCreate, ReviewUpdate, FeedbackReviewCreate, CartItemCreate, CartItemUpdate, FavoriteCreate
+    ReviewCreate, ReviewUpdate, FeedbackReviewCreate, CartItemCreate, CartItemUpdate, FavoriteCreate,
+    ProductFavoriteCreate
 )
 from .request.booking import (
     BookingCreate, BookingCancellation, CartCheckoutCreate
@@ -126,6 +127,7 @@ __all__ = [
     "PhoneVerificationSendOTPRequest", "PhoneVerificationConfirmRequest",
     "PhoneSignupSendOTPRequest", "PhoneSignupVerifyOTPRequest",
     "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
+    "ProductFavoriteCreate",
     "BookingCreate", "BookingCancellation", "CartCheckoutCreate",
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate", "VendorJoinRequestUpdate",
     "VendorApprovalRequest", "VendorRejectionRequest", "SalonBase", "SalonCreate", "SalonUpdate",

@@ -21,7 +21,7 @@ from app.schemas import (
     CustomerBookingsResponse, BookingCancelResponse, BookingResponse,
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
-    CartCheckoutCreate, FavoriteCreate,
+    CartCheckoutCreate, FavoriteCreate, ProductFavoriteCreate,
     ProductCartResponse, ProductCartOperationResponse
 )
 
@@ -307,6 +307,53 @@ async def add_favorite(
     return await customer_service.add_favorite(
         customer_id=current_user.user_id,
         salon_id=favorite_data.salon_id
+    )
+
+
+# =====================================================
+# PRODUCT FAVORITES (Saved tab — saved products)
+# Declared before the dynamic /favorites/{salon_id} route so the
+# static /favorites/products paths take precedence.
+# =====================================================
+
+@router.get("/favorites/products", response_model=FavoritesResponse)
+async def get_favorite_products(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Get all favorite (saved) products for the current customer.
+    """
+    return await customer_service.get_favorite_products(current_user.user_id)
+
+
+@router.post("/favorites/products", response_model=FavoriteOperationResponse)
+async def add_favorite_product(
+    favorite_data: ProductFavoriteCreate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Add a product to the current customer's favorites.
+    """
+    return await customer_service.add_favorite_product(
+        customer_id=current_user.user_id,
+        product_id=favorite_data.product_id
+    )
+
+
+@router.delete("/favorites/products/{product_id}", response_model=FavoriteOperationResponse)
+async def remove_favorite_product(
+    product_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Remove a product from the current customer's favorites.
+    """
+    return await customer_service.remove_favorite_product(
+        customer_id=current_user.user_id,
+        product_id=product_id
     )
 
 

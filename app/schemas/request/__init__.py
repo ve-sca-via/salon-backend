@@ -15,6 +15,7 @@ from .customer import (
     CartItemCreate,
     CartItemUpdate,
     FavoriteCreate,
+    ProductFavoriteCreate,
 )
 from .vendor import (
     CompleteRegistrationRequest,
@@ -52,6 +53,7 @@ __all__ = [
     "LoginRequest", "SignupRequest", "LogoutAllRequest", "RefreshTokenRequest",
     # Customer
     "SalonFilters", "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
+    "ProductFavoriteCreate",
     # Vendor
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate",
     "VendorJoinRequestUpdate", "VendorApprovalRequest", "VendorRejectionRequest",
