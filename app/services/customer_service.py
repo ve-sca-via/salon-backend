@@ -887,19 +887,190 @@ class CustomerService:
                 .execute()
             
             logger.info(f"Removed salon {salon_id} from favorites for customer {customer_id}")
-            
+
             return {
                 "success": True,
                 "message": "Removed from favorites"
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to remove favorite for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to remove favorite"
             )
-    
+
+    # =====================================================
+    # PRODUCT FAVORITES
+    # =====================================================
+
+    async def get_favorite_products(self, customer_id: str) -> Dict[str, Any]:
+        """
+        Get customer's favorite (saved) products.
+
+        Args:
+            customer_id: Customer user ID
+
+        Returns:
+            Dict with favorite products list and count
+
+        Raises:
+            HTTPException: If query fails
+        """
+        try:
+            # Get favorite product IDs
+            favorites_response = self.db.table("product_favorites")\
+                .select("product_id")\
+                .eq("user_id", customer_id)\
+                .execute()
+
+            if not favorites_response.data:
+                return {"success": True, "favorites": [], "count": 0}
+
+            # Get product details (only active products)
+            product_ids = [fav["product_id"] for fav in favorites_response.data]
+
+            products_response = self.db.table("products")\
+                .select("*")\
+                .in_("id", product_ids)\
+                .eq("is_active", True)\
+                .execute()
+
+            favorites = products_response.data or []
+
+            logger.info(f"Retrieved {len(favorites)} favorite products for customer {customer_id}")
+
+            return {
+                "success": True,
+                "favorites": favorites,
+                "count": len(favorites)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get favorite products for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve favorite products"
+            )
+
+    async def add_favorite_product(
+        self,
+        customer_id: str,
+        product_id: str
+    ) -> Dict[str, Any]:
+        """
+        Add product to favorites (idempotent).
+
+        Args:
+            customer_id: Customer user ID
+            product_id: Product ID to favorite
+
+        Returns:
+            Dict with success flag and favorite data
+
+        Raises:
+            HTTPException: If operation fails
+        """
+        try:
+            # Reject unknown/inactive products so the saved tab stays clean
+            product = self.db.table("products")\
+                .select("id")\
+                .eq("id", product_id)\
+                .eq("is_active", True)\
+                .execute()
+
+            if not product.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Product not found"
+                )
+
+            # Check if already favorited
+            existing = self.db.table("product_favorites")\
+                .select("id")\
+                .eq("user_id", customer_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            if existing.data:
+                logger.info(f"Product {product_id} already favorited by customer {customer_id}")
+                return {
+                    "success": True,
+                    "message": "Product already in favorites",
+                    "favorite": existing.data[0]
+                }
+
+            # Add to favorites
+            response = self.db.table("product_favorites")\
+                .insert({
+                    "user_id": customer_id,
+                    "product_id": product_id,
+                    "created_at": datetime.utcnow().isoformat()
+                })\
+                .execute()
+
+            logger.info(f"Added product {product_id} to favorites for customer {customer_id}")
+
+            if response.data:
+                return {
+                    "success": True,
+                    "message": "Added to favorites",
+                    "favorite": response.data[0]
+                }
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to add favorite product"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to add favorite product for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to add favorite product"
+            )
+
+    async def remove_favorite_product(
+        self,
+        customer_id: str,
+        product_id: str
+    ) -> Dict[str, Any]:
+        """
+        Remove product from favorites.
+
+        Args:
+            customer_id: Customer user ID
+            product_id: Product ID to unfavorite
+
+        Returns:
+            Dict with success flag
+
+        Raises:
+            HTTPException: If operation fails
+        """
+        try:
+            self.db.table("product_favorites")\
+                .delete()\
+                .eq("user_id", customer_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            logger.info(f"Removed product {product_id} from favorites for customer {customer_id}")
+
+            return {
+                "success": True,
+                "message": "Removed from favorites"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to remove favorite product for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to remove favorite product"
+            )
+
     # =====================================================
     # REVIEWS
     # =====================================================

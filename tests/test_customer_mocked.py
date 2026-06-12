@@ -444,6 +444,72 @@ def test_remove_favorite(cs):
 
 
 # =====================================================================
+# PRODUCT FAVORITES
+# =====================================================================
+def _seed_product(cs, is_active=True, **o):
+    return cs.add("products", name="Hair Serum", price=500.0, is_active=is_active, **o)
+
+
+def test_product_favorites_empty(cs):
+    cs.login()
+    r = cs.client.get(f"{CUST}/favorites/products")
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 0
+
+
+def test_product_favorites_with_items(cs):
+    product = _seed_product(cs)
+    cs.add("product_favorites", user_id="cust-1", product_id=product["id"])
+    cs.login()
+    r = cs.client.get(f"{CUST}/favorites/products")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 1
+    assert body["favorites"][0]["id"] == product["id"]
+
+
+def test_product_favorites_excludes_inactive(cs):
+    product = _seed_product(cs, is_active=False)
+    cs.add("product_favorites", user_id="cust-1", product_id=product["id"])
+    cs.login()
+    r = cs.client.get(f"{CUST}/favorites/products")
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 0  # inactive products are filtered out
+
+
+def test_add_favorite_product_new_then_idempotent(cs):
+    product = _seed_product(cs)
+    cs.login()
+    r1 = cs.client.post(f"{CUST}/favorites/products", json={"product_id": product["id"]})
+    assert r1.status_code == 200, r1.text
+    r2 = cs.client.post(f"{CUST}/favorites/products", json={"product_id": product["id"]})
+    assert r2.status_code == 200, r2.text
+    assert len(cs.db.table("product_favorites").rows) == 1  # no duplicate
+
+
+def test_add_favorite_product_unknown_404(cs):
+    cs.login()
+    r = cs.client.post(f"{CUST}/favorites/products", json={"product_id": str(uuid.uuid4())})
+    assert r.status_code == 404, r.text
+    assert cs.db.table("product_favorites").rows == []
+
+
+def test_remove_favorite_product(cs):
+    product = _seed_product(cs)
+    cs.add("product_favorites", user_id="cust-1", product_id=product["id"])
+    cs.login()
+    r = cs.client.delete(f"{CUST}/favorites/products/{product['id']}")
+    assert r.status_code == 200, r.text
+    assert cs.db.table("product_favorites").rows == []
+
+
+def test_product_favorites_requires_auth(cs):
+    # No login -> get_current_user dependency rejects the request.
+    r = cs.client.get(f"{CUST}/favorites/products")
+    assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
 # REVIEWS
 # =====================================================================
 def _completed_booking(cs, salon_id, service_id, customer_id="cust-1"):
