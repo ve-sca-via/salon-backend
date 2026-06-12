@@ -1,20 +1,45 @@
 """
 Razorpay Payment Integration Service
-Handles all payment operations including:
-- Vendor registration fee
-- Customer booking convenience fee
-- Payment verification
-- Refunds
+Low-level gateway client. Handles:
+- Razorpay order creation
+- Payment signature verification
 """
 import razorpay
-import hmac
-import hashlib
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
 from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+async def resolve_razorpay_credentials(config_service, *, allow_env_fallback: bool = False):
+    """
+    Resolve Razorpay (key_id, key_secret) from system configuration.
+
+    Single source of truth for credential lookup, shared by all services that
+    talk to Razorpay. Reads from the `system_config` table via ConfigService;
+    missing/unreadable values come back as ``None`` (ConfigService swallows the
+    not-found/DB errors and returns the default).
+
+    Args:
+        config_service: A ConfigService instance bound to the request db client.
+        allow_env_fallback: When True, fall back to the RAZORPAY_KEY_ID /
+            RAZORPAY_KEY_SECRET env settings if the DB value is empty. Booking /
+            registration payments keep this False (DB-only, strict); the product
+            order flow uses True to support its env/dev-simulation mode.
+
+    Returns:
+        Tuple of (key_id, key_secret); either may be None if unresolved.
+    """
+    key_id = await config_service.get_config_value("razorpay_key_id")
+    key_secret = await config_service.get_config_value("razorpay_key_secret")
+
+    if allow_env_fallback:
+        key_id = key_id or settings.RAZORPAY_KEY_ID
+        key_secret = key_secret or settings.RAZORPAY_KEY_SECRET
+
+    return key_id, key_secret
 
 
 class RazorpayService:
@@ -164,240 +189,3 @@ class RazorpayService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Payment verification failed"
             )
-    
-    def get_payment_details(self, payment_id: str) -> Dict[str, Any]:
-        """
-        Fetch payment details from Razorpay
-        
-        Args:
-            payment_id: Razorpay payment ID
-        
-        Returns:
-            Payment details
-        """
-        if not self.client:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Payment service not configured"
-            )
-        
-        try:
-            payment = self.client.payment.fetch(payment_id)
-            
-            return {
-                "payment_id": payment["id"],
-                "order_id": payment.get("order_id"),
-                "amount": payment["amount"] / 100,  # Convert from paise to rupees
-                "currency": payment["currency"],
-                "status": payment["status"],
-                "method": payment.get("method"),
-                "email": payment.get("email"),
-                "contact": payment.get("contact"),
-                "created_at": payment["created_at"],
-                "captured": payment.get("captured", False)
-            }
-            
-        except razorpay.errors.BadRequestError:
-            logger.error(f"Payment not found: {payment_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Payment not found"
-            )
-        except Exception as e:
-            logger.error(f"Failed to fetch payment: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch payment details"
-            )
-    
-    def capture_payment(self, payment_id: str, amount: float) -> Dict[str, Any]:
-        """
-        Capture a payment (for manual capture)
-        
-        Args:
-            payment_id: Razorpay payment ID
-            amount: Amount to capture in rupees
-        
-        Returns:
-            Captured payment details
-        """
-        if not self.client:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Payment service not configured"
-            )
-        
-        try:
-            amount_paise = int(amount * 100)
-            payment = self.client.payment.capture(payment_id, amount_paise)
-            logger.info(f"Payment captured: {payment_id}")
-            
-            return {
-                "payment_id": payment["id"],
-                "amount": payment["amount"] / 100,
-                "status": payment["status"],
-                "captured": payment.get("captured", False)
-            }
-            
-        except Exception as e:
-            logger.error(f"Payment capture failed: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Payment capture failed"
-            )
-    
-    def refund_payment(
-        self,
-        payment_id: str,
-        amount: Optional[float] = None,
-        notes: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Refund a payment (full or partial)
-        
-        Args:
-            payment_id: Razorpay payment ID
-            amount: Amount to refund in rupees (None for full refund)
-            notes: Additional notes
-        
-        Returns:
-            Refund details
-        """
-        if not self.client:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Payment service not configured"
-            )
-        
-        try:
-            refund_data = {}
-            
-            if amount is not None:
-                refund_data["amount"] = int(amount * 100)  # Convert to paise
-            
-            if notes:
-                refund_data["notes"] = notes
-            
-            refund = self.client.payment.refund(payment_id, refund_data)
-            logger.info(f"Refund created: {refund['id']} for payment {payment_id}")
-            
-            return {
-                "refund_id": refund["id"],
-                "payment_id": refund["payment_id"],
-                "amount": refund["amount"] / 100,
-                "currency": refund["currency"],
-                "status": refund["status"],
-                "created_at": refund["created_at"]
-            }
-            
-        except Exception as e:
-            logger.error(f"Refund failed: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Refund processing failed"
-            )
-    
-    def verify_webhook_signature(
-        self,
-        webhook_body: str,
-        webhook_signature: str
-    ) -> bool:
-        """
-        Verify Razorpay webhook signature
-        
-        Args:
-            webhook_body: Raw webhook body as string
-            webhook_signature: Signature from X-Razorpay-Signature header
-        
-        Returns:
-            True if signature is valid
-        """
-        if not settings.RAZORPAY_WEBHOOK_SECRET:
-            logger.warning("Webhook secret not configured")
-            return False
-        
-        try:
-            expected_signature = hmac.new(
-                settings.RAZORPAY_WEBHOOK_SECRET.encode('utf-8'),
-                webhook_body.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            return hmac.compare_digest(expected_signature, webhook_signature)
-            
-        except Exception as e:
-            logger.error(f"Webhook verification failed: {str(e)}")
-            return False
-    
-    def create_registration_fee_order(
-        self,
-        vendor_id: str,
-        salon_id: str,
-        amount: float
-    ) -> Dict[str, Any]:
-        """
-        Create order for vendor registration fee
-        
-        Args:
-            vendor_id: Vendor's user ID
-            salon_id: Salon ID
-            amount: Registration fee amount
-        
-        Returns:
-            Order details
-        """
-        return self.create_order(
-            amount=amount,
-            receipt=f"reg_{salon_id}_{int(razorpay.utils.now())}",
-            notes={
-                "payment_type": "registration_fee",
-                "vendor_id": vendor_id,
-                "salon_id": salon_id
-            }
-        )
-    
-    def create_booking_order(
-        self,
-        customer_id: str,
-        booking_id: str,
-        amount: float,
-        convenience_fee: float
-    ) -> Dict[str, Any]:
-        """
-        Create order for booking payment
-        
-        Args:
-            customer_id: Customer's user ID
-            booking_id: Booking ID
-            amount: Service amount
-            convenience_fee: Convenience fee amount
-        
-        Returns:
-            Order details
-        """
-        total_amount = amount + convenience_fee
-        
-        return self.create_order(
-            amount=total_amount,
-            receipt=f"booking_{booking_id}",
-            notes={
-                "payment_type": "booking",
-                "customer_id": customer_id,
-                "booking_id": booking_id,
-                "service_amount": amount,
-                "convenience_fee": convenience_fee
-            }
-        )
-    
-    def get_key_id(self) -> str:
-        """
-        Get Razorpay Key ID for frontend
-        
-        Returns:
-            Razorpay Key ID (public key)
-        """
-        return settings.RAZORPAY_KEY_ID
-
-
-# Create singleton instance
-razorpay_service = RazorpayService()

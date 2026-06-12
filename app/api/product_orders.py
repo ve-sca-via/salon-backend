@@ -9,11 +9,10 @@ from supabase import Client
 router = APIRouter(prefix="/product-orders", tags=["product-orders"])
 
 class OrderItemSchema(BaseModel):
+    # Only product_id + quantity are honored — price/name/image are re-fetched
+    # server-side from the products table to prevent client-side price tampering.
     product_id: str
-    product_name: str
-    quantity: int
-    unit_price: float
-    image_url: str = None
+    quantity: int = 1
 
 class CreateOrderRequest(BaseModel):
     shipping_address: Dict[str, Any]
@@ -40,7 +39,7 @@ async def create_order(
         "shipping_address": request.shipping_address,
         "discount_total": request.discount_total
     }
-    items_data = [item.dict() for item in request.items]
+    items_data = [item.model_dump() for item in request.items]
     
     return await product_order_service.create_order(
         user_id=current_user.user_id,

@@ -5,12 +5,9 @@ Handles salon CRUD operations, activation, verification, and queries
 import logging
 from typing import Dict, Any, Optional, List, Union
 from fastapi import HTTPException, status
-from app.schemas.request.payment import PaymentDetails
 from app.schemas.request.vendor import SalonUpdate
-from app.schemas.admin import ServiceCreate, ServiceUpdate
 from dataclasses import dataclass
 from app.utils.location_text import normalize_city_name
-from app.services.service_taxonomy import ServiceTaxonomyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +92,46 @@ class SalonService:
 
         for salon in salons:
             salon["has_discounted_services"] = salon.get("id") in discounted_salon_ids
-    
+
+    @staticmethod
+    def is_publicly_visible(salon: Dict[str, Any]) -> bool:
+        """
+        The three gates a salon must pass to be shown publicly:
+        active, admin-verified, and registration fee paid.
+        """
+        return bool(
+            salon.get("is_active")
+            and salon.get("is_verified")
+            and salon.get("registration_fee_paid")
+        )
+
+    def _public_salons_query(self, select: str = "*, vendor_join_requests(business_type)"):
+        """
+        Base query for public salon listings: active + verified + paid, and
+        excluding regular_buyer (product-only) accounts that don't offer services.
+        """
+        return (
+            self.db.table("salons")
+            .select(select)
+            .eq("is_active", True)
+            .eq("is_verified", True)
+            .eq("registration_fee_paid", True)
+            .neq("salon_type", "regular_buyer")
+        )
+
+    async def _finalize_public_salons(self, salons: List[Dict[str, Any]]) -> None:
+        """
+        Shared post-processing for public salon lists: flatten the joined
+        business_type, normalize city casing, and attach discount flags.
+        """
+        for salon in salons:
+            vjr = salon.pop("vendor_join_requests", None)
+            if vjr and isinstance(vjr, dict):
+                salon["business_type"] = vjr.get("business_type")
+
+        self._normalize_salon_cities(salons)
+        await self._attach_discount_flags(salons)
+
     async def get_salon(
         self,
         salon_id: str,
@@ -329,27 +365,6 @@ class SalonService:
         
         return response.data[0]
     
-    async def activate_salon(self, salon_id: str) -> Dict[str, Any]:
-        """
-        Activate salon (set is_active = True).
-        
-        Args:
-            salon_id: Salon ID
-            
-        Returns:
-            Updated salon
-        """
-        response = self.db.table("salons").update({
-            "is_active": True
-        }).eq("id", salon_id).execute()
-        
-        if not response.data:
-            raise ValueError("Salon not found")
-        
-        logger.info(f"Salon {salon_id} activated")
-        
-        return response.data[0]
-    
     async def deactivate_salon(self, salon_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
         """
         Deactivate salon (set is_active = False).
@@ -375,103 +390,6 @@ class SalonService:
         
         return response.data[0]
     
-    async def verify_salon(self, salon_id: str, admin_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Verify salon (set is_verified = True).
-        
-        Args:
-            salon_id: Salon ID
-            admin_id: Admin performing verification
-            
-        Returns:
-            Updated salon
-        """
-        updates = {
-            "is_verified": True,
-            "verified_at": "now()"
-        }
-        
-        if admin_id:
-            updates["verified_by"] = admin_id
-        
-        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
-        
-        if not response.data:
-            raise ValueError("Salon not found")
-        
-        logger.info(f"Salon {salon_id} verified")
-        
-        return response.data[0]
-    
-    async def mark_payment_verified(
-        self,
-        salon_id: str,
-        payment_details: PaymentDetails
-    ) -> Dict[str, Any]:
-        """
-        Mark registration payment as verified.
-        
-        Args:
-            salon_id: Salon ID
-            payment_details: Payment information (transaction_id, etc.)
-            
-        Returns:
-            Updated salon
-        """
-        updates = {
-            "registration_fee_paid": True,
-            "payment_verified_at": "now()",
-            "payment_details": payment_details.model_dump(exclude_none=True)
-        }
-        
-        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
-        
-        if not response.data:
-            raise ValueError("Salon not found")
-        
-        logger.info(f"Payment verified for salon {salon_id}")
-        
-        return response.data[0]
-    
-    async def get_salon_stats(self, salon_id: str) -> Dict[str, Any]:
-        """
-        Get comprehensive stats for a salon.
-        
-        Args:
-            salon_id: Salon ID
-            
-        Returns:
-            Statistics dict
-        """
-        # Get service count
-        services_response = self.db.table("services").select(
-            "id", count="exact"
-        ).eq("salon_id", salon_id).execute()
-        
-        service_count = services_response.count or 0
-        
-        # Get booking count
-        bookings_response = self.db.table("bookings").select(
-            "id", count="exact"
-        ).eq("salon_id", salon_id).execute()
-        
-        booking_count = bookings_response.count or 0
-        
-        # Get average rating (if reviews exist)
-        reviews_response = self.db.table("reviews").select(
-            "rating"
-        ).eq("salon_id", salon_id).execute()
-        
-        reviews = reviews_response.data or []
-        avg_rating = sum(r["rating"] for r in reviews) / len(reviews) if reviews else 0.0
-        
-        return {
-            "services_count": service_count,
-            "bookings_count": booking_count,
-            "reviews_count": len(reviews),
-            "average_rating": round(avg_rating, 2)
-        }
-    
     async def delete_salon(self, salon_id: str, hard_delete: bool = False) -> Dict[str, Any]:
         """
         Delete salon (soft delete by default, hard delete if specified).
@@ -495,38 +413,6 @@ class SalonService:
             # Soft delete - deactivate
             return await self.deactivate_salon(salon_id, reason="Deleted by admin")
     
-    async def get_pending_verification_salons(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Get salons pending verification (payment done but not verified).
-        
-        Args:
-            limit: Max results
-            
-        Returns:
-            List of salons pending verification
-        """
-        response = self.db.table("salons").select("*").eq(
-            "registration_fee_paid", True
-        ).eq("is_verified", False).order("payment_verified_at", desc=True).limit(limit).execute()
-        
-        return response.data or []
-    
-    async def get_pending_payment_salons(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Get salons pending registration payment.
-        
-        Args:
-            limit: Max results
-            
-        Returns:
-            List of salons with pending payments
-        """
-        response = self.db.table("salons").select("*").eq(
-            "registration_fee_paid", False
-        ).order("approved_at", desc=True).limit(limit).execute()
-        
-        return response.data or []
-    
     async def get_public_salons(
         self,
         limit: int = 50,
@@ -549,76 +435,23 @@ class SalonService:
         Returns:
             List of public salons with basic info
         """
-        # Build query with all three required conditions
-        # Exclude regular_buyer salons — they can only buy products, not offer services
-        query = (
-            self.db.table("salons")
-            .select("*, vendor_join_requests(business_type)")
-            .eq("is_active", True)
-            .eq("is_verified", True)
-            .eq("registration_fee_paid", True)
-            .neq("salon_type", "regular_buyer")
-        )
-        
+        query = self._public_salons_query()
         query = self._apply_city_filter(query, city)
-        
+
         # Pagination and ordering
         query = (
             query
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
         )
-        
-        response = query.execute()
-        salons = response.data or []
-        
-        # Extract business_type from joined table
-        for salon in salons:
-            vjr = salon.pop("vendor_join_requests", None)
-            if vjr and isinstance(vjr, dict):
-                salon["business_type"] = vjr.get("business_type")
 
-        self._normalize_salon_cities(salons)
-        await self._attach_discount_flags(salons)
-        
-        logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
-        
-        return salons
-    
-    async def get_approved_salons(
-        self,
-        limit: int = 50,
-        offset: int = 0
-    ) -> List[Dict[str, Any]]:
-        """
-        Get approved salons (verified and payment completed).
-        
-        Same as get_public_salons but may include inactive salons.
-        Used for admin panels to see all approved salons even if temporarily inactive.
-        
-        Args:
-            limit: Maximum number of results
-            offset: Pagination offset
-            
-        Returns:
-            List of approved salons
-        """
-        # Exclude regular_buyer salons — they can only buy products, not offer services
-        query = (
-            self.db.table("salons")
-            .select("*")
-            .eq("is_verified", True)
-            .eq("registration_fee_paid", True)
-            .neq("salon_type", "regular_buyer")
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-        )
-        
         response = query.execute()
         salons = response.data or []
-        
-        logger.info(f" Retrieved {len(salons)} approved salons")
-        
+
+        await self._finalize_public_salons(salons)
+
+        logger.info(f" Retrieved {len(salons)} public salons (offset={offset}, limit={limit}, city={city})")
+
         return salons
     
     async def search_salons_by_query(
@@ -644,46 +477,30 @@ class SalonService:
         Returns:
             List of matching salons
         """
-        # Start with public salons filter
-        # Exclude regular_buyer salons — they can only buy products, not offer services
-        query = (
-            self.db.table("salons")
-            .select("*, vendor_join_requests(business_type)")
-            .eq("is_active", True)
-            .eq("is_verified", True)
-            .eq("registration_fee_paid", True)
-            .neq("salon_type", "regular_buyer")
-        )
-        
+        query = self._public_salons_query()
+
         # Apply text search if provided
         if query_text:
             query = query.ilike("business_name", f"%{query_text}%")
-        
+
         query = self._apply_city_filter(query, city)
-        
+
         if state:
             query = query.eq("state", state)
-        
+
         if service_type:
             query = query.eq("business_type", service_type)
-        
+
         # Order and limit
         query = query.order("created_at", desc=True).limit(limit)
-        
+
         response = query.execute()
         salons = response.data or []
-        
-        # Extract business_type from joined table
-        for salon in salons:
-            vjr = salon.pop("vendor_join_requests", None)
-            if vjr and isinstance(vjr, dict):
-                salon["business_type"] = vjr.get("business_type")
 
-        self._normalize_salon_cities(salons)
-        await self._attach_discount_flags(salons)
-        
+        await self._finalize_public_salons(salons)
+
         logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")
-        
+
         return salons
     
     async def get_salon_services(self, salon_id: str) -> List[Dict[str, Any]]:
@@ -701,8 +518,8 @@ class SalonService:
         """
         # First verify salon exists and is public
         salon = await self.get_salon(salon_id)
-        
-        if not (salon.get('is_active') and salon.get('is_verified') and salon.get('registration_fee_paid')):
+
+        if not self.is_publicly_visible(salon):
             raise ValueError("Salon not available")
         
         # Get services from database with category and subcategory join.
@@ -774,133 +591,3 @@ class SalonService:
                     "subcategory": _slim(leaf),
                     "sub_subcategory": None,
                 }
-
-    async def add_salon_service(self, salon_id: str, service: ServiceCreate) -> Dict[str, Any]:
-        """
-        Add a new service to a salon (admin action).
-
-        Args:
-            salon_id: Salon ID
-            service: ServiceCreate Pydantic model
-
-        Returns:
-            Created service data
-        """
-        try:
-            # Ensure salon exists
-            await self.get_salon(salon_id)
-
-            # Resolve the taxonomy (ids and/or typed names) to (category, leaf node),
-            # the same way the vendor flow does.
-            resolver = ServiceTaxonomyResolver(self.db)
-            category_id, subcategory_id = await resolver.resolve_fields(
-                category_id=service.category_id,
-                subcategory_id=service.subcategory_id,
-                sub_subcategory_id=service.sub_subcategory_id,
-                category_name=service.category_name,
-                subcategory_name=service.subcategory_name,
-                sub_subcategory_name=service.sub_subcategory_name,
-            )
-            if not category_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="A service category is required",
-                )
-            await resolver.validate_category(category_id)
-            if subcategory_id:
-                await resolver.validate_subcategory(subcategory_id, category_id)
-
-            # subcategory_id holds the DEEPEST node; the name / sub_subcategory_*
-            # fields are resolver inputs only, not columns on services.
-            service_data = service.model_dump(exclude={
-                "category_name", "subcategory_name",
-                "sub_subcategory_id", "sub_subcategory_name",
-            })
-            service_data["category_id"] = category_id
-            service_data["subcategory_id"] = subcategory_id
-            service_data["salon_id"] = salon_id
-
-            response = self.db.table("services").insert(service_data).execute()
-            created = response.data[0] if response.data else None
-
-            logger.info(f"Admin created service for salon {salon_id}: {service.name}")
-            return created
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to add service to salon {salon_id}: {e}")
-            raise
-
-    async def update_salon_service(self, salon_id: str, service_id: str, service: ServiceUpdate) -> Dict[str, Any]:
-        """
-        Update a salon service (admin action).
-        """
-        try:
-            # Ensure salon exists
-            await self.get_salon(salon_id)
-
-            update_data = service.model_dump(exclude_none=True, exclude={
-                "category_name", "subcategory_name",
-                "sub_subcategory_id", "sub_subcategory_name",
-            })
-
-            taxonomy_touched = any([
-                service.category_id, service.subcategory_id, service.sub_subcategory_id,
-                service.category_name, service.subcategory_name, service.sub_subcategory_name,
-            ])
-            if taxonomy_touched:
-                resolver = ServiceTaxonomyResolver(self.db)
-                category_id, subcategory_id = await resolver.resolve_fields(
-                    category_id=service.category_id,
-                    subcategory_id=service.subcategory_id,
-                    sub_subcategory_id=service.sub_subcategory_id,
-                    category_name=service.category_name,
-                    subcategory_name=service.subcategory_name,
-                    sub_subcategory_name=service.sub_subcategory_name,
-                )
-                if service.category_id is not None or service.category_name is not None:
-                    update_data["category_id"] = category_id
-                # The deepest selected node becomes the stored leaf reference.
-                if (service.subcategory_id is not None or service.subcategory_name is not None
-                        or service.sub_subcategory_id is not None or service.sub_subcategory_name is not None):
-                    update_data["subcategory_id"] = subcategory_id
-
-                if update_data.get("category_id"):
-                    await resolver.validate_category(update_data["category_id"])
-                if update_data.get("subcategory_id"):
-                    await resolver.validate_subcategory(
-                        update_data["subcategory_id"], update_data.get("category_id")
-                    )
-
-            if not update_data:
-                raise ValueError("No fields provided for update")
-
-            response = self.db.table("services").update(update_data).eq("id", service_id).eq("salon_id", salon_id).execute()
-            if not response.data:
-                raise ValueError("Service not found or update failed")
-
-            logger.info(f"Admin updated service {service_id} for salon {salon_id}")
-            return response.data[0]
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to update service {service_id} for salon {salon_id}: {e}")
-            raise
-
-    async def delete_salon_service(self, salon_id: str, service_id: str) -> Dict[str, Any]:
-        """
-        Delete a service from a salon (admin action).
-        """
-        try:
-            # Ensure salon exists
-            await self.get_salon(salon_id)
-
-            self.db.table("services").delete().eq("id", service_id).eq("salon_id", salon_id).execute()
-            logger.info(f"Admin deleted service {service_id} from salon {salon_id}")
-            return {"success": True, "service_id": service_id}
-
-        except Exception as e:
-            logger.error(f"Failed to delete service {service_id} from salon {salon_id}: {e}")
-            raise

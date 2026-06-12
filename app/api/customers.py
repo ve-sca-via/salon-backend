@@ -21,7 +21,8 @@ from app.schemas import (
     CustomerBookingsResponse, BookingCancelResponse, BookingResponse,
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
-    BookingCreate, CartCheckoutCreate, FavoriteCreate
+    CartCheckoutCreate, FavoriteCreate,
+    ProductCartResponse, ProductCartOperationResponse
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -119,7 +120,7 @@ async def remove_from_cart(
 # PRODUCT SHOPPING CART OPERATIONS
 # =====================================================
 
-@router.get("/product-cart")
+@router.get("/product-cart", response_model=ProductCartResponse)
 async def get_product_cart(
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
@@ -131,7 +132,7 @@ async def get_product_cart(
     )
 
 
-@router.post("/product-cart")
+@router.post("/product-cart", response_model=ProductCartOperationResponse)
 async def add_to_product_cart(
     item: ProductCartItemAdd,
     current_user: TokenData = Depends(get_current_user),
@@ -145,7 +146,7 @@ async def add_to_product_cart(
     )
 
 
-@router.put("/product-cart/{item_id}")
+@router.put("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def update_product_cart_item(
     item_id: str,
     item: ProductCartItemUpdate,
@@ -160,7 +161,7 @@ async def update_product_cart_item(
     )
 
 
-@router.delete("/product-cart/clear/all")
+@router.delete("/product-cart/clear/all", response_model=ProductCartOperationResponse)
 async def clear_product_cart(
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
@@ -169,7 +170,7 @@ async def clear_product_cart(
     return await product_cart_service.clear_cart(current_user.user_id)
 
 
-@router.delete("/product-cart/{item_id}")
+@router.delete("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def remove_from_product_cart(
     item_id: str,
     current_user: TokenData = Depends(get_current_user),
@@ -258,24 +259,6 @@ async def get_my_bookings(
     Returns bookings with salon and service details
     """
     return await customer_service.get_customer_bookings(current_user.user_id)
-
-
-@router.post("/bookings", response_model=BookingResponse, operation_id="customer_create_booking")
-async def create_booking(
-    booking_data: BookingCreate,
-    current_user: TokenData = Depends(get_current_user),
-    booking_service: BookingService = Depends(get_booking_service)
-):
-    """
-    Create a new booking for the current customer.
-
-    Canonical booking-creation endpoint (replaces the removed generic
-    `POST /bookings/`). Delegates to BookingService.create_booking.
-    """
-    return await booking_service.create_booking(
-        booking=booking_data,
-        current_user_id=current_user.user_id
-    )
 
 
 @router.put("/bookings/{booking_id}/cancel", response_model=BookingCancelResponse, operation_id="customer_cancel_booking")

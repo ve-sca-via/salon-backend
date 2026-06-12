@@ -11,7 +11,6 @@ from fastapi import HTTPException, status
 from app.core.auth import create_review_feedback_token
 from app.core.config import settings
 from app.schemas import BookingCreate
-from app.schemas.request.booking import ServiceSummary, Totals, BookingForCancellation
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
 
@@ -60,10 +59,13 @@ class BookingService:
             # Calculate offset
             offset = (page - 1) * limit
             
-            # Use bookings_with_payments view which has customer data pre-joined
+            # Use bookings_with_payments view which has customer data pre-joined.
+            # count="exact" returns the total rows matching the filters (ignoring
+            # the range/limit), so pagination totals are accurate.
             query = self.db.from_("bookings_with_payments").select(
                 "*, "
-                "salons(id, business_name, city, address)"
+                "salons(id, business_name, city, address)",
+                count="exact"
             )
             
             # Apply filters
@@ -101,24 +103,15 @@ class BookingService:
                 }
                 enriched_bookings.append(enriched_booking)
             
-            # Use length of returned data as count (exact count can be slow)
-            total_count = len(enriched_bookings)
-            
-            # DEBUG: Log first booking to see structure
-            if enriched_bookings:
-                logger.info(f"First booking structure: {enriched_bookings[0].keys()}")
-                logger.info(f"Has 'salons' key: {'salons' in enriched_bookings[0]}")
-                logger.info(f"Has 'profiles' key: {'profiles' in enriched_bookings[0]}")
-                if 'salons' in enriched_bookings[0]:
-                    logger.info(f"Salons data: {enriched_bookings[0]['salons']}")
-                if 'profiles' in enriched_bookings[0]:
-                    logger.info(f"Profiles data: {enriched_bookings[0]['profiles']}")
-            
+            # Exact total of rows matching the filters (from count="exact").
+            # Fall back to the current page length if the driver omits the count.
+            total_count = response.count if response.count is not None else len(enriched_bookings)
+
             # Calculate pagination info
-            total_pages = max(1, page) if enriched_bookings else 0
-            
-            logger.info(f"Admin fetched {len(enriched_bookings)} bookings (page {page})")
-            
+            total_pages = (total_count + limit - 1) // limit if total_count else 0
+
+            logger.info(f"Admin fetched {len(enriched_bookings)} bookings (page {page} of {total_pages})")
+
             return {
                 "data": enriched_bookings,
                 "pagination": {
@@ -126,7 +119,7 @@ class BookingService:
                     "limit": limit,
                     "total": total_count,
                     "total_pages": total_pages,
-                    "has_next": len(bookings) == limit,  # Has next if we got full page
+                    "has_next": page < total_pages,
                     "has_prev": page > 1
                 }
             }
@@ -136,75 +129,6 @@ class BookingService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch bookings"
-            )
-    
-    async def update_booking_status_admin(
-        self,
-        booking_id: str,
-        new_status: str
-    ) -> Dict[str, Any]:
-        """
-        Update booking status (admin function).
-        
-        Args:
-            booking_id: Booking ID to update
-            new_status: New status value
-            
-        Returns:
-            Success response with updated booking
-            
-        Raises:
-            HTTPException: If booking not found or update fails
-        """
-        try:
-            # Validate status
-            valid_statuses = ["pending", "confirmed", "completed", "cancelled", "no_show"]
-            if new_status not in valid_statuses:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid status. Must be one of: {valid_statuses}"
-                )
-            
-            # Check booking exists
-            check_response = self.db.table("bookings").select("id, status").eq(
-                "id", booking_id
-            ).single().execute()
-            
-            if not check_response.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            # Update status
-            update_data = {"status": new_status}
-            
-            if new_status == "confirmed":
-                update_data["confirmed_at"] = datetime.utcnow().isoformat()
-            elif new_status == "completed":
-                update_data["completed_at"] = datetime.utcnow().isoformat()
-            elif new_status == "cancelled":
-                update_data["cancelled_at"] = datetime.utcnow().isoformat()
-            
-            response = self.db.table("bookings").update(update_data).eq(
-                "id", booking_id
-            ).execute()
-            
-            logger.info(f"Admin updated booking {booking_id} status to {new_status}")
-            
-            return {
-                "success": True,
-                "message": f"Booking status updated to {new_status}",
-                "data": response.data[0] if response.data else None
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to update booking status: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update booking status"
             )
     
     # =====================================================
@@ -530,9 +454,11 @@ class BookingService:
             HTTPException: If not found or access denied
         """
         try:
-            booking_response = self.db.table("bookings").select("*").eq("id", booking_id).single().execute()
-            
-            if not booking_response.data:
+            # maybe_single(): a missing booking returns empty data and hits the
+            # explicit 404 below, instead of raising PGRST116 and being masked as a 500.
+            booking_response = self.db.table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
+
+            if not booking_response or not booking_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Booking not found"
@@ -782,27 +708,6 @@ class BookingService:
             "total_amount": total_amount
         }
 
-    async def _get_service_details(self, service_id: str) -> Dict[str, Any]:
-        """
-        Get service details by ID.
-
-        Args:
-            service_id: Service UUID
-
-        Returns:
-            Service data
-
-        Raises:
-            NotFoundError: If service not found
-        """
-        response = self.db.table("services").select("*").eq("id", service_id).single().execute()
-
-        if not response.data:
-            from app.core.exceptions import NotFoundError
-            raise NotFoundError("Service", service_id)
-
-        return response.data
-    
     async def _get_services_batch(self, service_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Batch fetch multiple services by IDs in a single query.
@@ -841,62 +746,6 @@ class BookingService:
         date_part = datetime.now().strftime('%Y%m%d')
         random_part = random.randint(1000, 9999)
         return f"BK{date_part}{random_part}"
-    
-    async def _send_booking_confirmation(
-        self,
-        customer_email: str,
-        customer_name: str,
-        salon_name: str,
-        booking: BookingCreate,
-        services: List[ServiceSummary],
-        totals: Totals,
-        booking_id: str
-    ) -> None:
-        """
-        Send booking confirmation email for multi-service booking.
-
-        Args:
-            customer_email: Customer email address
-            customer_name: Customer full name
-            salon_name: Salon business name
-            booking: Original booking data
-            services: List of processed services with details
-            totals: Calculated totals
-            booking_id: Booking ID
-        """
-        if not customer_email:
-            return
-
-        # Create service summary for email
-        service_summary = []
-        for svc in services:
-            # `services` is now a list of ServiceSummary
-            service_summary.append({
-                "name": getattr(svc, "service_id", "Service"),
-                "quantity": getattr(svc, "quantity", 1),
-                "unit_price": getattr(svc, "unit_price", 0.0),
-                "line_total": getattr(svc, "line_total", 0.0)
-            })
-
-        try:
-            # Format time_slots for email display (use first slot)
-            booking_time_display = booking.time_slots[0] if booking.time_slots else "N/A"
-            
-            email_sent = await email_service.send_booking_confirmation_email(
-                to_email=customer_email,
-                customer_name=customer_name,
-                salon_name=salon_name,
-                services=service_summary,  # Pass services array instead of single service
-                booking_date=booking.booking_date,
-                booking_time=booking_time_display,
-                total_amount=totals.total_amount,
-                booking_id=booking_id
-            )
-
-            if not email_sent:
-                logger.warning(f"Failed to send booking confirmation email to {customer_email}")
-        except Exception as e:
-            logger.warning(f"Error sending booking confirmation email: {str(e)}")
     
     def _extract_booking_services(self, booking_data: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
         """Extract service summary from booking JSONB services field."""
@@ -997,45 +846,3 @@ class BookingService:
                 logger.warning(f"Error sending vendor cancellation email: {e}")
         else:
             logger.warning(f"Vendor email not found for cancelled booking {booking_id}")
-
-    async def _send_cancellation_email(
-        self,
-        booking_data: BookingForCancellation,
-        reason: Optional[str],
-        refund_amount: float
-    ) -> None:
-        """Backward-compatible wrapper for cancellation emails."""
-        if isinstance(booking_data, dict):
-            await self._send_cancellation_emails(booking_data, reason)
-            return
-
-        if not booking_data:
-            return
-
-        customer_email = booking_data.profiles.email if booking_data.profiles else None
-        customer_name = booking_data.profiles.full_name if booking_data.profiles else "Customer"
-
-        if not customer_email:
-            return
-
-        service_name = booking_data.services.name if booking_data.services else "Service"
-        salon_name = booking_data.salons.business_name if booking_data.salons else "Salon"
-        booking_date = booking_data.booking_date or "N/A"
-        booking_time = booking_data.time_slots[0] if booking_data.time_slots else "N/A"
-
-        try:
-            email_sent = await email_service.send_booking_cancellation_email(
-                to_email=customer_email,
-                customer_name=customer_name,
-                salon_name=salon_name,
-                service_name=service_name,
-                booking_date=booking_date,
-                booking_time=booking_time,
-                cancellation_reason=reason,
-                booking_id=getattr(booking_data, "id", None),
-            )
-
-            if not email_sent:
-                logger.warning(f"Failed to send cancellation email to {customer_email}")
-        except Exception as e:
-            logger.warning(f"Error sending cancellation email: {str(e)}")

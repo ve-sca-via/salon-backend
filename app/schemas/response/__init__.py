@@ -24,8 +24,6 @@ from .booking import (
 )
 from .payment import (
     RazorpayOrderResponse,
-    VendorRegistrationPaymentResponse,
-    BookingPaymentResponse,
 )
 from .admin import (
     SystemConfigResponse,
@@ -59,7 +57,7 @@ __all__ = [
     # Booking
     "BookingResponse",
     # Payment
-    "RazorpayOrderResponse", "VendorRegistrationPaymentResponse", "BookingPaymentResponse",
+    "RazorpayOrderResponse",
     # Admin
     "SystemConfigResponse", "SystemConfigListResponse",
     # Location

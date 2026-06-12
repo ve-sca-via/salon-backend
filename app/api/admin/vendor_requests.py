@@ -58,19 +58,7 @@ async def get_vendor_requests(
     return requests
 
 
-@router.get("/{request_id}", response_model=VendorJoinRequestResponse, operation_id="admin_get_vendor_request")
-async def get_vendor_request(
-    request_id: str,
-    current_user: TokenData = Depends(require_admin),
-    admin_service: AdminService = Depends(get_admin_service)
-):
-    """Get specific vendor request details"""
-    request = await admin_service.get_vendor_request(request_id)
-
-    return request
-
-
-@router.post("/{request_id}/approve")
+@router.post("/{request_id}/approve", operation_id="admin_approve_vendor_request")
 async def approve_vendor_request(
     request_id: str,
     request_body: VendorApprovalRequest,
@@ -127,7 +115,7 @@ async def approve_vendor_request(
     }
 
 
-@router.post("/{request_id}/reject")
+@router.post("/{request_id}/reject", operation_id="admin_reject_vendor_request")
 async def reject_vendor_request(
     request_id: str,
     request_body: VendorRejectionRequest,

@@ -4,36 +4,34 @@ from fastapi import HTTPException, status
 import uuid
 import datetime
 
+from app.services.product_service import effective_unit_price
+
 logger = logging.getLogger(__name__)
+
+# Allowed order lifecycle states (kept in sync with the admin route's Literal
+# and the product_orders table comment).
+VALID_ORDER_STATUSES = {"pending", "paid", "shipped", "delivered", "cancelled"}
 
 class ProductOrderService:
     def __init__(self, db_client):
         self.db = db_client
 
     async def _get_razorpay_creds(self):
-        """Fetch Razorpay credentials from database or environment"""
+        """Fetch Razorpay credentials from database (with env fallback for dev mode)"""
         from app.services.config_service import ConfigService
-        from app.core.config import settings
-        
-        db_key_id = None
-        db_key_secret = None
-        
-        try:
-            config_service = ConfigService(self.db)
-            db_key_id = await config_service.get_config_value("razorpay_key_id")
-            db_key_secret = await config_service.get_config_value("razorpay_key_secret")
-        except Exception:
-            pass
+        from app.services.payment import resolve_razorpay_credentials
 
-        key_id = db_key_id or settings.RAZORPAY_KEY_ID
-        key_secret = db_key_secret or settings.RAZORPAY_KEY_SECRET
-        
+        config_service = ConfigService(self.db)
+        key_id, key_secret = await resolve_razorpay_credentials(
+            config_service, allow_env_fallback=True
+        )
+
         is_placeholder = (
-            not key_id or not key_secret or 
-            key_id.startswith("placeholder") or 
+            not key_id or not key_secret or
+            key_id.startswith("placeholder") or
             key_secret.startswith("placeholder")
         )
-        
+
         return key_id, key_secret, is_placeholder
 
     async def create_order(self, user_id: str, order_data: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -42,7 +40,6 @@ class ProductOrderService:
         # 1. Fetch user role for price validation
         profile_resp = self.db.table("profiles").select("user_role").eq("id", user_id).single().execute()
         user_role = profile_resp.data.get("user_role") if profile_resp.data else "customer"
-        is_b2b = user_role in ['vendor', 'regular_buyer']
 
         # 2. Validate items and prices
         product_ids = [item['product_id'] for item in items]
@@ -58,13 +55,10 @@ class ProductOrderService:
                 raise HTTPException(status_code=400, detail=f"Product not found: {product_id}")
             
             product = products_map[product_id]
-            
-            # Determine correct price based on role
-            db_price = product.get("discount_price") or product.get("price") or 0.0
-            if is_b2b and product.get('b2b_discount_price') is not None:
-                db_price = product['b2b_discount_price']
-            
-            # Force the DB price to prevent tampering
+
+            # Force the DB price to prevent client-side tampering (shared with cart)
+            db_price = effective_unit_price(product, user_role)
+
             item_qty = item.get('quantity', 1)
             item_total = db_price * item_qty
             subtotal += item_total
@@ -160,11 +154,13 @@ class ProductOrderService:
                 "dev_mode": is_dev_mode
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to create product order: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e) if not isinstance(e, HTTPException) else e.detail
+                detail="Failed to create order"
             )
 
     async def dev_complete_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
@@ -193,7 +189,7 @@ class ProductOrderService:
             raise
         except Exception as e:
             logger.error(f"Dev complete order failed: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to complete order")
 
 
     async def verify_payment(self, user_id: str, razorpay_order_id: str, razorpay_payment_id: str, razorpay_signature: str) -> Dict[str, Any]:
@@ -221,9 +217,9 @@ class ProductOrderService:
                 "status": "paid",
                 "payment_status": "completed",
                 "razorpay_payment_id": razorpay_payment_id,
-                "updated_at": "now()"
+                "updated_at": datetime.datetime.now().isoformat()
             }
-            
+
             result = self.db.table("product_orders").update(update_data)\
                 .eq("razorpay_order_id", razorpay_order_id)\
                 .eq("user_id", user_id).execute()
@@ -237,11 +233,13 @@ class ProductOrderService:
                 "order_number": result.data[0]['order_number']
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to verify payment: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e) if not isinstance(e, HTTPException) else e.detail
+                detail="Failed to verify payment"
             )
 
     async def get_user_orders(self, user_id: str) -> List[Dict[str, Any]]:
@@ -249,14 +247,20 @@ class ProductOrderService:
         try:
             orders_response = self.db.table("product_orders").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
             orders = orders_response.data or []
-            
-            result = []
+            if not orders:
+                return []
+
+            # Fetch all line items in one query, then group by order_id
+            order_ids = [o['id'] for o in orders]
+            items_response = self.db.table("product_order_items").select("*").in_("order_id", order_ids).execute()
+            items_by_order: Dict[str, List[Dict[str, Any]]] = {}
+            for it in items_response.data or []:
+                items_by_order.setdefault(it['order_id'], []).append(it)
+
             for order in orders:
-                items_response = self.db.table("product_order_items").select("*").eq("order_id", order['id']).execute()
-                order['items'] = items_response.data or []
-                result.append(order)
-                
-            return result
+                order['items'] = items_by_order.get(order['id'], [])
+
+            return orders
         except Exception as e:
             logger.error(f"Error fetching user orders: {e}")
             return []
@@ -287,33 +291,38 @@ class ProductOrderService:
                 .execute()
             
             profiles_map = {p['id']: p for p in profiles_response.data or []}
-            
+
+            # 4. Fetch all line items in one query, then group by order_id
+            order_ids = [order['id'] for order in orders]
+            items_response = self.db.table("product_order_items")\
+                .select("*")\
+                .in_("order_id", order_ids)\
+                .execute()
+            items_by_order: Dict[str, List[Dict[str, Any]]] = {}
+            for it in items_response.data or []:
+                items_by_order.setdefault(it['order_id'], []).append(it)
+
             result = []
             for order in orders:
-                # Add profile data
                 order['profiles'] = profiles_map.get(order['user_id'])
-                
-                # Fetch items for this order
-                items_response = self.db.table("product_order_items")\
-                    .select("*")\
-                    .eq("order_id", order['id'])\
-                    .execute()
-                order['items'] = items_response.data or []
+                order['items'] = items_by_order.get(order['id'], [])
                 result.append(order)
-                
+
             return result
         except Exception as e:
             logger.error(f"Error fetching all orders: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to fetch orders")
 
     async def update_order_status(self, order_id: str, status: str) -> Dict[str, Any]:
         """Update order status (e.g., shipped, delivered, cancelled)"""
+        if status not in VALID_ORDER_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid order status")
         try:
             update_data = {
                 "status": status,
-                "updated_at": "now()"
+                "updated_at": datetime.datetime.now().isoformat()
             }
-            
+
             result = self.db.table("product_orders").update(update_data)\
                 .eq("id", order_id).execute()
 
@@ -328,4 +337,4 @@ class ProductOrderService:
             raise
         except Exception as e:
             logger.error(f"Failed to update order status: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to update order status")

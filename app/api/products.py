@@ -17,7 +17,7 @@ IMPORTANT: Static path segments (/categories, /slug, /admin) MUST be defined
 before the catch-all /{product_id} to avoid incorrect route matching.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from typing import Optional
 from supabase import Client
 
@@ -207,13 +207,22 @@ async def get_product_by_id(
     """
     Get a single product by UUID.
 
-    **Public endpoint** — returns product regardless of is_active status
-    (admin may need to view inactive products by ID).
+    **Public endpoint** — anonymous/non-admin callers only see active products.
+    Admins may fetch inactive products by ID (e.g. to manage soft-deleted items).
     """
     product = await product_service.get_product_by_id(
-        product_id, 
+        product_id,
         user_role=current_user.user_role if current_user else None
     )
+
+    # Hide inactive (soft-deleted) products from non-admin callers
+    is_admin = current_user is not None and current_user.user_role == "admin"
+    if not product.get("is_active", True) and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product not found: {product_id}",
+        )
+
     return {"success": True, "product": product}
 
 

@@ -3,7 +3,6 @@ Admin Service
 Handles admin-specific operations including dashboard statistics and vendor request management
 """
 from typing import List, Optional, Dict, Any
-from app.schemas.admin import ServiceCreate, ServiceUpdate
 from datetime import date, datetime
 import logging
 
@@ -222,271 +221,31 @@ class AdminService:
         try:
             # Fetch vendor requests
             query = self.db.table("vendor_join_requests").select("*")
-            
+
             if status_filter:
                 query = query.eq("status", status_filter)
-            
+
             response = query.order("created_at", desc=True).range(
                 offset, offset + limit - 1
             ).execute()
-            
-            # Enrich with RM profile data
-            enriched_requests = []
-            for request in response.data:
-                enriched_request = await self._enrich_vendor_request_with_rm_profile(request)
-                enriched_requests.append(enriched_request)
-            
-            logger.info(f"Retrieved {len(enriched_requests)} vendor requests (status: {status_filter})")
-            
-            return enriched_requests
-            
+            requests = response.data or []
+
+            # Batch-fetch RM profiles for all requests in one query, then map by id
+            rm_ids = list({r["rm_id"] for r in requests if r.get("rm_id")})
+            rm_map: Dict[str, Any] = {}
+            if rm_ids:
+                rm_response = self.db.table("rm_profiles").select(
+                    "*, profiles(id, full_name, email, phone, is_active, avatar_url)"
+                ).in_("id", rm_ids).execute()
+                rm_map = {rm["id"]: rm for rm in (rm_response.data or [])}
+
+            for request in requests:
+                request["rm_profile"] = rm_map.get(request.get("rm_id"))
+
+            logger.info(f"Retrieved {len(requests)} vendor requests (status: {status_filter})")
+
+            return requests
+
         except Exception as e:
             logger.error(f"Failed to fetch vendor requests: {str(e)}")
             raise Exception(f"Failed to fetch vendor requests: {str(e)}")
-    
-    async def get_vendor_request(self, request_id: str) -> Dict[str, Any]:
-        """
-        Get single vendor request with RM profile information
-        
-        Args:
-            request_id: The vendor request ID
-            
-        Returns:
-            Vendor request data with RM profile
-            
-        Raises:
-            ValueError: If request not found
-            Exception: If database query fails
-        """
-        try:
-            from fastapi import HTTPException, status
-            
-            # Fetch vendor request
-            response = self.db.table("vendor_join_requests").select(
-                "*, rm_profiles(*, profiles(*))"
-            ).eq("id", request_id).execute()
-            
-            if not response.data or len(response.data) == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Vendor request {request_id} not found"
-                )
-            
-            logger.info(f"Retrieved vendor request: {request_id}")
-            
-            return response.data[0]
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to fetch vendor request {request_id}: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch vendor request"
-            )
-    
-    async def _enrich_vendor_request_with_rm_profile(
-        self,
-        request: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Enrich a vendor request with RM profile data
-        
-        Args:
-            request: The vendor request dictionary
-            
-        Returns:
-            Request with rm_profile field added
-        """
-        rm_id = request.get('rm_id')
-        
-        if not rm_id:
-            request['rm_profile'] = None
-            return request
-        
-        try:
-            # Fetch RM profile with user profile in single query
-            rm_response = self.db.table("rm_profiles").select(
-                "*, profiles(id, full_name, email, phone, is_active, avatar_url)"
-            ).eq("id", rm_id).execute()
-            
-            if rm_response.data and len(rm_response.data) > 0:
-                request['rm_profile'] = rm_response.data[0]
-            else:
-                request['rm_profile'] = None
-                
-        except Exception as e:
-            logger.error(f"Failed to fetch RM profile for {rm_id}: {str(e)}")
-            request['rm_profile'] = None
-        
-        return request
-    
-    # =====================================================
-    # ANALYTICS & REPORTING
-    # =====================================================
-    
-    async def get_system_health(self) -> Dict[str, Any]:
-        """
-        Get system health metrics
-        
-        Returns:
-            Dictionary with system health indicators
-        """
-        try:
-            stats = await self.get_dashboard_stats()
-            
-            # Calculate health metrics
-            salon_activation_rate = (
-                (stats.active_salons / stats.total_salons * 100)
-                if stats.total_salons > 0 else 0
-            )
-            
-            payment_completion_rate = (
-                ((stats.total_salons - stats.pending_payment_salons) / stats.total_salons * 100)
-                if stats.total_salons > 0 else 0
-            )
-            
-            avg_bookings_per_salon = (
-                stats.total_bookings / stats.active_salons
-                if stats.active_salons > 0 else 0
-            )
-            
-            return {
-                "salon_activation_rate": round(salon_activation_rate, 2),
-                "payment_completion_rate": round(payment_completion_rate, 2),
-                "avg_bookings_per_salon": round(avg_bookings_per_salon, 2),
-                "pending_requests": stats.pending_requests,
-                "active_rms": stats.total_rms,
-                "today_bookings": stats.today_bookings
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate system health: {str(e)}")
-            raise Exception(f"Failed to calculate system health: {str(e)}")
-    
-    async def get_revenue_breakdown(self) -> Dict[str, Any]:
-        """
-        Get detailed revenue breakdown
-        
-        Returns:
-            Dictionary with revenue metrics
-        """
-        try:
-            revenue = await self._calculate_revenue()
-            
-            # Calculate growth rate (simplified - would need historical data)
-            monthly_avg = revenue["total"] / 12 if revenue["total"] > 0 else 0
-            
-            return {
-                "total_revenue": revenue["total"],
-                "this_month_revenue": revenue["this_month"],
-                "monthly_average": round(monthly_avg, 2),
-                "currency": "INR"  # Adjust based on your settings
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate revenue breakdown: {str(e)}")
-            raise Exception(f"Failed to calculate revenue breakdown: {str(e)}")
-    
-    # =====================================================
-    # SERVICES MANAGEMENT
-    # =====================================================
-    
-    async def get_all_services(self) -> List[Dict[str, Any]]:
-        """
-        Get all services ordered by name
-        
-        Returns:
-            List of all services
-            
-        Raises:
-            Exception: If query fails
-        """
-        try:
-            response = self.db.table("services").select("*").order("name").execute()
-            
-            logger.info(f"Fetched {len(response.data)} services")
-            return response.data
-            
-        except Exception as e:
-            logger.error(f"Failed to fetch services: {str(e)}")
-            raise Exception(f"Failed to fetch services: {str(e)}")
-    
-    async def create_service(self, service_data: ServiceCreate) -> Dict[str, Any]:
-        """
-        Create new service
-        
-        Args:
-            service_data: Service data to insert
-            
-        Returns:
-            Created service data
-            
-        Raises:
-            Exception: If creation fails
-        """
-        try:
-            payload = service_data.model_dump()
-            response = self.db.table("services").insert(payload).execute()
-            
-            if not response.data:
-                raise Exception("No data returned from insert")
-            
-            created_name = getattr(service_data, "name", "Unknown")
-            logger.info(f"Created service: {created_name}")
-            return response.data[0]
-            
-        except Exception as e:
-            logger.error(f"Failed to create service: {str(e)}")
-            raise Exception(f"Failed to create service: {str(e)}")
-    
-    async def update_service(self, service_id: str, updates: ServiceUpdate) -> Dict[str, Any]:
-        """
-        Update service by ID
-        
-        Args:
-            service_id: Service ID to update
-            updates: Fields to update
-            
-        Returns:
-            Updated service data
-            
-        Raises:
-            Exception: If service not found or update fails
-        """
-        try:
-            update_payload = updates.model_dump(exclude_none=True)
-            response = self.db.table("services").update(update_payload).eq("id", service_id).execute()
-            
-            if not response.data:
-                raise Exception(f"Service not found: {service_id}")
-            
-            logger.info(f"Updated service: {service_id}")
-            return response.data[0]
-            
-        except Exception as e:
-            logger.error(f"Failed to update service {service_id}: {str(e)}")
-            raise Exception(f"Failed to update service: {str(e)}")
-    
-    async def delete_service(self, service_id: str) -> bool:
-        """
-        Delete service by ID
-        
-        Args:
-            service_id: Service ID to delete
-            
-        Returns:
-            True if successful
-            
-        Raises:
-            Exception: If deletion fails
-        """
-        try:
-            self.db.table("services").delete().eq("id", service_id).execute()
-            
-            logger.info(f"Deleted service: {service_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to delete service {service_id}: {str(e)}")
-            raise Exception(f"Failed to delete service: {str(e)}")
