@@ -179,6 +179,62 @@ async def upload_cloudinary_product_image(
         )
 
 
+@router.post("/cloudinary-banner-image", response_model=ImageUploadResponse)
+async def upload_cloudinary_banner_image(
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Upload a home-carousel banner image to Cloudinary.
+    Requires authentication (admin manages banners; auth is enforced here, and
+    the banner create/update endpoints additionally require_admin).
+
+    Mirrors the product image upload — same CloudinaryService path, so banner
+    delivery behaves identically to product images.
+
+    Args:
+        file: Image file to upload
+        current_user: Authenticated user from JWT
+
+    Returns:
+        JSON with the Cloudinary URL to persist on the banner row
+    """
+    # Validate image
+    validate_image(file)
+
+    # Read file content to check size
+    file_content = await file.read()
+    if len(file_content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {MAX_FILE_SIZE / 1024 / 1024}MB"
+        )
+
+    # Reset file pointer since CloudinaryService calls read() again
+    await file.seek(0)
+
+    try:
+        cloudinary_service = CloudinaryService()
+        secure_url = await cloudinary_service.upload_file(file, folder="banners")
+
+        logger.info(f"Banner image uploaded to Cloudinary by user {current_user.user_id}: {secure_url}")
+
+        return {
+            "success": True,
+            "url": secure_url,
+            "path": secure_url,  # Cloudinary URL acts as path for frontend referencing
+            "filename": file.filename
+        }
+    except HTTPException:
+        raise
+    except Exception as upload_error:
+        logger.error(f"Cloudinary banner upload failed: {str(upload_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload banner image to Cloudinary"
+        )
+
+
 @router.post("/agreement-document", response_model=ImageUploadResponse)
 async def upload_agreement_document(
     file: UploadFile = File(...),
