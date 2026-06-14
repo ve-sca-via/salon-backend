@@ -15,12 +15,13 @@ CREDENTIALS MANAGEMENT:
 - No caching layer - changes take effect immediately
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
 import logging
 
 from app.services.payment import RazorpayService, resolve_razorpay_credentials
 from app.services.config_service import ConfigService
+from app.services.pricing_service import PricingService, LineItem
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,8 @@ class PaymentService:
     
     async def create_cart_payment_order(
         self,
-        user_id: str
+        user_id: str,
+        coupon_code: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create Razorpay order for cart checkout (convenience fee payment)
@@ -193,33 +195,29 @@ class PaymentService:
                     detail="Cart is empty"
                 )
             
-            # Calculate totals and create cart snapshot
-            discounted_service_total = 0.0
-            original_service_total = 0.0
+            # Build normalized line items and the cart snapshot for validation
             salon_id = None
-            cart_snapshot = []  # Store cart state for validation
-            
+            cart_snapshot = []
+            line_items = []
+
             for item in cart_response.data:
                 service = item.get("services", {})
                 if salon_id is None:
                     salon_id = service.get("salon_id")
-                
+
                 original_unit_price = float(service.get("price", 0))
                 discounted_price = service.get("discounted_price")
                 effective_unit_price = float(discounted_price) if discounted_price is not None else original_unit_price
                 quantity = item.get("quantity", 1)
-                discounted_service_total += effective_unit_price * quantity
-                original_service_total += original_unit_price * quantity
-                
-                # Add to cart snapshot for idempotency validation
+
+                line_items.append(LineItem(original_unit_price, effective_unit_price, quantity))
                 cart_snapshot.append({
                     "service_id": item.get("service_id"),
                     "quantity": quantity,
                     "unit_price": effective_unit_price
                 })
-            
+
             # Get convenience fee percentage from config (dynamically set by admin)
-            convenience_fee_percentage = None
             try:
                 fee_config = await self.config_service.get_config("convenience_fee_percentage")
                 convenience_fee_percentage = float(fee_config.get("config_value"))
@@ -238,10 +236,18 @@ class PaymentService:
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Unable to process payment at this time. Please try again or contact support."
                 )
-            
-            booking_fee = round(original_service_total * (convenience_fee_percentage / 100), 2)
 
-            if booking_fee <= 0:
+            # Single source of truth for pricing (applies coupon + best-of vs sale)
+            pricing = await PricingService(self.db).compute_booking_pricing(
+                line_items=line_items,
+                convenience_fee_percentage=convenience_fee_percentage,
+                salon_id=salon_id,
+                customer_id=user_id,
+                coupon_code=coupon_code,
+            )
+
+            booking_fee = pricing["convenience_fee_due"]
+            if booking_fee < 0:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid payment amount"
@@ -249,11 +255,13 @@ class PaymentService:
 
             # Razorpay rejects orders below ₹1 (100 paise). Floor the payable
             # convenience fee to the gateway minimum so low-value bookings can
-            # still be paid online.
+            # still be paid online. (A 100%-off fee coupon still pays the floor.)
             RAZORPAY_MIN_AMOUNT = 1.0
             total_payment = max(booking_fee, RAZORPAY_MIN_AMOUNT)
-            
-            # Create Razorpay order with cart snapshot for validation
+
+            # Create Razorpay order with cart + coupon snapshot for validation.
+            # The applied coupon code is carried in notes so checkout re-runs the
+            # exact same pricing and re-validates limits.
             import json
             order = self.razorpay.create_order(
                 amount=total_payment,
@@ -263,16 +271,17 @@ class PaymentService:
                     "customer_id": user_id,
                     "salon_id": salon_id,
                     "type": "cart_checkout",
-                    "service_total": discounted_service_total,
-                    "original_service_total": original_service_total,
+                    "service_total": pricing["service_total_due"],
+                    "original_service_total": pricing["original_service_price"],
                     "booking_fee": booking_fee,
+                    "coupon_code": pricing["coupon_code"] or "",
                     "cart_snapshot": json.dumps(cart_snapshot),  # Store cart state
                     "cart_item_count": len(cart_snapshot)
                 }
             )
-            
+
             logger.info(f"Created cart payment order: {order['order_id']} for user {user_id}")
-            
+
             return {
                 "order_id": order["order_id"],
                 "amount": total_payment,
@@ -280,11 +289,17 @@ class PaymentService:
                 "currency": "INR",
                 "key_id": self._razorpay_key_id,
                 "breakdown": {
-                    "service_price": round(discounted_service_total, 2),
-                    "original_service_price": round(original_service_total, 2),
+                    "service_price": pricing["service_total_due"],
+                    "original_service_price": pricing["original_service_price"],
+                    "subtotal_service_price": pricing["subtotal_service_price"],
+                    "discount_amount": pricing["discount_amount"],
+                    "convenience_fee_base": pricing["convenience_fee_base"],
+                    "convenience_fee_discount": pricing["convenience_fee_discount"],
                     "booking_fee": booking_fee,
                     "total_to_pay_now": total_payment,
-                    "pay_at_salon": round(discounted_service_total, 2)
+                    "pay_at_salon": pricing["service_total_due"],
+                    "coupon_code": pricing["coupon_code"],
+                    "coupon_reason": pricing["coupon_reason"],
                 }
             }
         

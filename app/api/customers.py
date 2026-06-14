@@ -22,7 +22,8 @@ from app.schemas import (
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
     CartCheckoutCreate, FavoriteCreate, ProductFavoriteCreate,
-    ProductCartResponse, ProductCartOperationResponse
+    ProductCartResponse, ProductCartOperationResponse,
+    CouponValidateRequest, CouponValidationResult
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -238,11 +239,27 @@ async def checkout_cart(
             "razorpay_payment_id": checkout_data.razorpay_payment_id,
             "razorpay_signature": checkout_data.razorpay_signature,
             "payment_method": checkout_data.payment_method,
-            "notes": checkout_data.notes
+            "notes": checkout_data.notes,
+            "coupon_code": checkout_data.coupon_code
         }
     )
     # Return only the booking data, not the wrapper dict
     return result["booking"]
+
+
+@router.post("/cart/validate-coupon", response_model=CouponValidationResult)
+async def validate_cart_coupon(
+    body: CouponValidateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Preview a coupon against the current cart ("Apply coupon" button).
+
+    Returns whether the coupon is valid for this cart and the resulting price
+    breakdown. Does NOT redeem the coupon — redemption happens at checkout.
+    """
+    return await customer_service.validate_coupon(current_user.user_id, body.code)
 
 
 # =====================================================

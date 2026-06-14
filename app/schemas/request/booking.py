@@ -30,6 +30,7 @@ class BookingCreate(BaseModel):
     razorpay_payment_id: Optional[str] = None  # Razorpay payment ID
     razorpay_signature: Optional[str] = None  # Razorpay signature
     notes: Optional[str] = None
+    coupon_code: Optional[str] = None  # Optional coupon applied to this booking
 
 class BookingCancellation(BaseModel):
     cancellation_reason: str = Field(..., min_length=10)
@@ -44,3 +45,4 @@ class CartCheckoutCreate(BaseModel):
     razorpay_signature: Optional[str] = None  # For verification
     payment_method: Optional[str] = 'razorpay'
     notes: Optional[str] = Field(None, max_length=500)
+    coupon_code: Optional[str] = Field(None, max_length=40, description="Optional coupon code applied to this booking")

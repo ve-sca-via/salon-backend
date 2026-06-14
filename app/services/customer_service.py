@@ -117,7 +117,72 @@ class CustomerService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to retrieve cart"
             )
-    
+
+    async def validate_coupon(self, customer_id: str, code: str) -> Dict[str, Any]:
+        """
+        Preview a coupon against the customer's current cart (the "Apply coupon" button).
+
+        Returns a CouponValidationResult-shaped dict: {valid, reason, coupon_id,
+        coupon_code, breakdown}. Uses the same PricingService as checkout, so the
+        previewed discount matches what will actually be charged.
+        """
+        from app.services.pricing_service import PricingService, LineItem
+
+        cart = await self.get_cart(customer_id)
+        if not cart.get("items"):
+            return {"valid": False, "reason": "Your cart is empty.", "coupon_id": None,
+                    "coupon_code": None, "breakdown": None}
+
+        salon_id = cart["salon_id"]
+        line_items = [
+            LineItem(
+                float(item["service_details"].get("price", 0) or 0),
+                float(item["unit_price"]),
+                item["quantity"],
+            )
+            for item in cart["items"]
+        ]
+
+        # Convenience fee % (admin-managed; required)
+        config_response = self.db.table("system_config")\
+            .select("config_value")\
+            .eq("config_key", "convenience_fee_percentage")\
+            .single()\
+            .execute()
+        try:
+            convenience_fee_percentage = float(config_response.data["config_value"])
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment configuration not available. Please contact support."
+            )
+
+        pricing = await PricingService(self.db).compute_booking_pricing(
+            line_items=line_items,
+            convenience_fee_percentage=convenience_fee_percentage,
+            salon_id=salon_id,
+            customer_id=customer_id,
+            coupon_code=code,
+        )
+
+        breakdown = {
+            "subtotal_service_price": pricing["subtotal_service_price"],
+            "discount_amount": pricing["discount_amount"],
+            "service_total_due": pricing["service_total_due"],
+            "convenience_fee_base": pricing["convenience_fee_base"],
+            "convenience_fee_discount": pricing["convenience_fee_discount"],
+            "convenience_fee_due": pricing["convenience_fee_due"],
+            "total_amount": pricing["total_amount"],
+            "discount_source": pricing["discount_source"],
+        }
+
+        if pricing["coupon_id"]:
+            return {"valid": True, "reason": None, "coupon_id": pricing["coupon_id"],
+                    "coupon_code": pricing["coupon_code"], "breakdown": breakdown}
+
+        return {"valid": False, "reason": pricing["coupon_reason"] or "This coupon could not be applied.",
+                "coupon_id": None, "coupon_code": None, "breakdown": breakdown}
+
     async def add_to_cart(
         self,
         customer_id: str,
@@ -562,6 +627,11 @@ class CustomerService:
                         "booking_number": existing.get("booking_number")
                     }
             
+            # Coupon applied at order-creation time is the authoritative one (it's
+            # what the convenience fee was charged on). Read it from the order notes
+            # below; fall back to whatever the client sent.
+            applied_coupon_code = checkout_data.get("coupon_code")
+
             # CART VALIDATION: Verify cart hasn't changed since payment order creation
             # This prevents race conditions where cart is modified between payment and checkout
             if checkout_data.get("razorpay_order_id"):
@@ -575,6 +645,10 @@ class CustomerService:
                     razorpay_order = payment_service.razorpay.client.order.fetch(checkout_data["razorpay_order_id"])
                     stored_snapshot = razorpay_order.get("notes", {}).get("cart_snapshot")
                     stored_item_count = razorpay_order.get("notes", {}).get("cart_item_count")
+                    # Use the coupon that was actually priced into this order
+                    note_coupon = razorpay_order.get("notes", {}).get("coupon_code")
+                    if note_coupon:
+                        applied_coupon_code = note_coupon
                     
                     if stored_snapshot and stored_item_count:
                         stored_cart = json.loads(stored_snapshot)
@@ -648,7 +722,8 @@ class CustomerService:
                 razorpay_order_id=checkout_data.get("razorpay_order_id"),
                 razorpay_payment_id=checkout_data.get("razorpay_payment_id"),
                 razorpay_signature=checkout_data.get("razorpay_signature"),
-                notes=checkout_data.get("notes")
+                notes=checkout_data.get("notes"),
+                coupon_code=applied_coupon_code
             )
             
             # Create booking

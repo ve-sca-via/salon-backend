@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.schemas import BookingCreate
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
+from app.services.pricing_service import PricingService, LineItem
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,7 @@ class BookingService:
 
             # Process all services and calculate totals
             processed_services = []
+            line_items = []
             total_service_price = 0.0
             original_service_price = 0.0
             total_duration = 0
@@ -236,6 +238,7 @@ class BookingService:
                 total_service_price += line_total
                 original_service_price += original_line_total
                 total_duration += line_duration
+                line_items.append(LineItem(original_unit_price, unit_price, quantity))
 
             # Get convenience fee percentage from system config (admin-managed; required, no silent default)
             try:
@@ -253,12 +256,24 @@ class BookingService:
                     detail="Payment configuration not available. Please contact support."
                 )
             
-            # Calculate convenience fee and totals
-            totals = self._calculate_booking_totals_multi_service(
-                total_service_price,
-                original_service_price,
-                convenience_fee_percentage
+            # Single source of truth for pricing — applies any coupon (best-of vs
+            # the active salon sale) and computes the convenience fee. Must match
+            # what PaymentService charged for the Razorpay order.
+            pricing = await PricingService(self.db).compute_booking_pricing(
+                line_items=line_items,
+                convenience_fee_percentage=convenience_fee_percentage,
+                salon_id=booking.salon_id,
+                customer_id=current_user_id,
+                coupon_code=getattr(booking, "coupon_code", None),
             )
+
+            # Pay-at-salon (service) and pay-now (convenience fee) after discounts
+            total_service_price = pricing["service_total_due"]
+            totals = {
+                "service_price": pricing["service_total_due"],
+                "convenience_fee": pricing["convenience_fee_due"],
+                "total_amount": pricing["total_amount"],
+            }
 
             # Generate unique booking number
             booking_number = self._generate_booking_number()
@@ -299,8 +314,13 @@ class BookingService:
                 "duration_minutes": total_duration,
                 "status": "confirmed" if booking.payment_status == "paid" else "pending",
                 "service_price": total_service_price,
+                "subtotal_service_price": pricing["subtotal_service_price"],
+                "discount_amount": pricing["discount_amount"],
                 "convenience_fee": totals["convenience_fee"],
+                "convenience_fee_discount": pricing["convenience_fee_discount"],
                 "total_amount": totals["total_amount"],
+                "coupon_id": pricing["coupon_id"],
+                "coupon_code": pricing["coupon_code"],
                 "notes": booking.notes,
                 "created_by": current_user_id,
                 "razorpay_payment_id": booking.razorpay_payment_id  # Store for idempotency checks
@@ -322,7 +342,30 @@ class BookingService:
             
             # Create payment records in new unified payments table
             booking_id = created_booking["id"]
-            
+
+            # Record coupon redemption atomically (enforces usage limits). A
+            # redemption-limit race here must NOT roll back the booking — the
+            # coupon was already validated when the payment order was created, so
+            # we log and proceed.
+            if pricing.get("coupon_id"):
+                from app.services.coupon_service import CouponService
+                redeem_discount = round(
+                    float(pricing.get("discount_amount", 0))
+                    + float(pricing.get("convenience_fee_discount", 0)),
+                    2,
+                )
+                redeem_result = await CouponService(self.db).redeem(
+                    coupon_id=pricing["coupon_id"],
+                    user_id=current_user_id,
+                    booking_id=booking_id,
+                    discount_amount=redeem_discount,
+                )
+                if not redeem_result.get("success"):
+                    logger.warning(
+                        f"Coupon redemption failed for booking {booking_id} "
+                        f"(coupon {pricing['coupon_id']}): {redeem_result.get('reason')}"
+                    )
+
             # 1. Create convenience fee payment record (online payment)
             if booking.razorpay_order_id or booking.razorpay_payment_id:
                 convenience_payment_data = {
@@ -675,39 +718,6 @@ class BookingService:
                 detail="Failed to fetch salon details"
             )
     
-    def _calculate_booking_totals_multi_service(
-        self,
-        discounted_service_price: float,
-        original_service_price: float,
-        convenience_fee_percentage: float = 6.0
-    ) -> Dict[str, Any]:
-        """
-        Calculate pricing for multi-service booking.
-
-        Convenience fee is charged on the original (pre-discount) service total,
-        matching checkout UI and Razorpay payment. Service amount due at salon
-        uses discounted prices when available.
-
-        Args:
-            discounted_service_price: Sum of discounted service line totals (pay at salon)
-            original_service_price: Sum of original service line totals (fee base)
-            convenience_fee_percentage: Convenience fee percentage (default 6%)
-
-        Returns:
-            Dict with calculated totals
-        """
-        convenience_fee = round(
-            (original_service_price * convenience_fee_percentage) / 100,
-            2
-        )
-        total_amount = round(discounted_service_price + convenience_fee, 2)
-
-        return {
-            "service_price": round(discounted_service_price, 2),
-            "convenience_fee": convenience_fee,
-            "total_amount": total_amount
-        }
-
     async def _get_services_batch(self, service_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Batch fetch multiple services by IDs in a single query.
