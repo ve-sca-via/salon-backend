@@ -53,6 +53,7 @@ class _Query:
         self._maybe = False
         self._order = []            # list of (col, desc)
         self._range = None          # (start, end) inclusive
+        self._limit = None
         self._count = None
 
     # --- builder ops ---
@@ -81,12 +82,28 @@ class _Query:
         self._filters.append(("ilike", col, pattern))
         return self
 
+    @property
+    def not_(self):
+        # Mirrors supabase-py's `.not_.in_(col, vals)` negated filter builder.
+        query = self
+
+        class _Not:
+            def in_(self, col, vals):
+                query._filters.append(("not_in", col, list(vals)))
+                return query
+
+        return _Not()
+
     def order(self, col, desc=False):
         self._order.append((col, desc))
         return self
 
     def range(self, start, end):
         self._range = (start, end)
+        return self
+
+    def limit(self, n):
+        self._limit = n
         return self
 
     def single(self):
@@ -101,6 +118,8 @@ class _Query:
         for op, c, v in self._filters:
             rv = row.get(c)
             if op == "eq" and rv != v:
+                return False
+            if op == "not_in" and rv in v:
                 return False
             if op == "ilike":
                 needle = v.strip("%").lower()
@@ -122,6 +141,8 @@ class _Query:
             if self._range is not None:
                 s, e = self._range
                 matched = matched[s:e + 1]
+            if self._limit is not None:
+                matched = matched[:self._limit]
             if self._single:
                 # PostgREST .single() raises unless exactly one row matched.
                 if len(matched) != 1:
@@ -612,3 +633,88 @@ def test_delete_requires_admin(pr):
     prod = pr.seed_product(name="Item")
     r = pr.client.delete(f"{PRODUCTS}/{prod['id']}")
     assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# GET /products/{product_id}/related  (Related Products section)
+# =====================================================================
+def test_related_same_category_excludes_self(pr):
+    base = pr.seed_product(name="Base Serum", category="haircare")
+    pr.seed_product(name="Sibling A", category="haircare")
+    pr.seed_product(name="Sibling B", category="haircare")
+    pr.seed_product(name="Other", category="skincare")
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    names = [p["name"] for p in body["products"]]
+    assert base["name"] not in names                 # never recommend itself
+    assert "Sibling A" in names and "Sibling B" in names
+    # Same-category siblings fill the section before the other category is needed.
+    assert names[:2] == ["Sibling A", "Sibling B"] or set(names[:2]) == {"Sibling A", "Sibling B"}
+
+
+def test_related_featured_ranked_first(pr):
+    base = pr.seed_product(name="Base", category="haircare")
+    pr.seed_product(name="Plain", category="haircare", is_featured=False)
+    pr.seed_product(name="Featured", category="haircare", is_featured=True)
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    names = [p["name"] for p in r.json()["products"]]
+    assert names[0] == "Featured"                     # featured ranked ahead
+
+
+def test_related_backfills_with_other_products(pr):
+    # Only one same-category sibling, but limit asks for more -> backfill kicks in.
+    base = pr.seed_product(name="Base", category="haircare")
+    pr.seed_product(name="Same Cat", category="haircare")
+    pr.seed_product(name="Filler 1", category="skincare")
+    pr.seed_product(name="Filler 2", category="bodycare")
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related", params={"limit": 3})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 3                          # filled up to the limit
+    names = [p["name"] for p in body["products"]]
+    assert names[0] == "Same Cat"                       # category match comes first
+    assert base["name"] not in names
+
+
+def test_related_excludes_inactive(pr):
+    base = pr.seed_product(name="Base", category="haircare")
+    pr.seed_product(name="Hidden Sibling", category="haircare", is_active=False)
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    names = [p["name"] for p in r.json()["products"]]
+    assert "Hidden Sibling" not in names               # soft-deleted excluded
+
+
+def test_related_respects_limit(pr):
+    base = pr.seed_product(name="Base", category="haircare")
+    for i in range(8):
+        pr.seed_product(name=f"Sib {i}", category="haircare")
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related", params={"limit": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 5
+
+
+def test_related_b2b_pricing_applied_for_vendor(pr):
+    base = pr.seed_product(name="Base", category="haircare")
+    pr.seed_product(name="Sibling", category="haircare", price=1000.0,
+                    discount_price=900.0, b2b_discount_price=600.0,
+                    b2b_discount_percentage=40.0)
+    pr.as_optional_user("vendor")
+
+    r = pr.client.get(f"{PRODUCTS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    sibling = next(p for p in r.json()["products"] if p["name"] == "Sibling")
+    assert sibling["is_b2b_price"] is True
+    assert sibling["discount_price"] == 600.0
+
+
+def test_related_missing_product_is_404(pr):
+    r = pr.client.get(f"{PRODUCTS}/{uuid.uuid4()}/related")
+    assert r.status_code == 404, r.text
