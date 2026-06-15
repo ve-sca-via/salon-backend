@@ -51,6 +51,9 @@ from .request.location import (
 from .request.career import (
     ApplicationStatusUpdate
 )
+from .request.partner import (
+    PartnerRequestCreate, PartnerRequestStatusUpdate
+)
 from .request.product import (
     ProductCreate, ProductUpdate
 )
@@ -92,6 +95,9 @@ from .response.city import (
 )
 from .response.career import (
     CareerApplicationResponse
+)
+from .response.partner import (
+    PartnerRequestResponse, PartnerRequestUpdateResponse
 )
 from .response.product import (
     ProductResponse, ProductListResponse, ProductOperationResponse, ProductDeleteResponse,
@@ -136,6 +142,7 @@ __all__ = [
     "SystemConfigUpdate",
     "GeocodeRequest",
     "ApplicationStatusUpdate",
+    "PartnerRequestCreate", "PartnerRequestStatusUpdate",
     "ProductCreate", "ProductUpdate",
     # --- Response schemas ---
     "SuccessResponse", "ErrorResponse", "ValidationErrorResponse",
@@ -155,6 +162,7 @@ __all__ = [
     "GeocodeResponse",
     "PopularCityResponse", "PopularCitiesResponse",
     "CareerApplicationResponse",
+    "PartnerRequestResponse", "PartnerRequestUpdateResponse",
     "ProductResponse", "ProductListResponse", "ProductOperationResponse", "ProductDeleteResponse",
     "ProductCartResponse", "ProductCartOperationResponse",
     "FavoriteResponse", "CartResponse", "CartOperationResponse", "CartClearResponse",
