@@ -393,8 +393,12 @@ class OTPService:
             # Check if verification was successful
             # MessageCentral returns different response formats
             # Check both 'status' and 'responseCode'
+            # Note: MessageCentral may return `"data": null` (key present, value
+            # null) on a wrong/expired OTP, so `.get("data", {})` is not safe —
+            # the default only applies when the key is absent. Coerce explicitly.
+            inner = data.get("data") or {}
             verified = (
-                data.get("data", {}).get("verificationStatus") == "VERIFICATION_COMPLETED" or
+                inner.get("verificationStatus") == "VERIFICATION_COMPLETED" or
                 data.get("responseCode") == 200 or
                 data.get("status") == "success"
             )

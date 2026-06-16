@@ -3,6 +3,8 @@ from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
 from supabase import Client
 
+from app.services.product_service import is_b2b_role, effective_unit_price
+
 logger = logging.getLogger(__name__)
 
 class ProductCartService:
@@ -24,16 +26,14 @@ class ProductCartService:
             total_amount = 0.0
             item_count = 0
             
-            is_b2b = user_role in ['vendor', 'regular_buyer']
+            is_b2b = is_b2b_role(user_role)
             
             for item in items:
                 product = item.get("products", {})
-                
-                # Dynamic price selection
-                price = product.get("discount_price") or product.get("price") or 0.0
-                if is_b2b and product.get('b2b_discount_price') is not None:
-                    price = product['b2b_discount_price']
-                
+
+                # Dynamic price selection (shared with the order module)
+                price = effective_unit_price(product, user_role)
+
                 quantity = item.get("quantity", 1)
                 line_total = price * quantity
                 
@@ -62,30 +62,35 @@ class ProductCartService:
             logger.error(f"Failed to get product cart: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve cart: {str(e)}"
+                detail="Failed to retrieve cart"
             )
 
     async def add_to_cart(self, user_id: str, product_id: str, quantity: int = 1) -> Dict[str, Any]:
         """Add a product to the cart or increment quantity"""
         try:
-            # 1. Check if product exists and has stock
-            product_resp = self.db.table("products").select("id, stock_quantity").eq("id", product_id).single().execute()
-            if not product_resp.data:
+            # 1. Check that the product exists and read its available stock
+            product_resp = self.db.table("products").select("id, stock_quantity").eq("id", product_id).maybe_single().execute()
+            if not product_resp or not product_resp.data:
                 raise HTTPException(status_code=404, detail="Product not found")
-            
+
+            stock = product_resp.data.get("stock_quantity") or 0
+
             # 2. Check if already in cart
             existing = self.db.table("product_cart_items")\
                 .select("id, quantity")\
                 .eq("user_id", user_id)\
                 .eq("product_id", product_id)\
                 .execute()
-            
+
+            # 3. Resulting quantity must not exceed available stock
             if existing.data:
-                # Update quantity
                 new_qty = existing.data[0]["quantity"] + quantity
+                if new_qty > stock:
+                    raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
                 self.db.table("product_cart_items").update({"quantity": new_qty}).eq("id", existing.data[0]["id"]).execute()
             else:
-                # Insert new
+                if quantity > stock:
+                    raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
                 self.db.table("product_cart_items").insert({
                     "user_id": user_id,
                     "product_id": product_id,
@@ -97,25 +102,44 @@ class ProductCartService:
             raise
         except Exception as e:
             logger.error(f"Failed to add to product cart: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to add product to cart")
 
     async def update_item(self, user_id: str, item_id: str, quantity: int) -> Dict[str, Any]:
         """Update quantity of an item in the cart"""
         try:
             if quantity <= 0:
                 return await self.remove_item(user_id, item_id)
-                
+
+            # Resolve the cart item (and its product) so we can validate stock
+            item_resp = self.db.table("product_cart_items")\
+                .select("id, product_id")\
+                .eq("id", item_id)\
+                .eq("user_id", user_id)\
+                .maybe_single().execute()
+            if not item_resp or not item_resp.data:
+                raise HTTPException(status_code=404, detail="Cart item not found")
+
+            product_resp = self.db.table("products")\
+                .select("stock_quantity")\
+                .eq("id", item_resp.data["product_id"])\
+                .maybe_single().execute()
+            stock = (product_resp.data.get("stock_quantity") or 0) if (product_resp and product_resp.data) else 0
+            if quantity > stock:
+                raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
+
             response = self.db.table("product_cart_items").update({"quantity": quantity})\
                 .eq("id", item_id)\
                 .eq("user_id", user_id).execute()
-                
+
             if not response.data:
                 raise HTTPException(status_code=404, detail="Cart item not found")
-                
+
             return {"success": True, "message": "Cart updated"}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to update product cart item: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to update cart item")
 
     async def remove_item(self, user_id: str, item_id: str) -> Dict[str, Any]:
         """Remove an item from the cart"""
@@ -124,7 +148,7 @@ class ProductCartService:
             return {"success": True, "message": "Item removed"}
         except Exception as e:
             logger.error(f"Failed to remove from product cart: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to remove item from cart")
 
     async def clear_cart(self, user_id: str) -> Dict[str, Any]:
         """Clear the entire cart for a user"""
@@ -133,4 +157,4 @@ class ProductCartService:
             return {"success": True, "message": "Cart cleared"}
         except Exception as e:
             logger.error(f"Failed to clear product cart: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Failed to clear cart")

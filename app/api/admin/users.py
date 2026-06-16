@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from typing import Optional
+from supabase import Client
 from app.core.auth import require_admin, TokenData
+from app.core.database import get_db_client
 from app.services.user_service import UserService, CreateUserRequest
 from app.schemas.user import UserCreate, UserUpdate
 from app.services.activity_log_service import ActivityLogger
@@ -11,9 +13,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_user_service() -> UserService:
+def get_user_service(db: Client = Depends(get_db_client)) -> UserService:
     """Dependency injection for UserService"""
-    return UserService()
+    return UserService(db_client=db)
 
 
 # =====================================================
@@ -109,7 +111,15 @@ async def update_user(
     user_service: UserService = Depends(get_user_service)
 ):
     """Update user profile"""
-    result = await user_service.update_user(user_id, updates)
+    try:
+        result = await user_service.update_user(user_id, updates)
+    except ValueError as e:
+        msg = str(e)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if "not found" in msg.lower()
+            else status.HTTP_400_BAD_REQUEST,
+            detail=msg,
+        )
 
     return result
 
@@ -120,10 +130,16 @@ async def delete_user(
     current_user: TokenData = Depends(require_admin),
     user_service: UserService = Depends(get_user_service)
 ):
-    """Delete user (soft delete by setting is_active=false)"""
-    # Use service layer for user deletion
-
-    result = await user_service.delete_user(user_id)
+    """Hard-delete a user (removes auth user + profile; frees the email for reuse)"""
+    try:
+        result = await user_service.delete_user(user_id)
+    except ValueError as e:
+        msg = str(e)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if "not found" in msg.lower()
+            else status.HTTP_400_BAD_REQUEST,
+            detail=msg,
+        )
 
     return {
         "success": True,

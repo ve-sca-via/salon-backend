@@ -21,7 +21,8 @@ from app.schemas import (
     CustomerBookingsResponse, BookingCancelResponse, BookingResponse,
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
-    BookingCreate, CartCheckoutCreate, FavoriteCreate
+    CartCheckoutCreate, FavoriteCreate, ProductFavoriteCreate,
+    ProductCartResponse, ProductCartOperationResponse
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -119,7 +120,7 @@ async def remove_from_cart(
 # PRODUCT SHOPPING CART OPERATIONS
 # =====================================================
 
-@router.get("/product-cart")
+@router.get("/product-cart", response_model=ProductCartResponse)
 async def get_product_cart(
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
@@ -131,7 +132,7 @@ async def get_product_cart(
     )
 
 
-@router.post("/product-cart")
+@router.post("/product-cart", response_model=ProductCartOperationResponse)
 async def add_to_product_cart(
     item: ProductCartItemAdd,
     current_user: TokenData = Depends(get_current_user),
@@ -145,7 +146,7 @@ async def add_to_product_cart(
     )
 
 
-@router.put("/product-cart/{item_id}")
+@router.put("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def update_product_cart_item(
     item_id: str,
     item: ProductCartItemUpdate,
@@ -160,7 +161,7 @@ async def update_product_cart_item(
     )
 
 
-@router.delete("/product-cart/clear/all")
+@router.delete("/product-cart/clear/all", response_model=ProductCartOperationResponse)
 async def clear_product_cart(
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
@@ -169,7 +170,7 @@ async def clear_product_cart(
     return await product_cart_service.clear_cart(current_user.user_id)
 
 
-@router.delete("/product-cart/{item_id}")
+@router.delete("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def remove_from_product_cart(
     item_id: str,
     current_user: TokenData = Depends(get_current_user),
@@ -260,24 +261,6 @@ async def get_my_bookings(
     return await customer_service.get_customer_bookings(current_user.user_id)
 
 
-@router.post("/bookings", response_model=BookingResponse, operation_id="customer_create_booking")
-async def create_booking(
-    booking_data: BookingCreate,
-    current_user: TokenData = Depends(get_current_user),
-    booking_service: BookingService = Depends(get_booking_service)
-):
-    """
-    Create a new booking for the current customer.
-
-    Canonical booking-creation endpoint (replaces the removed generic
-    `POST /bookings/`). Delegates to BookingService.create_booking.
-    """
-    return await booking_service.create_booking(
-        booking=booking_data,
-        current_user_id=current_user.user_id
-    )
-
-
 @router.put("/bookings/{booking_id}/cancel", response_model=BookingCancelResponse, operation_id="customer_cancel_booking")
 async def cancel_booking(
     booking_id: str,
@@ -324,6 +307,53 @@ async def add_favorite(
     return await customer_service.add_favorite(
         customer_id=current_user.user_id,
         salon_id=favorite_data.salon_id
+    )
+
+
+# =====================================================
+# PRODUCT FAVORITES (Saved tab — saved products)
+# Declared before the dynamic /favorites/{salon_id} route so the
+# static /favorites/products paths take precedence.
+# =====================================================
+
+@router.get("/favorites/products", response_model=FavoritesResponse)
+async def get_favorite_products(
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Get all favorite (saved) products for the current customer.
+    """
+    return await customer_service.get_favorite_products(current_user.user_id)
+
+
+@router.post("/favorites/products", response_model=FavoriteOperationResponse)
+async def add_favorite_product(
+    favorite_data: ProductFavoriteCreate,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Add a product to the current customer's favorites.
+    """
+    return await customer_service.add_favorite_product(
+        customer_id=current_user.user_id,
+        product_id=favorite_data.product_id
+    )
+
+
+@router.delete("/favorites/products/{product_id}", response_model=FavoriteOperationResponse)
+async def remove_favorite_product(
+    product_id: str,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Remove a product from the current customer's favorites.
+    """
+    return await customer_service.remove_favorite_product(
+        customer_id=current_user.user_id,
+        product_id=product_id
     )
 
 

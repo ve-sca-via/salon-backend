@@ -39,20 +39,3 @@ async def get_all_bookings_admin(
     )
 
     return result
-
-
-@router.put("/{booking_id}/status", operation_id="admin_update_booking_status")
-async def update_booking_status(
-    booking_id: str,
-    status: str,
-    current_user: TokenData = Depends(require_admin),
-    db = Depends(get_db_client)
-):
-    """Update booking status"""
-    booking_service = BookingService(db_client=db)
-    result = await booking_service.update_booking_status_admin(
-        booking_id=booking_id,
-        new_status=status
-    )
-
-    return result

@@ -118,24 +118,31 @@ class RMService:
         limit: int = 50,
         offset: int = 0,
         order_by: str = "performance_score",
-        order_desc: bool = True
+        order_desc: bool = True,
+        is_active: Optional[bool] = None
     ) -> List[Dict[str, Any]]:
         """
         List all RM profiles with pagination and sorting.
-        
+
         Args:
             limit: Max results to return
             offset: Number of results to skip
             order_by: Field to sort by (performance_score, full_name, email)
             order_desc: Sort descending if True
-            
+            is_active: Optional filter on rm_profiles.is_active (applied before
+                       pagination so page sizes and totals stay correct)
+
         Returns:
             List of RM profiles with user details
         """
         query = self.db.table("rm_profiles").select(
             "*, profiles(id, full_name, email, phone, is_active, avatar_url, user_role, created_at, updated_at, phone_verified)"
         )
-        
+
+        # Filter at the DB level (indexed) before pagination
+        if is_active is not None:
+            query = query.eq("is_active", is_active)
+
         # Apply ordering
         if order_desc:
             query = query.order(order_by, desc=True)
@@ -382,8 +389,9 @@ class RMService:
         Returns:
             List of top RMs with rankings
         """
+        # Public endpoint: expose name only, never email (PII)
         response = self.db.table("rm_profiles").select(
-            "*, profiles(full_name, email)"
+            "*, profiles(full_name)"
         ).order("performance_score", desc=True).limit(limit).execute()
         
         rms = response.data or []
@@ -393,38 +401,6 @@ class RMService:
             rm["rank"] = idx
         
         return rms
-    
-    async def get_rm_by_email(self, email: str) -> Dict[str, Any]:
-        """
-        Get RM profile by email.
-        
-        Args:
-            email: RM email address
-            
-        Returns:
-            RM profile data with user profile
-        """
-        # Query profiles table for email, then join with rm_profiles
-        profile_response = self.db.table("profiles").select(
-            "id, full_name, email, phone, is_active, user_role"
-        ).eq("email", email).eq("user_role", "relationship_manager").single().execute()
-        
-        if not profile_response.data:
-            raise ValueError(f"RM with email {email} not found")
-        
-        # Get RM-specific data
-        rm_response = self.db.table("rm_profiles").select(
-            "*"
-        ).eq("id", profile_response.data["id"]).single().execute()
-        
-        if not rm_response.data:
-            raise ValueError(f"RM profile data not found for {email}")
-        
-        # Combine the data
-        return {
-            **rm_response.data,
-            "profiles": profile_response.data
-        }
     
     # =====================================================
     # VENDOR REQUEST CRUD

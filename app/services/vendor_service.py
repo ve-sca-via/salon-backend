@@ -837,11 +837,12 @@ class VendorService:
             HTTPException: If salon not found
         """
         
-        # Get vendor's salon
+        # Get vendor's salon (also attaches registration_fee_amount from system_config)
         salon = await self.get_vendor_salon(vendor_id)
         salon_id = salon["id"]
         business_name = salon.get("business_name", "Salon")
-        
+        registration_fee_amount = float(salon.get("registration_fee_amount") or 0)
+
         logger.info(f"Processing payment for vendor: {vendor_id}, salon: {business_name}")
         
         # Prepare payment data (match actual schema - no subscription fields in salons table)
@@ -858,7 +859,7 @@ class VendorService:
         
         return {
             "payment_status": "success",
-            "payment_amount": 5000.00,
+            "payment_amount": registration_fee_amount,
             "salon_name": business_name,
             "salon_id": salon_id
         }
@@ -1033,7 +1034,7 @@ class VendorService:
                     logger.error(f"Failed to cleanup auth user: {str(cleanup_error)}")
             # Try to delete vendor profile as well
             try:
-                self.db.table("vendors").delete().eq("user_id", user_id).execute()
+                self.db.table("profiles").delete().eq("id", user_id).execute()
                 logger.info("Cleaned up vendor profile after salon linking failure")
             except Exception as cleanup_error:
                 logger.error(f"Failed to cleanup vendor profile: {str(cleanup_error)}")
@@ -1089,62 +1090,9 @@ class VendorService:
     async def get_service_categories(self) -> List[Dict[str, Any]]:
         """
         Get all active service categories with their subcategories nested as a
-        3-level taxonomy tree:
-
-            category
-              subcategories[]        (level-2 nodes; parent_subcategory_id IS NULL)
-                subcategories[]      (level-3 sub-subcategory children)
-
-        Returns:
-            List of categories ordered by display_order, each level ordered by
-            display_order. Level-2 nodes always carry a 'subcategories' list
-            (possibly empty) so clients can render the picker uniformly.
+        3-level taxonomy tree. Tree assembly is shared via ServiceTaxonomyResolver.
         """
-        # Fetch parent categories
-        response = self.db.table("service_categories").select(
-            "*"
-        ).eq("is_active", True).order("display_order").execute()
-
-        categories = response.data or []
-
-        if not categories:
-            logger.info(" Retrieved 0 service categories")
-            return categories
-
-        # Fetch all active subcategories (both levels) in a single query
-        subcategories_response = self.db.table("service_subcategories").select(
-            "*"
-        ).eq("is_active", True).order("display_order").execute()
-
-        subcategories = subcategories_response.data or []
-
-        # First pass: bucket level-3 children by their parent subcategory id.
-        children_by_parent = {}
-        for sub in subcategories:
-            parent_sub_id = sub.get("parent_subcategory_id")
-            if parent_sub_id:
-                children_by_parent.setdefault(parent_sub_id, []).append(sub)
-
-        # Second pass: collect level-2 nodes by category and attach their children.
-        top_subcats_by_category = {}
-        for sub in subcategories:
-            if sub.get("parent_subcategory_id"):
-                continue  # level-3 node, attached below
-            sub["subcategories"] = children_by_parent.get(sub["id"], [])
-            top_subcats_by_category.setdefault(
-                sub.get("parent_category_id"), []
-            ).append(sub)
-
-        # Attach level-2 subcategories to their parent categories
-        for cat in categories:
-            cat["subcategories"] = top_subcats_by_category.get(cat["id"], [])
-
-        logger.info(
-            f" Retrieved {len(categories)} service categories with "
-            f"{len(subcategories)} total subcategories (incl. sub-subcategories)"
-        )
-
-        return categories
+        return await self._taxonomy().build_category_tree()
 
 
     def _apply_discount_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:

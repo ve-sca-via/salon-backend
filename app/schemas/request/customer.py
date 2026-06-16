@@ -52,3 +52,8 @@ class CartItemUpdate(BaseModel):
 class FavoriteCreate(BaseModel):
     """Add salon to favorites"""
     salon_id: str
+
+
+class ProductFavoriteCreate(BaseModel):
+    """Add product to favorites"""
+    product_id: str

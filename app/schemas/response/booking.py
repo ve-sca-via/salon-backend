@@ -58,12 +58,3 @@ class BookingResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class BookingListResponse(BaseModel):
-    """Response for booking list endpoints"""
-    bookings: List[BookingResponse]
-    count: int
-
-    class Config:
-        from_attributes = True

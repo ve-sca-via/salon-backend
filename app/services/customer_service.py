@@ -115,7 +115,7 @@ class CustomerService:
             logger.error(f"Failed to get cart for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve cart: {str(e)}"
+                detail="Failed to retrieve cart"
             )
     
     async def add_to_cart(
@@ -149,10 +149,10 @@ class CustomerService:
             service_response = self.db.table("services")\
                 .select("id, name, price, duration_minutes, salon_id, is_active, image_url")\
                 .eq("id", service_id)\
-                .single()\
+                .maybe_single()\
                 .execute()
 
-            if not service_response.data:
+            if not service_response or not service_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Service not available"
@@ -171,10 +171,10 @@ class CustomerService:
             salon_response = self.db.table("salons")\
                 .select("id, business_name, accepting_bookings, is_active")\
                 .eq("id", service_salon_id)\
-                .single()\
+                .maybe_single()\
                 .execute()
-            
-            if not salon_response.data:
+
+            if not salon_response or not salon_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Salon not found"
@@ -262,7 +262,7 @@ class CustomerService:
             logger.error(f"Failed to add to cart for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to add to cart: {str(e)}"
+                detail="Failed to add to cart"
             )
     
     async def update_cart_item(
@@ -333,7 +333,7 @@ class CustomerService:
             logger.error(f"Failed to update cart item {item_id} for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update cart item: {str(e)}"
+                detail="Failed to update cart item"
             )
     
     async def remove_from_cart(
@@ -381,7 +381,7 @@ class CustomerService:
             logger.error(f"Failed to remove cart item {item_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to remove cart item: {str(e)}"
+                detail="Failed to remove cart item"
             )
     
     async def clear_cart(self, customer_id: str) -> Dict[str, Any]:
@@ -424,7 +424,7 @@ class CustomerService:
             logger.error(f"Failed to clear cart for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to clear cart: {str(e)}"
+                detail="Failed to clear cart"
             )
     
     async def checkout_cart(
@@ -676,7 +676,7 @@ class CustomerService:
             logger.error(f"Failed to checkout cart for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to complete checkout: {str(e)}"
+                detail="Failed to complete checkout"
             )
     
     # =====================================================
@@ -737,71 +737,7 @@ class CustomerService:
             logger.error(f"Failed to get bookings for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve bookings: {str(e)}"
-            )
-    
-    async def cancel_customer_booking(
-        self,
-        booking_id: str,
-        customer_id: str
-    ) -> Dict[str, Any]:
-        """
-        Cancel a booking (only if not completed or already cancelled).
-        
-        Args:
-            booking_id: Booking ID
-            customer_id: Customer user ID (for ownership verification)
-            
-        Returns:
-            Dict with success flag and updated booking
-            
-        Raises:
-            HTTPException: If booking not found or cannot be cancelled
-        """
-        try:
-            # Verify ownership and get booking details
-            existing = self.db.table("bookings")\
-                .select("*")\
-                .eq("id", booking_id)\
-                .eq("customer_id", customer_id)\
-                .execute()
-            
-            if not existing.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Booking not found"
-                )
-            
-            booking = existing.data[0]
-            
-            # Check if booking can be cancelled
-            if booking['status'] in ['completed', 'cancelled']:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Cannot cancel {booking['status']} booking"
-                )
-            
-            # Update booking status
-            response = self.db.table("bookings")\
-                .update({"status": "cancelled"})\
-                .eq("id", booking_id)\
-                .execute()
-            
-            logger.info(f"Cancelled booking {booking_id} for customer {customer_id}")
-            
-            return {
-                "success": True,
-                "message": "Booking cancelled successfully",
-                "booking": response.data[0] if response.data else None
-            }
-        
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to cancel booking {booking_id}: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to cancel booking: {str(e)}"
+                detail="Failed to retrieve bookings"
             )
     
     # =====================================================
@@ -856,7 +792,7 @@ class CustomerService:
             logger.error(f"Failed to get favorites for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve favorites: {str(e)}"
+                detail="Failed to retrieve favorites"
             )
     
     async def add_favorite(
@@ -922,7 +858,7 @@ class CustomerService:
             logger.error(f"Failed to add favorite for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to add favorite: {str(e)}"
+                detail="Failed to add favorite"
             )
     
     async def remove_favorite(
@@ -951,19 +887,190 @@ class CustomerService:
                 .execute()
             
             logger.info(f"Removed salon {salon_id} from favorites for customer {customer_id}")
-            
+
             return {
                 "success": True,
                 "message": "Removed from favorites"
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to remove favorite for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to remove favorite: {str(e)}"
+                detail="Failed to remove favorite"
             )
-    
+
+    # =====================================================
+    # PRODUCT FAVORITES
+    # =====================================================
+
+    async def get_favorite_products(self, customer_id: str) -> Dict[str, Any]:
+        """
+        Get customer's favorite (saved) products.
+
+        Args:
+            customer_id: Customer user ID
+
+        Returns:
+            Dict with favorite products list and count
+
+        Raises:
+            HTTPException: If query fails
+        """
+        try:
+            # Get favorite product IDs
+            favorites_response = self.db.table("product_favorites")\
+                .select("product_id")\
+                .eq("user_id", customer_id)\
+                .execute()
+
+            if not favorites_response.data:
+                return {"success": True, "favorites": [], "count": 0}
+
+            # Get product details (only active products)
+            product_ids = [fav["product_id"] for fav in favorites_response.data]
+
+            products_response = self.db.table("products")\
+                .select("*")\
+                .in_("id", product_ids)\
+                .eq("is_active", True)\
+                .execute()
+
+            favorites = products_response.data or []
+
+            logger.info(f"Retrieved {len(favorites)} favorite products for customer {customer_id}")
+
+            return {
+                "success": True,
+                "favorites": favorites,
+                "count": len(favorites)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get favorite products for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve favorite products"
+            )
+
+    async def add_favorite_product(
+        self,
+        customer_id: str,
+        product_id: str
+    ) -> Dict[str, Any]:
+        """
+        Add product to favorites (idempotent).
+
+        Args:
+            customer_id: Customer user ID
+            product_id: Product ID to favorite
+
+        Returns:
+            Dict with success flag and favorite data
+
+        Raises:
+            HTTPException: If operation fails
+        """
+        try:
+            # Reject unknown/inactive products so the saved tab stays clean
+            product = self.db.table("products")\
+                .select("id")\
+                .eq("id", product_id)\
+                .eq("is_active", True)\
+                .execute()
+
+            if not product.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Product not found"
+                )
+
+            # Check if already favorited
+            existing = self.db.table("product_favorites")\
+                .select("id")\
+                .eq("user_id", customer_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            if existing.data:
+                logger.info(f"Product {product_id} already favorited by customer {customer_id}")
+                return {
+                    "success": True,
+                    "message": "Product already in favorites",
+                    "favorite": existing.data[0]
+                }
+
+            # Add to favorites
+            response = self.db.table("product_favorites")\
+                .insert({
+                    "user_id": customer_id,
+                    "product_id": product_id,
+                    "created_at": datetime.utcnow().isoformat()
+                })\
+                .execute()
+
+            logger.info(f"Added product {product_id} to favorites for customer {customer_id}")
+
+            if response.data:
+                return {
+                    "success": True,
+                    "message": "Added to favorites",
+                    "favorite": response.data[0]
+                }
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to add favorite product"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to add favorite product for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to add favorite product"
+            )
+
+    async def remove_favorite_product(
+        self,
+        customer_id: str,
+        product_id: str
+    ) -> Dict[str, Any]:
+        """
+        Remove product from favorites.
+
+        Args:
+            customer_id: Customer user ID
+            product_id: Product ID to unfavorite
+
+        Returns:
+            Dict with success flag
+
+        Raises:
+            HTTPException: If operation fails
+        """
+        try:
+            self.db.table("product_favorites")\
+                .delete()\
+                .eq("user_id", customer_id)\
+                .eq("product_id", product_id)\
+                .execute()
+
+            logger.info(f"Removed product {product_id} from favorites for customer {customer_id}")
+
+            return {
+                "success": True,
+                "message": "Removed from favorites"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to remove favorite product for {customer_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to remove favorite product"
+            )
+
     # =====================================================
     # REVIEWS
     # =====================================================
@@ -1014,7 +1121,7 @@ class CustomerService:
             logger.error(f"Failed to get reviews for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve reviews: {str(e)}"
+                detail="Failed to retrieve reviews"
             )
     
     async def create_review(
@@ -1056,7 +1163,7 @@ class CustomerService:
             logger.error(f"Failed to create review for {customer_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create review: {str(e)}"
+                detail="Failed to create review"
             )
     
     async def update_review(
@@ -1085,10 +1192,10 @@ class CustomerService:
                 .eq("id", review_id)\
                 .eq("customer_id", customer_id)\
                 .is_("deleted_at", "null")\
-                .single()\
+                .maybe_single()\
                 .execute()
-            
-            if not review_response.data:
+
+            if not review_response or not review_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Review not found"
@@ -1135,7 +1242,7 @@ class CustomerService:
             logger.error(f"Failed to update review {review_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update review: {str(e)}"
+                detail="Failed to update review"
             )
 
     async def get_public_salon_reviews(self, salon_id: str) -> Dict[str, Any]:
@@ -1170,7 +1277,7 @@ class CustomerService:
             logger.error(f"Failed to retrieve public reviews for salon {salon_id}: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to retrieve salon reviews: {str(e)}"
+                detail="Failed to retrieve salon reviews"
             )
 
     async def get_feedback_context(self, salon_id: str, token: str) -> Dict[str, Any]:
