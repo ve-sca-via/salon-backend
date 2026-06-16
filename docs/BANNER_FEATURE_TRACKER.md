@@ -43,6 +43,17 @@ product images render in the storefront, banners do too. No new storage service.
 - [x] Route `/banners` in `src/App.jsx` + nav item in `src/components/layout/Sidebar.jsx`
 - [x] `src/services/api/bannerApi.test.jsx` (MSW) — **7 passing**
 
+## Web app (`g:\vescavia\Projects\salon-management-app`)  ✅ done · 3 tests passing
+
+- [x] `src/services/api/bannerApi.js` — `useGetBannersQuery()` (public GET, 5-min cache)
+- [x] Register `bannerApi` in `src/store/index.js` (reducer + middleware + ignoredPaths)
+      + convenience re-export in `src/services/api/index.js`
+- [x] Wired `HeroSection` in `src/pages/public/Home.jsx` to render admin-managed
+      banners (ordered by sort_order), falling back to the bundled images/video
+      when empty/loading; banners with a `link_url` are clickable (external new-tab
+      or in-app React Router route)
+- [x] `src/services/api/bannerApi.test.jsx` (MSW) — **3 passing**
+
 ## Mobile app (`g:\vescavia\Projects\lubist_mobile_application`)  ✅ done · tsc clean
 
 - [x] `src/services/api/hooks/useBannersAPI.ts` — `useBanners()` (public GET)
@@ -69,3 +80,8 @@ before manual testing, or the API will 500 on a missing table.
 ---
 
 ## Status: ✅ COMPLETE — built, automated tests green, manually verified end-to-end
+
+Web-app (`salon-management-app`) parity added afterward: the customer home hero now
+renders the same admin-managed banners (RTK Query + fallback). Lint clean, 3 client
+tests passing. Smoke-test the running web app (home carousel shows admin banners /
+falls back when empty) once the `banners` migration is applied.
