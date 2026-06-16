@@ -28,7 +28,8 @@ from .request.auth import (
     PhoneSignupSendOTPRequest, PhoneSignupVerifyOTPRequest
 )
 from .request.customer import (
-    ReviewCreate, ReviewUpdate, FeedbackReviewCreate, CartItemCreate, CartItemUpdate, FavoriteCreate
+    ReviewCreate, ReviewUpdate, FeedbackReviewCreate, CartItemCreate, CartItemUpdate, FavoriteCreate,
+    ProductFavoriteCreate
 )
 from .request.booking import (
     BookingCreate, BookingCancellation, CartCheckoutCreate
@@ -52,6 +53,9 @@ from .request.career import (
 )
 from .request.product import (
     ProductCreate, ProductUpdate
+)
+from .request.banner import (
+    BannerCreate, BannerUpdate, BannerReorder, BannerOrderItem
 )
 
 # =====================================================
@@ -96,6 +100,9 @@ from .response.product import (
     ProductResponse, ProductListResponse, ProductOperationResponse, ProductDeleteResponse,
     ProductCartResponse, ProductCartOperationResponse
 )
+from .response.banner import (
+    BannerResponse, BannerListResponse, BannerOperationResponse, BannerDeleteResponse
+)
 
 from .response.customer import (
     FavoriteResponse, CartResponse, CartOperationResponse, CartClearResponse,
@@ -126,6 +133,7 @@ __all__ = [
     "PhoneVerificationSendOTPRequest", "PhoneVerificationConfirmRequest",
     "PhoneSignupSendOTPRequest", "PhoneSignupVerifyOTPRequest",
     "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
+    "ProductFavoriteCreate",
     "BookingCreate", "BookingCancellation", "CartCheckoutCreate",
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate", "VendorJoinRequestUpdate",
     "VendorApprovalRequest", "VendorRejectionRequest", "SalonBase", "SalonCreate", "SalonUpdate",
@@ -135,6 +143,7 @@ __all__ = [
     "GeocodeRequest",
     "ApplicationStatusUpdate",
     "ProductCreate", "ProductUpdate",
+    "BannerCreate", "BannerUpdate", "BannerReorder", "BannerOrderItem",
     # --- Response schemas ---
     "SuccessResponse", "ErrorResponse", "ValidationErrorResponse",
     "LoginResponse", "SignupResponse", "PasswordResetResponse", "PasswordResetConfirmResponse",
@@ -155,6 +164,7 @@ __all__ = [
     "CareerApplicationResponse",
     "ProductResponse", "ProductListResponse", "ProductOperationResponse", "ProductDeleteResponse",
     "ProductCartResponse", "ProductCartOperationResponse",
+    "BannerResponse", "BannerListResponse", "BannerOperationResponse", "BannerDeleteResponse",
     "FavoriteResponse", "CartResponse", "CartOperationResponse", "CartClearResponse",
     "CustomerBookingsResponse", "BookingCancelResponse", "SalonsBrowseResponse",
     "SalonsSearchResponse", "SalonDetailsResponse", "FavoritesResponse",
