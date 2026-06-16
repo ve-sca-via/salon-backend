@@ -15,8 +15,9 @@ from supabase import Client
 from app.services.payment_service import PaymentService
 from app.schemas import (
     PaymentVerification, RazorpayOrderResponse,
-    VendorRegistrationVerificationResponse,
+    VendorRegistrationVerificationResponse, CartOrderCreate,
 )
+from typing import Optional
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -32,6 +33,7 @@ def get_payment_service(db: Client = Depends(get_db_client)) -> PaymentService:
 
 @router.post("/cart/create-order", response_model=RazorpayOrderResponse)
 async def create_cart_payment_order(
+    body: Optional[CartOrderCreate] = None,
     current_user: TokenData = Depends(get_current_user),
     payment_service: PaymentService = Depends(get_payment_service)
 ):
@@ -49,8 +51,11 @@ async def create_cart_payment_order(
 
     Note: This does NOT create a booking. It only initiates the payment.
     The booking is created in /customers/cart/checkout after payment verification.
+
+    Optional body: {"coupon_code": "SAVE20"} to apply a coupon to this order.
     """
-    return await payment_service.create_cart_payment_order(current_user.user_id)
+    coupon_code = body.coupon_code if body else None
+    return await payment_service.create_cart_payment_order(current_user.user_id, coupon_code=coupon_code)
 
 
 # =====================================================

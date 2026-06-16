@@ -1374,3 +1374,35 @@ class VendorService:
 
         promo = response.data[0]
         return self._serialize_promo(promo, today)
+
+    # =====================================================
+    # VENDOR COUPONS (code-based discounts, scoped to this salon)
+    # =====================================================
+    async def create_vendor_coupon(self, vendor_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        from app.services.coupon_service import CouponService
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        payload = {
+            **data,
+            "scope": "vendor",
+            "salon_id": salon_id,
+            "funded_by": "vendor",       # vendor sales come out of the vendor's take
+            "created_by": vendor_id,
+        }
+        return await CouponService(self.db).create_coupon(payload)
+
+    async def list_vendor_coupons(self, vendor_id: str) -> List[Dict[str, Any]]:
+        from app.services.coupon_service import CouponService
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        return await CouponService(self.db).list_coupons(scope="vendor", salon_id=salon_id)
+
+    async def update_vendor_coupon(
+        self, vendor_id: str, coupon_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        from app.services.coupon_service import CouponService
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        return await CouponService(self.db).update_coupon(coupon_id, updates, salon_id=salon_id)
+
+    async def deactivate_vendor_coupon(self, vendor_id: str, coupon_id: str) -> Dict[str, Any]:
+        from app.services.coupon_service import CouponService
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        return await CouponService(self.db).deactivate_coupon(coupon_id, salon_id=salon_id)
