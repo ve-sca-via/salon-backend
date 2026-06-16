@@ -6,12 +6,10 @@
 > previously hardcoded hero image. Built on a small, reusable `banners` table.
 >
 > ✅ **Already wired:** the **admin panel (`salon-admin-panel`)** has a full
-> management page, and the **Lubist mobile app (`lubist_mobile_application`)**
-> renders the carousel from this API.
->
-> ⚠️ **The customer web app (`salon-management-app`) does NOT consume this yet.**
-> The [web-app parity section](#suggested-web-app-salon-management-app-work) below
-> is the contract to render the same admin-managed banners there.
+> management page, the **Lubist mobile app (`lubist_mobile_application`)** renders
+> the carousel from this API, and the **customer web app (`salon-management-app`)**
+> now renders the same admin-managed banners on its home hero (with a bundled
+> fallback). See the [web-app reference section](#web-app-salon-management-app-reference-now-wired) below.
 
 ---
 
@@ -265,12 +263,22 @@ via `Linking`). Falls back to the bundled `hero.png` while loading or when empty
 the screen never looks broken. The "active?" / window filtering is done server-side,
 so the client just renders whatever `GET /banners` returns.
 
-### Suggested web-app (`salon-management-app`) work
+## Web-app (`salon-management-app`) reference (now wired)
 
-If the customer web app should show the same carousel:
+`salon-management-app` (`src/services/api/bannerApi.js`, RTK Query):
 
-- [ ] Add a `bannerApi` (or fetch hook) with `GET /api/v1/banners` — **no auth needed**.
-- [ ] Render a hero/banner carousel on the home page from `banners` (ordered as returned).
-- [ ] Make banners with a `link_url` clickable (open the URL / route in-app).
-- [ ] Fall back to a default/bundled hero when the list is empty.
-- [ ] (Optional) Reuse the bundled hero as a skeleton while the request is in flight.
+- `useGetBannersQuery()` → `GET /banners` (public, no auth, 5-min `keepUnusedDataFor`)
+- Registered in `src/store/index.js` (reducer + middleware + serializable-check ignore).
+
+UI: `src/pages/public/Home.jsx` → `HeroSection` renders the admin-managed banners
+(ordered by `sort_order` as returned) as a crossfading, auto-rotating carousel with
+prev/next arrows and dot indicators. Banners with a `link_url` are clickable —
+`http(s)` links open in a new tab, anything else is treated as an in-app route via
+React Router. When the feed is empty or still loading, it falls back to the bundled
+hero images/video, so the home page never looks broken. Tests:
+`src/services/api/bannerApi.test.jsx` (3 tests).
+
+- [x] `bannerApi` with `GET /api/v1/banners` — **no auth**.
+- [x] Hero carousel on the home page driven by `banners` (ordered as returned).
+- [x] Banners with a `link_url` are clickable (external new-tab or in-app route).
+- [x] Falls back to the bundled hero when the list is empty / loading.
