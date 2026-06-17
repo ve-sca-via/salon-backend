@@ -157,6 +157,10 @@ def test_booking_with_service_coupon_records_discount_and_redemption(
     try:
         payload = _booking_payload(service["salon_id"], service["id"], booking_date="2026-08-01")
         payload.coupon_code = code
+        # Redemption only happens for a PAID booking (D2): unpaid/pending bookings
+        # must not consume coupon usage. Mark this one paid.
+        payload.payment_status = "paid"
+        payload.razorpay_payment_id = f"pay_test_{uuid.uuid4().hex[:12]}"
 
         svc = BookingService(db_client=service_client)
         booking = asyncio.run(svc.create_booking(payload, current_user_id=customer["id"]))
@@ -171,11 +175,32 @@ def test_booking_with_service_coupon_records_discount_and_redemption(
             "coupon_id", coupon["id"]
         ).eq("booking_id", booking["id"]).execute()
         assert len(redemptions.data) == 1
+        # Snapshot + gross discount recorded for settlement/reporting (H6)
+        redemption = redemptions.data[0]
+        assert float(redemption["gross_discount"]) == 200.0
+        assert redemption["coupon_code"] == code
+        assert redemption["scope"] == "platform"
+        assert redemption["funded_by"] == "platform"
 
         used = service_client.table("coupons").select("used_count").eq(
             "id", coupon["id"]
         ).single().execute()
         assert used.data["used_count"] == 1
+
+        # An UNPAID booking with the same coupon must NOT redeem — proving
+        # redemption is gated on payment (D2).
+        customer2 = make_user(role="customer")
+        payload2 = _booking_payload(service["salon_id"], service["id"], booking_date="2026-08-02")
+        payload2.coupon_code = code  # payment_status defaults to unpaid/pending
+        booking2 = asyncio.run(
+            BookingService(db_client=service_client).create_booking(
+                payload2, current_user_id=customer2["id"]
+            )
+        )
+        redemptions2 = service_client.table("coupon_redemptions").select("id").eq(
+            "coupon_id", coupon["id"]
+        ).eq("booking_id", booking2["id"]).execute()
+        assert len(redemptions2.data) == 0
     finally:
         # Bookings (and their cascading redemptions) are cleaned by make_service's
         # salon teardown; drop the coupon reference + row we added here.

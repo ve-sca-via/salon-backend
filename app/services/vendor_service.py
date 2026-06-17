@@ -1380,6 +1380,14 @@ class VendorService:
     # =====================================================
     async def create_vendor_coupon(self, vendor_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         from app.services.coupon_service import CouponService
+        # Defense in depth: the convenience fee is platform revenue, so vendors
+        # may never waive it (also enforced in VendorCouponCreate schema).
+        if data.get("applies_to") == "convenience_fee":
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Vendors can only create service-discount coupons.",
+            )
         salon_id = await self.get_vendor_salon_id(vendor_id)
         payload = {
             **data,

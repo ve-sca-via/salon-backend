@@ -92,6 +92,10 @@ class PricingService:
         applied_code: Optional[str] = None
         discount_source: Optional[str] = "sale" if sale_discount > 0 else None
         coupon_reason: Optional[str] = None
+        # Gross coupon discount: the full value of the coupon, independent of any
+        # salon sale. Used for settlement/reporting (coupon_redemptions.gross_discount);
+        # `discount_amount` stays the net delta recorded against the booking.
+        coupon_gross_discount = 0.0
 
         if coupon_code:
             coupon, reason = await self.coupon_service.get_valid_coupon(
@@ -116,6 +120,7 @@ class PricingService:
                     discount_source = "coupon"
                     coupon_id = coupon["id"]
                     applied_code = coupon["code"]
+                    coupon_gross_discount = coupon_discount
                 else:
                     coupon_reason = "A better discount is already applied at this salon."
             elif coupon["applies_to"] == "convenience_fee":
@@ -130,6 +135,7 @@ class PricingService:
                     convenience_fee_due = round(convenience_fee_base - fee_discount, 2)
                     coupon_id = coupon["id"]
                     applied_code = coupon["code"]
+                    coupon_gross_discount = fee_discount
 
         total_amount = round(service_total_due + convenience_fee_due, 2)
 
@@ -146,6 +152,7 @@ class PricingService:
             "pay_at_salon": service_total_due,
             "coupon_id": coupon_id,
             "coupon_code": applied_code,
+            "coupon_gross_discount": round(coupon_gross_discount, 2),
             "discount_source": discount_source,
             "coupon_reason": coupon_reason,
         }

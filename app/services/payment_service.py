@@ -259,9 +259,27 @@ class PaymentService:
             RAZORPAY_MIN_AMOUNT = 1.0
             total_payment = max(booking_fee, RAZORPAY_MIN_AMOUNT)
 
-            # Create Razorpay order with cart + coupon snapshot for validation.
-            # The applied coupon code is carried in notes so checkout re-runs the
-            # exact same pricing and re-validates limits.
+            # Pin the exact priced breakdown into the order so checkout records
+            # what was actually CHARGED, not a fresh recompute that could diverge
+            # if coupon/sale/price state changes between now and checkout (D4 /
+            # audit C1). convenience_fee_due reflects the floored amount the
+            # customer truly pays (M9).
+            pinned_pricing = {
+                "subtotal_service_price": pricing["subtotal_service_price"],
+                "discount_amount": pricing["discount_amount"],
+                "service_total_due": pricing["service_total_due"],
+                "convenience_fee_base": pricing["convenience_fee_base"],
+                "convenience_fee_discount": pricing["convenience_fee_discount"],
+                "convenience_fee_due": round(total_payment, 2),
+                "total_amount": round(pricing["service_total_due"] + total_payment, 2),
+                "coupon_id": pricing["coupon_id"],
+                "coupon_code": pricing["coupon_code"],
+                "coupon_gross_discount": pricing.get("coupon_gross_discount", 0.0),
+            }
+
+            # Create Razorpay order with cart + pinned-pricing snapshot. Checkout
+            # trusts these values (after re-validating the cart hasn't changed)
+            # instead of recomputing.
             import json
             order = self.razorpay.create_order(
                 amount=total_payment,
@@ -275,6 +293,7 @@ class PaymentService:
                     "original_service_total": pricing["original_service_price"],
                     "booking_fee": booking_fee,
                     "coupon_code": pricing["coupon_code"] or "",
+                    "pricing": json.dumps(pinned_pricing),  # Pinned breakdown (authoritative)
                     "cart_snapshot": json.dumps(cart_snapshot),  # Store cart state
                     "cart_item_count": len(cart_snapshot)
                 }

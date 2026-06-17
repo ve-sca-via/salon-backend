@@ -78,12 +78,17 @@ class CouponService:
 
         normalized = code.strip().upper()
 
-        # Active coupon for this code (unique index guarantees at most one)
-        resp = self.db.table("coupons").select("*").eq("is_active", True).execute()
-        coupon = next(
-            (c for c in (resp.data or []) if (c.get("code") or "").upper() == normalized),
-            None,
+        # Active coupon for this code. Codes are stored uppercase (enforced on
+        # create), and idx_coupons_active_code guarantees at most one active row
+        # per code — so this is an indexed point lookup, not a full scan.
+        resp = (
+            self.db.table("coupons")
+            .select("*")
+            .eq("is_active", True)
+            .eq("code", normalized)
+            .execute()
         )
+        coupon = (resp.data or [None])[0]
         if not coupon:
             return None, _REASON_MESSAGES["not_found"]
 
@@ -126,10 +131,15 @@ class CouponService:
         return coupon, None
 
     async def _is_first_time(self, customer_id: str, salon_id: str, scope: str) -> bool:
-        """True if the customer has no prior bookings (platform-wide or with this salon)."""
+        """
+        True if the customer has no prior *non-cancelled* bookings (platform-wide
+        or with this salon). Cancelled bookings are excluded so a cancellation
+        does not permanently disqualify a customer from first-time offers (D3).
+        This is a UX pre-check; redeem_coupon() enforces the same rule atomically.
+        """
         query = self.db.table("bookings").select("id", count="exact").eq(
             "customer_id", customer_id
-        ).is_("deleted_at", "null")
+        ).is_("deleted_at", "null").neq("status", "cancelled")
         if scope == "vendor":
             query = query.eq("salon_id", salon_id)
         result = query.execute()
@@ -149,9 +159,12 @@ class CouponService:
         user_id: str,
         booking_id: str,
         discount_amount: float,
+        gross_discount: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Atomically record a redemption and enforce usage limits via redeem_coupon().
+        `discount_amount` is the net delta recorded against the booking; `gross_discount`
+        is the full coupon value for settlement/reporting (defaults to discount_amount).
         Returns {success, reason, was_already_redeemed}. Never raises on a limit
         failure — booking creation must not be rolled back by a redemption race; the
         caller logs and proceeds (the discount was already validated at order time).
@@ -162,6 +175,9 @@ class CouponService:
                 "p_user_id": user_id,
                 "p_booking_id": booking_id,
                 "p_discount_amount": round(float(discount_amount or 0), 2),
+                "p_gross_discount": round(float(
+                    gross_discount if gross_discount is not None else (discount_amount or 0)
+                ), 2),
             }).execute()
             row = resp.data[0] if resp.data else {}
             return {
@@ -180,6 +196,18 @@ class CouponService:
         """Insert a coupon. `data` must already carry scope/salon_id/funded_by/created_by."""
         if data.get("code"):
             data["code"] = data["code"].strip().upper()
+        # Vendor-scoped coupons must point at a real salon. The FK would catch a
+        # bad id with an opaque 500; check up front for a clean 404 (admins can
+        # pass an arbitrary salon_id).
+        if data.get("scope") == "vendor" and data.get("salon_id"):
+            salon = (
+                self.db.table("salons").select("id").eq("id", data["salon_id"]).execute()
+            )
+            if not (salon.data or []):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Salon not found for this coupon.",
+                )
         try:
             resp = self.db.table("coupons").insert(data).execute()
         except Exception as e:
