@@ -631,16 +631,20 @@ class CustomerService:
             # what the convenience fee was charged on). Read it from the order notes
             # below; fall back to whatever the client sent.
             applied_coupon_code = checkout_data.get("coupon_code")
+            # Pinned pricing from the order (authoritative — what was charged). When
+            # present, the booking records these exact amounts instead of recomputing,
+            # so recorded == charged even if coupon/sale/price state changed (D4).
+            pinned_pricing = None
 
             # CART VALIDATION: Verify cart hasn't changed since payment order creation
             # This prevents race conditions where cart is modified between payment and checkout
             if checkout_data.get("razorpay_order_id"):
                 try:
-                    # Fetch the Razorpay order to get the cart snapshot
+                    # Fetch the Razorpay order to get the cart + pricing snapshot
                     from app.services.payment_service import PaymentService
                     payment_service = PaymentService(db_client=self.db)
                     await payment_service._initialize_razorpay()
-                    
+
                     import json
                     razorpay_order = payment_service.razorpay.client.order.fetch(checkout_data["razorpay_order_id"])
                     stored_snapshot = razorpay_order.get("notes", {}).get("cart_snapshot")
@@ -649,11 +653,18 @@ class CustomerService:
                     note_coupon = razorpay_order.get("notes", {}).get("coupon_code")
                     if note_coupon:
                         applied_coupon_code = note_coupon
-                    
+                    # Parse the pinned pricing breakdown (authoritative for the booking)
+                    stored_pricing = razorpay_order.get("notes", {}).get("pricing")
+                    if stored_pricing:
+                        try:
+                            pinned_pricing = json.loads(stored_pricing)
+                        except (ValueError, TypeError) as parse_err:
+                            logger.warning(f"Could not parse pinned pricing note: {parse_err}")
+
                     if stored_snapshot and stored_item_count:
                         stored_cart = json.loads(stored_snapshot)
                         current_item_count = len(cart_response["items"])
-                        
+
                         # Quick check: item count mismatch
                         if int(stored_item_count) != current_item_count:
                             logger.warning(f"Cart modified: expected {stored_item_count} items, found {current_item_count}")
@@ -661,25 +672,37 @@ class CustomerService:
                                 status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="Your cart has been modified since payment. Please try checkout again."
                             )
-                        
-                        # Detailed validation: compare service IDs and quantities
-                        current_cart = {item["service_id"]: item["quantity"] for item in cart_response["items"]}
-                        stored_cart_dict = {item["service_id"]: item["quantity"] for item in stored_cart}
-                        
+
+                        # Detailed validation: compare service IDs, quantities AND unit
+                        # price (a price change since the order also invalidates the
+                        # charged amount — fail closed).
+                        def _cart_key(items):
+                            return {
+                                item["service_id"]: (
+                                    item["quantity"],
+                                    round(float(item.get("unit_price", 0) or 0), 2),
+                                )
+                                for item in items
+                            }
+                        current_cart = _cart_key(cart_response["items"])
+                        stored_cart_dict = _cart_key(stored_cart)
+
                         if current_cart != stored_cart_dict:
-                            logger.warning("Cart contents changed since payment order creation")
+                            logger.warning("Cart contents/prices changed since payment order creation")
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Your cart contents have changed since payment. Please try checkout again."
+                                detail="Your cart has changed since payment. Please try checkout again."
                             )
-                        
+
                         logger.info("Cart validation passed: snapshot matches current cart")
                 except HTTPException:
                     raise
                 except Exception as e:
-                    # Don't fail checkout if cart validation fails (log warning only)
+                    # Network/parse error fetching the order. We can't pin, so fall
+                    # back to a fresh server-side recompute in create_booking (which
+                    # still re-validates the coupon). Cart-mismatch above is a hard 400.
                     logger.warning(f"Cart validation skipped due to error: {str(e)}")
-            
+
             # Verify Razorpay payment signature if payment details provided
             if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
                 from app.services.payment_service import PaymentService
@@ -726,10 +749,12 @@ class CustomerService:
                 coupon_code=applied_coupon_code
             )
             
-            # Create booking
+            # Create booking (pinned_pricing makes the recorded amounts equal what
+            # was charged on the Razorpay order; None falls back to recompute)
             booking = await booking_service.create_booking(
                 booking=booking_data,
-                current_user_id=customer_id
+                current_user_id=customer_id,
+                pinned_pricing=pinned_pricing,
             )
             
             # Clear cart after successful booking

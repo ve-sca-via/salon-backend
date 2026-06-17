@@ -139,7 +139,8 @@ class BookingService:
     async def create_booking(
         self,
         booking: BookingCreate,
-        current_user_id: str
+        current_user_id: str,
+        pinned_pricing: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create new booking with multiple services support.
@@ -147,6 +148,11 @@ class BookingService:
         Args:
             booking: Booking creation data with services array
             current_user_id: Customer user ID
+            pinned_pricing: Authoritative priced breakdown captured when the
+                payment order was created (from the Razorpay order notes). When
+                provided, the booking records these exact amounts instead of
+                recomputing, guaranteeing recorded == charged (audit C1 / D4).
+                When None, pricing is recomputed server-side.
 
         Returns:
             Created booking data
@@ -256,16 +262,31 @@ class BookingService:
                     detail="Payment configuration not available. Please contact support."
                 )
             
-            # Single source of truth for pricing — applies any coupon (best-of vs
-            # the active salon sale) and computes the convenience fee. Must match
-            # what PaymentService charged for the Razorpay order.
-            pricing = await PricingService(self.db).compute_booking_pricing(
-                line_items=line_items,
-                convenience_fee_percentage=convenience_fee_percentage,
-                salon_id=booking.salon_id,
-                customer_id=current_user_id,
-                coupon_code=getattr(booking, "coupon_code", None),
-            )
+            # Pricing: prefer the pinned breakdown captured at payment-order time
+            # (authoritative — recorded == charged). Only recompute when it is
+            # absent (e.g. direct/non-cart create path). Recompute is still the
+            # single source of truth that applies coupon best-of vs salon sale.
+            if pinned_pricing and pinned_pricing.get("service_total_due") is not None:
+                pricing = {
+                    "subtotal_service_price": float(pinned_pricing.get("subtotal_service_price") or 0),
+                    "discount_amount": float(pinned_pricing.get("discount_amount") or 0),
+                    "service_total_due": float(pinned_pricing.get("service_total_due") or 0),
+                    "convenience_fee_discount": float(pinned_pricing.get("convenience_fee_discount") or 0),
+                    "convenience_fee_due": float(pinned_pricing.get("convenience_fee_due") or 0),
+                    "total_amount": float(pinned_pricing.get("total_amount") or 0),
+                    "coupon_id": pinned_pricing.get("coupon_id"),
+                    "coupon_code": pinned_pricing.get("coupon_code"),
+                    "coupon_gross_discount": float(pinned_pricing.get("coupon_gross_discount") or 0),
+                }
+                logger.info("Using pinned pricing from payment order (recorded == charged)")
+            else:
+                pricing = await PricingService(self.db).compute_booking_pricing(
+                    line_items=line_items,
+                    convenience_fee_percentage=convenience_fee_percentage,
+                    salon_id=booking.salon_id,
+                    customer_id=current_user_id,
+                    coupon_code=getattr(booking, "coupon_code", None),
+                )
 
             # Pay-at-salon (service) and pay-now (convenience fee) after discounts
             total_service_price = pricing["service_total_due"]
@@ -343,11 +364,13 @@ class BookingService:
             # Create payment records in new unified payments table
             booking_id = created_booking["id"]
 
-            # Record coupon redemption atomically (enforces usage limits). A
-            # redemption-limit race here must NOT roll back the booking — the
-            # coupon was already validated when the payment order was created, so
-            # we log and proceed.
-            if pricing.get("coupon_id"):
+            # Record coupon redemption atomically (enforces usage limits). Only
+            # redeem once the booking is paid — an unpaid/pending booking must not
+            # consume a coupon's usage (D2). redeem_coupon() re-validates the
+            # coupon under a row lock, so a redemption-limit race here must NOT
+            # roll back the booking; we log and proceed.
+            is_paid = booking.payment_status == "paid"
+            if pricing.get("coupon_id") and is_paid:
                 from app.services.coupon_service import CouponService
                 redeem_discount = round(
                     float(pricing.get("discount_amount", 0))
@@ -359,12 +382,18 @@ class BookingService:
                     user_id=current_user_id,
                     booking_id=booking_id,
                     discount_amount=redeem_discount,
+                    gross_discount=round(float(pricing.get("coupon_gross_discount", 0)), 2),
                 )
                 if not redeem_result.get("success"):
                     logger.warning(
                         f"Coupon redemption failed for booking {booking_id} "
                         f"(coupon {pricing['coupon_id']}): {redeem_result.get('reason')}"
                     )
+            elif pricing.get("coupon_id") and not is_paid:
+                logger.info(
+                    f"Booking {booking_id} created unpaid; coupon "
+                    f"{pricing['coupon_id']} redemption deferred until payment."
+                )
 
             # 1. Create convenience fee payment record (online payment)
             if booking.razorpay_order_id or booking.razorpay_payment_id:
@@ -427,7 +456,11 @@ class BookingService:
                     } for svc in processed_services],
                     total_amount=totals["total_amount"],
                     convenience_fee=totals["convenience_fee"],
-                    service_price=total_service_price
+                    service_price=total_service_price,
+                    subtotal_service_price=pricing.get("subtotal_service_price"),
+                    discount_amount=pricing.get("discount_amount", 0) or 0,
+                    convenience_fee_discount=pricing.get("convenience_fee_discount", 0) or 0,
+                    coupon_code=pricing.get("coupon_code"),
                 )
                 logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
                 

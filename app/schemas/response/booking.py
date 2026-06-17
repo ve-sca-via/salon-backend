@@ -34,6 +34,12 @@ class BookingResponse(BaseModel):
     service_price: float
     convenience_fee: float
     total_amount: float
+    # Coupon / discount breakdown (NULL/0 for legacy or no-coupon bookings)
+    subtotal_service_price: Optional[float] = Field(None, description="Service total before coupon discount")
+    discount_amount: float = Field(0, description="Coupon discount on the service price")
+    convenience_fee_discount: float = Field(0, description="Coupon discount on the convenience fee")
+    coupon_id: Optional[str] = Field(None, description="Applied coupon id, if any")
+    coupon_code: Optional[str] = Field(None, description="Snapshot of the applied coupon code")
     cancelled_at: Optional[datetime] = None
     cancellation_reason: Optional[str] = None
     created_by: Optional[str] = None

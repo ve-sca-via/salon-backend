@@ -8,11 +8,12 @@ Handles all customer-facing operations:
 - Cart operations
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from supabase import Client
 from app.core.auth import get_current_user, TokenData
 from app.core.database import get_db_client
+from app.core.rate_limit import limiter, RateLimits
 from app.services.customer_service import CustomerService
 from app.services.booking_service import BookingService
 from app.services.product_cart_service import ProductCartService
@@ -248,7 +249,9 @@ async def checkout_cart(
 
 
 @router.post("/cart/validate-coupon", response_model=CouponValidationResult)
+@limiter.limit(RateLimits.COUPON_VALIDATE)
 async def validate_cart_coupon(
+    request: Request,
     body: CouponValidateRequest,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)

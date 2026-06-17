@@ -81,6 +81,7 @@ class RateLimits:
     PAYMENT_CREATE = "10/minute"      # Max 10 payment creations per minute
     BOOKING_CREATE = "20/minute"      # Max 20 bookings per minute
     FILE_UPLOAD = "10/minute"         # Max 10 file uploads per minute
+    COUPON_VALIDATE = "15/minute"     # Prevent coupon-code enumeration / brute force
     
     # Read operations (more lenient)
     READ_HEAVY = "60/minute"          # For list/search endpoints

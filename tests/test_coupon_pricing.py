@@ -227,6 +227,10 @@ class _CQuery:
         self._filters.append(("eq", col, val))
         return self
 
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
     def is_(self, col, val):
         self._filters.append(("is", col, val))
         return self
@@ -234,6 +238,8 @@ class _CQuery:
     def _match(self, row):
         for kind, col, val in self._filters:
             if kind == "eq" and row.get(col) != val:
+                return False
+            if kind == "neq" and row.get(col) == val:
                 return False
             if kind == "is" and val == "null" and row.get(col) is not None:
                 return False
@@ -346,3 +352,96 @@ async def test_first_time_vendor_allows_new_to_this_salon():
     svc = CouponService(db)
     coupon, reason = await svc.get_valid_coupon("SAVE", "s1", "u1", 1000)
     assert coupon is not None and reason is None
+
+
+async def test_first_time_ignores_cancelled_booking():
+    # A cancelled booking must NOT disqualify a customer from first-time offers (D3)
+    db = _db_with_coupon(first_time_scope="platform")
+    db.table("bookings").rows.append(
+        {"id": "b1", "customer_id": "u1", "salon_id": "s1", "deleted_at": None, "status": "cancelled"}
+    )
+    svc = CouponService(db)
+    coupon, reason = await svc.get_valid_coupon("SAVE", "s1", "u1", 1000)
+    assert coupon is not None and reason is None
+
+
+async def test_first_time_blocks_on_active_booking():
+    # A non-cancelled booking still blocks first-time
+    db = _db_with_coupon(first_time_scope="platform")
+    db.table("bookings").rows.append(
+        {"id": "b1", "customer_id": "u1", "salon_id": "s1", "deleted_at": None, "status": "confirmed"}
+    )
+    svc = CouponService(db)
+    coupon, reason = await svc.get_valid_coupon("SAVE", "s1", "u1", 1000)
+    assert coupon is None and "first-time" in reason
+
+
+# =====================================================================
+# 3. Gross coupon discount exposed for settlement (H6)
+# =====================================================================
+async def test_gross_discount_service_coupon():
+    ps = _pricing_with(_coupon(discount_type="percentage", discount_value=20))
+    r = await ps.compute_booking_pricing(
+        line_items=[LineItem(1000, 1000, 1)],
+        convenience_fee_percentage=10,
+        salon_id="s1", customer_id="u1", coupon_code="SAVE",
+    )
+    assert r["coupon_gross_discount"] == 200
+
+
+async def test_gross_discount_fee_coupon():
+    ps = _pricing_with(_coupon(applies_to="convenience_fee", discount_type="percentage", discount_value=50))
+    r = await ps.compute_booking_pricing(
+        line_items=[LineItem(1000, 1000, 1)],
+        convenience_fee_percentage=10,
+        salon_id="s1", customer_id="u1", coupon_code="FEE50",
+    )
+    assert r["coupon_gross_discount"] == 50
+
+
+async def test_gross_discount_over_sale_is_full_coupon_value():
+    # Sale already gives 200 off; a 30% coupon (300 gross) wins. Gross is the full
+    # 300, while discount_amount is only the 100 delta over the sale.
+    ps = _pricing_with(_coupon(discount_type="percentage", discount_value=30))
+    r = await ps.compute_booking_pricing(
+        line_items=[LineItem(1000, 800, 1)],
+        convenience_fee_percentage=10,
+        salon_id="s1", customer_id="u1", coupon_code="SAVE30",
+    )
+    assert r["coupon_gross_discount"] == 300
+    assert r["discount_amount"] == 100
+
+
+# =====================================================================
+# 4. Schema validation (vendor fee-coupon block, past valid_until)
+# =====================================================================
+def test_vendor_cannot_create_convenience_fee_coupon():
+    import pytest as _pytest
+    from pydantic import ValidationError
+    from app.schemas.request.coupon import VendorCouponCreate
+    with _pytest.raises(ValidationError):
+        VendorCouponCreate(
+            code="NOFEE", title="No fee", applies_to="convenience_fee",
+            discount_type="percentage", discount_value=100,
+        )
+
+
+def test_vendor_service_coupon_allowed():
+    from app.schemas.request.coupon import VendorCouponCreate
+    c = VendorCouponCreate(
+        code="SVC10", title="10% off", applies_to="service",
+        discount_type="percentage", discount_value=10,
+    )
+    assert c.applies_to == "service"
+
+
+def test_past_valid_until_rejected():
+    import pytest as _pytest
+    from pydantic import ValidationError
+    from app.schemas.request.coupon import AdminCouponCreate
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    with _pytest.raises(ValidationError):
+        AdminCouponCreate(
+            code="OLD", title="Expired on arrival", applies_to="service",
+            discount_type="flat_amount", discount_value=50, valid_until=past,
+        )

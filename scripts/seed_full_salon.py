@@ -38,7 +38,7 @@ from supabase import create_client
 
 DEFAULT_BASE_URL = "http://localhost:8000/api/v1"
 
-RM_EMAIL = "safdarniaxi@gmail.com"          # role = relationship_manager
+RM_EMAIL = "saf2@gmail.com"          # role = relationship_manager
 RM_PASSWORD = "Safdar@1234"
 ADMIN_EMAIL = "787alisniazi787@gmail.com"   # role = admin
 ADMIN_PASSWORD = "Safdar@1234"
