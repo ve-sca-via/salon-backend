@@ -8,11 +8,12 @@ Handles all customer-facing operations:
 - Cart operations
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from supabase import Client
 from app.core.auth import get_current_user, TokenData
 from app.core.database import get_db_client
+from app.core.rate_limit import limiter, RateLimits
 from app.services.customer_service import CustomerService
 from app.services.booking_service import BookingService
 from app.services.product_cart_service import ProductCartService
@@ -22,7 +23,8 @@ from app.schemas import (
     FavoritesResponse, FavoriteOperationResponse, CustomerReviewsResponse,
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
     CartCheckoutCreate, FavoriteCreate, ProductFavoriteCreate,
-    ProductCartResponse, ProductCartOperationResponse
+    ProductCartResponse, ProductCartOperationResponse,
+    CouponValidateRequest, CouponValidationResult
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -238,11 +240,29 @@ async def checkout_cart(
             "razorpay_payment_id": checkout_data.razorpay_payment_id,
             "razorpay_signature": checkout_data.razorpay_signature,
             "payment_method": checkout_data.payment_method,
-            "notes": checkout_data.notes
+            "notes": checkout_data.notes,
+            "coupon_code": checkout_data.coupon_code
         }
     )
     # Return only the booking data, not the wrapper dict
     return result["booking"]
+
+
+@router.post("/cart/validate-coupon", response_model=CouponValidationResult)
+@limiter.limit(RateLimits.COUPON_VALIDATE)
+async def validate_cart_coupon(
+    request: Request,
+    body: CouponValidateRequest,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Preview a coupon against the current cart ("Apply coupon" button).
+
+    Returns whether the coupon is valid for this cart and the resulting price
+    breakdown. Does NOT redeem the coupon — redemption happens at checkout.
+    """
+    return await customer_service.validate_coupon(current_user.user_id, body.code)
 
 
 # =====================================================

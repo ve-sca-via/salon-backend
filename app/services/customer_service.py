@@ -117,7 +117,72 @@ class CustomerService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to retrieve cart"
             )
-    
+
+    async def validate_coupon(self, customer_id: str, code: str) -> Dict[str, Any]:
+        """
+        Preview a coupon against the customer's current cart (the "Apply coupon" button).
+
+        Returns a CouponValidationResult-shaped dict: {valid, reason, coupon_id,
+        coupon_code, breakdown}. Uses the same PricingService as checkout, so the
+        previewed discount matches what will actually be charged.
+        """
+        from app.services.pricing_service import PricingService, LineItem
+
+        cart = await self.get_cart(customer_id)
+        if not cart.get("items"):
+            return {"valid": False, "reason": "Your cart is empty.", "coupon_id": None,
+                    "coupon_code": None, "breakdown": None}
+
+        salon_id = cart["salon_id"]
+        line_items = [
+            LineItem(
+                float(item["service_details"].get("price", 0) or 0),
+                float(item["unit_price"]),
+                item["quantity"],
+            )
+            for item in cart["items"]
+        ]
+
+        # Convenience fee % (admin-managed; required)
+        config_response = self.db.table("system_config")\
+            .select("config_value")\
+            .eq("config_key", "convenience_fee_percentage")\
+            .single()\
+            .execute()
+        try:
+            convenience_fee_percentage = float(config_response.data["config_value"])
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment configuration not available. Please contact support."
+            )
+
+        pricing = await PricingService(self.db).compute_booking_pricing(
+            line_items=line_items,
+            convenience_fee_percentage=convenience_fee_percentage,
+            salon_id=salon_id,
+            customer_id=customer_id,
+            coupon_code=code,
+        )
+
+        breakdown = {
+            "subtotal_service_price": pricing["subtotal_service_price"],
+            "discount_amount": pricing["discount_amount"],
+            "service_total_due": pricing["service_total_due"],
+            "convenience_fee_base": pricing["convenience_fee_base"],
+            "convenience_fee_discount": pricing["convenience_fee_discount"],
+            "convenience_fee_due": pricing["convenience_fee_due"],
+            "total_amount": pricing["total_amount"],
+            "discount_source": pricing["discount_source"],
+        }
+
+        if pricing["coupon_id"]:
+            return {"valid": True, "reason": None, "coupon_id": pricing["coupon_id"],
+                    "coupon_code": pricing["coupon_code"], "breakdown": breakdown}
+
+        return {"valid": False, "reason": pricing["coupon_reason"] or "This coupon could not be applied.",
+                "coupon_id": None, "coupon_code": None, "breakdown": breakdown}
+
     async def add_to_cart(
         self,
         customer_id: str,
@@ -562,24 +627,44 @@ class CustomerService:
                         "booking_number": existing.get("booking_number")
                     }
             
+            # Coupon applied at order-creation time is the authoritative one (it's
+            # what the convenience fee was charged on). Read it from the order notes
+            # below; fall back to whatever the client sent.
+            applied_coupon_code = checkout_data.get("coupon_code")
+            # Pinned pricing from the order (authoritative — what was charged). When
+            # present, the booking records these exact amounts instead of recomputing,
+            # so recorded == charged even if coupon/sale/price state changed (D4).
+            pinned_pricing = None
+
             # CART VALIDATION: Verify cart hasn't changed since payment order creation
             # This prevents race conditions where cart is modified between payment and checkout
             if checkout_data.get("razorpay_order_id"):
                 try:
-                    # Fetch the Razorpay order to get the cart snapshot
+                    # Fetch the Razorpay order to get the cart + pricing snapshot
                     from app.services.payment_service import PaymentService
                     payment_service = PaymentService(db_client=self.db)
                     await payment_service._initialize_razorpay()
-                    
+
                     import json
                     razorpay_order = payment_service.razorpay.client.order.fetch(checkout_data["razorpay_order_id"])
                     stored_snapshot = razorpay_order.get("notes", {}).get("cart_snapshot")
                     stored_item_count = razorpay_order.get("notes", {}).get("cart_item_count")
-                    
+                    # Use the coupon that was actually priced into this order
+                    note_coupon = razorpay_order.get("notes", {}).get("coupon_code")
+                    if note_coupon:
+                        applied_coupon_code = note_coupon
+                    # Parse the pinned pricing breakdown (authoritative for the booking)
+                    stored_pricing = razorpay_order.get("notes", {}).get("pricing")
+                    if stored_pricing:
+                        try:
+                            pinned_pricing = json.loads(stored_pricing)
+                        except (ValueError, TypeError) as parse_err:
+                            logger.warning(f"Could not parse pinned pricing note: {parse_err}")
+
                     if stored_snapshot and stored_item_count:
                         stored_cart = json.loads(stored_snapshot)
                         current_item_count = len(cart_response["items"])
-                        
+
                         # Quick check: item count mismatch
                         if int(stored_item_count) != current_item_count:
                             logger.warning(f"Cart modified: expected {stored_item_count} items, found {current_item_count}")
@@ -587,25 +672,37 @@ class CustomerService:
                                 status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="Your cart has been modified since payment. Please try checkout again."
                             )
-                        
-                        # Detailed validation: compare service IDs and quantities
-                        current_cart = {item["service_id"]: item["quantity"] for item in cart_response["items"]}
-                        stored_cart_dict = {item["service_id"]: item["quantity"] for item in stored_cart}
-                        
+
+                        # Detailed validation: compare service IDs, quantities AND unit
+                        # price (a price change since the order also invalidates the
+                        # charged amount — fail closed).
+                        def _cart_key(items):
+                            return {
+                                item["service_id"]: (
+                                    item["quantity"],
+                                    round(float(item.get("unit_price", 0) or 0), 2),
+                                )
+                                for item in items
+                            }
+                        current_cart = _cart_key(cart_response["items"])
+                        stored_cart_dict = _cart_key(stored_cart)
+
                         if current_cart != stored_cart_dict:
-                            logger.warning("Cart contents changed since payment order creation")
+                            logger.warning("Cart contents/prices changed since payment order creation")
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Your cart contents have changed since payment. Please try checkout again."
+                                detail="Your cart has changed since payment. Please try checkout again."
                             )
-                        
+
                         logger.info("Cart validation passed: snapshot matches current cart")
                 except HTTPException:
                     raise
                 except Exception as e:
-                    # Don't fail checkout if cart validation fails (log warning only)
+                    # Network/parse error fetching the order. We can't pin, so fall
+                    # back to a fresh server-side recompute in create_booking (which
+                    # still re-validates the coupon). Cart-mismatch above is a hard 400.
                     logger.warning(f"Cart validation skipped due to error: {str(e)}")
-            
+
             # Verify Razorpay payment signature if payment details provided
             if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
                 from app.services.payment_service import PaymentService
@@ -648,13 +745,16 @@ class CustomerService:
                 razorpay_order_id=checkout_data.get("razorpay_order_id"),
                 razorpay_payment_id=checkout_data.get("razorpay_payment_id"),
                 razorpay_signature=checkout_data.get("razorpay_signature"),
-                notes=checkout_data.get("notes")
+                notes=checkout_data.get("notes"),
+                coupon_code=applied_coupon_code
             )
             
-            # Create booking
+            # Create booking (pinned_pricing makes the recorded amounts equal what
+            # was charged on the Razorpay order; None falls back to recompute)
             booking = await booking_service.create_booking(
                 booking=booking_data,
-                current_user_id=customer_id
+                current_user_id=customer_id,
+                pinned_pricing=pinned_pricing,
             )
             
             # Clear cart after successful booking
