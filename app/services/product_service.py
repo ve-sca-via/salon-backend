@@ -259,6 +259,86 @@ class ProductService:
                 detail="Failed to fetch product",
             )
 
+    async def get_related_products(
+        self, product_id: str, limit: int = 10, user_role: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get products related to the given product, for the "Related Products"
+        section on the product detail page.
+
+        Relevance is tiered so the section is always populated when possible:
+          1. Same category (most relevant), featured first then newest.
+          2. Same brand, featured first then newest (backfill).
+          3. Any other active product, featured first then newest (final backfill).
+
+        The source product itself is always excluded. Only active products are
+        returned. B2B pricing is applied for B2B roles, matching list_products.
+
+        Args:
+            product_id: The product being viewed.
+            limit: Maximum number of related products to return.
+            user_role: Caller role, for B2B pricing.
+
+        Returns:
+            List of product dicts (same shape as list_products).
+        """
+        try:
+            base = await self.get_product_by_id(product_id)
+            category = base.get("category")
+            brand = base.get("brand")
+
+            collected: List[Dict[str, Any]] = []
+            seen_ids = {product_id}
+
+            def _take(products: List[Dict[str, Any]]) -> None:
+                for product in products:
+                    if product.get("id") in seen_ids:
+                        continue
+                    seen_ids.add(product["id"])
+                    _apply_b2b_pricing(product, user_role)
+                    collected.append(product)
+
+            def _fetch_tier(apply_filter) -> List[Dict[str, Any]]:
+                remaining = limit - len(collected)
+                if remaining <= 0:
+                    return []
+                query = self.db.table("products").select("*").eq("is_active", True)
+                query = apply_filter(query)
+                query = query.not_.in_("id", list(seen_ids))
+                query = (
+                    query.order("is_featured", desc=True)
+                    .order("created_at", desc=True)
+                    .limit(remaining)
+                )
+                return query.execute().data or []
+
+            # Tier 1: same category.
+            if category:
+                _take(_fetch_tier(lambda q: q.eq("category", category)))
+
+            # Tier 2: same brand.
+            if brand and len(collected) < limit:
+                _take(_fetch_tier(lambda q: q.eq("brand", brand)))
+
+            # Tier 3: any other active product.
+            if len(collected) < limit:
+                _take(_fetch_tier(lambda q: q))
+
+            logger.info(
+                f"Retrieved {len(collected)} related products for {product_id} (category={category})"
+            )
+
+            return collected
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching related products for {product_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to fetch related products",
+            )
+
     async def get_categories(self) -> List[str]:
         """
         Get distinct product categories.

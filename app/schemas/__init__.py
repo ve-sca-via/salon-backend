@@ -40,7 +40,10 @@ from .request.vendor import (
     ServiceCreate, ServiceUpdate, SalonPromoApplyRequest
 )
 from .request.payment import (
-    PaymentVerification
+    PaymentVerification, CartOrderCreate
+)
+from .request.coupon import (
+    VendorCouponCreate, AdminCouponCreate, CouponUpdate, CouponValidateRequest
 )
 from .request.admin import (
     SystemConfigUpdate
@@ -56,6 +59,9 @@ from .request.partner import (
 )
 from .request.product import (
     ProductCreate, ProductUpdate
+)
+from .request.banner import (
+    BannerCreate, BannerUpdate, BannerReorder, BannerOrderItem
 )
 
 # =====================================================
@@ -84,6 +90,9 @@ from .response.payment import (
     RazorpayOrderResponse,
     VendorRegistrationVerificationResponse,
 )
+from .response.coupon import (
+    CouponResponse, CouponDiscountBreakdown, CouponValidationResult
+)
 from .response.admin import (
     SystemConfigResponse, SystemConfigListResponse
 )
@@ -102,6 +111,9 @@ from .response.partner import (
 from .response.product import (
     ProductResponse, ProductListResponse, ProductOperationResponse, ProductDeleteResponse,
     ProductCartResponse, ProductCartOperationResponse
+)
+from .response.banner import (
+    BannerResponse, BannerListResponse, BannerOperationResponse, BannerDeleteResponse
 )
 
 from .response.customer import (
@@ -138,12 +150,14 @@ __all__ = [
     "CompleteRegistrationRequest", "VendorJoinRequestBase", "VendorJoinRequestCreate", "VendorJoinRequestUpdate",
     "VendorApprovalRequest", "VendorRejectionRequest", "SalonBase", "SalonCreate", "SalonUpdate",
     "ServiceCreate", "ServiceUpdate", "SalonPromoApplyRequest",
-    "PaymentVerification",
+    "PaymentVerification", "CartOrderCreate",
+    "VendorCouponCreate", "AdminCouponCreate", "CouponUpdate", "CouponValidateRequest",
     "SystemConfigUpdate",
     "GeocodeRequest",
     "ApplicationStatusUpdate",
     "PartnerRequestCreate", "PartnerRequestStatusUpdate",
     "ProductCreate", "ProductUpdate",
+    "BannerCreate", "BannerUpdate", "BannerReorder", "BannerOrderItem",
     # --- Response schemas ---
     "SuccessResponse", "ErrorResponse", "ValidationErrorResponse",
     "LoginResponse", "SignupResponse", "PasswordResetResponse", "PasswordResetConfirmResponse",
@@ -158,6 +172,7 @@ __all__ = [
     "BookingResponse",
     "RazorpayOrderResponse",
     "VendorRegistrationVerificationResponse",
+    "CouponResponse", "CouponDiscountBreakdown", "CouponValidationResult",
     "SystemConfigResponse", "SystemConfigListResponse",
     "GeocodeResponse",
     "PopularCityResponse", "PopularCitiesResponse",
@@ -165,6 +180,7 @@ __all__ = [
     "PartnerRequestResponse", "PartnerRequestUpdateResponse",
     "ProductResponse", "ProductListResponse", "ProductOperationResponse", "ProductDeleteResponse",
     "ProductCartResponse", "ProductCartOperationResponse",
+    "BannerResponse", "BannerListResponse", "BannerOperationResponse", "BannerDeleteResponse",
     "FavoriteResponse", "CartResponse", "CartOperationResponse", "CartClearResponse",
     "CustomerBookingsResponse", "BookingCancelResponse", "SalonsBrowseResponse",
     "SalonsSearchResponse", "SalonDetailsResponse", "FavoritesResponse",

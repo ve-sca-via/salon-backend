@@ -503,6 +503,72 @@ class SalonService:
 
         return salons
     
+    async def get_related_salons(self, salon_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get salons related to the given salon, for the "Related Salons" section
+        on the salon detail page.
+
+        Relevance is tiered so the section is always populated when possible:
+          1. Same city (most relevant), ordered by rating.
+          2. Same state, ordered by rating (backfill).
+          3. Any other public salon, ordered by rating (final backfill).
+
+        The source salon itself is always excluded. Only public-visible salons
+        (active + verified + paid, non regular_buyer) are returned.
+
+        Args:
+            salon_id: The salon being viewed.
+            limit: Maximum number of related salons to return.
+
+        Returns:
+            List of public salon dicts (same shape as get_public_salons).
+        """
+        # Fetch just the fields needed to drive relevance.
+        base = await self.get_salon(salon_id)
+        city = base.get("city")
+        state = base.get("state")
+
+        collected: List[Dict[str, Any]] = []
+        seen_ids = {salon_id}
+
+        def _take(salons: List[Dict[str, Any]]) -> None:
+            for salon in salons:
+                if salon.get("id") in seen_ids:
+                    continue
+                seen_ids.add(salon["id"])
+                collected.append(salon)
+
+        async def _fetch_tier(apply_filter) -> List[Dict[str, Any]]:
+            remaining = limit - len(collected)
+            if remaining <= 0:
+                return []
+            query = self._public_salons_query()
+            query = apply_filter(query)
+            query = query.not_.in_("id", list(seen_ids))
+            # Highest-rated first; over-fetch a little so excluded ids don't
+            # leave the section short.
+            query = query.order("average_rating", desc=True).limit(remaining)
+            response = query.execute()
+            return response.data or []
+
+        # Tier 1: same city.
+        if city:
+            _take(await _fetch_tier(lambda q: self._apply_city_filter(q, city)))
+
+        # Tier 2: same state.
+        if state and len(collected) < limit:
+            _take(await _fetch_tier(lambda q: q.eq("state", state)))
+
+        # Tier 3: any other public salon.
+        if len(collected) < limit:
+            _take(await _fetch_tier(lambda q: q))
+
+        await self._finalize_public_salons(collected)
+
+        logger.info(f"Retrieved {len(collected)} related salons for {salon_id} (city={city})")
+
+        return collected
+
     async def get_salon_services(self, salon_id: str) -> List[Dict[str, Any]]:
         """
         Get all active services for a salon with category information.

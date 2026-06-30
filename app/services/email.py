@@ -704,11 +704,15 @@ class EmailService:
         services: list,
         total_amount: float,
         convenience_fee: float,
-        service_price: float
+        service_price: float,
+        subtotal_service_price: Optional[float] = None,
+        discount_amount: float = 0,
+        convenience_fee_discount: float = 0,
+        coupon_code: Optional[str] = None
     ) -> bool:
         """
         Send booking confirmation email to customer
-        
+
         Args:
             customer_email: Customer's email
             customer_name: Customer's name
@@ -718,13 +722,44 @@ class EmailService:
             booking_time: Booking time
             services: List of services booked
             total_amount: Total booking amount
-            convenience_fee: Online convenience fee paid
-            service_price: Service price to be paid at salon
-            
+            convenience_fee: Online convenience fee paid (after any discount)
+            service_price: Service price to be paid at salon (after any discount)
+            subtotal_service_price: Service total before coupon discount (optional)
+            discount_amount: Coupon discount applied to the service price
+            convenience_fee_discount: Coupon discount applied to the convenience fee
+            coupon_code: Applied coupon code, if any
+
         Returns:
             bool: Success status
         """
         try:
+            # Build the discount lines only when a coupon was actually applied.
+            total_savings = (discount_amount or 0) + (convenience_fee_discount or 0)
+            discount_rows = ""
+            if coupon_code and total_savings > 0:
+                pre_discount_service = (
+                    subtotal_service_price
+                    if subtotal_service_price is not None
+                    else service_price + (discount_amount or 0)
+                )
+                fee_before = convenience_fee + (convenience_fee_discount or 0)
+                discount_rows = f"""
+                        <p style="margin:4px 0;color:#666;">Service Total: <span style="text-decoration:line-through;">₹{pre_discount_service:.2f}</span></p>"""
+                if discount_amount and discount_amount > 0:
+                    discount_rows += f"""
+                        <p style="margin:4px 0;color:#2e7d32;">Service Discount: −₹{discount_amount:.2f}</p>"""
+                if convenience_fee_discount and convenience_fee_discount > 0:
+                    discount_rows += f"""
+                        <p style="margin:4px 0;color:#666;">Convenience Fee: <span style="text-decoration:line-through;">₹{fee_before:.2f}</span></p>
+                        <p style="margin:4px 0;color:#2e7d32;">Fee Discount: −₹{convenience_fee_discount:.2f}</p>"""
+
+            coupon_badge = ""
+            if coupon_code and total_savings > 0:
+                coupon_badge = f"""
+                    <div style="background:#e8f5e9;border:1px solid #a5d6a7;color:#2e7d32;padding:10px 14px;border-radius:6px;margin:16px 0;font-weight:bold;">
+                        🎉 Coupon <strong>{coupon_code}</strong> applied — you saved ₹{total_savings:.2f}!
+                    </div>"""
+
             # Simple HTML email (template can be created later)
             html_body = f"""
             <html>
@@ -733,7 +768,7 @@ class EmailService:
                     <h2 style="color: #4CAF50;">✅ Booking Confirmed!</h2>
                     <p>Hi {customer_name},</p>
                     <p>Your booking at <strong>{salon_name}</strong> has been confirmed.</p>
-                    
+                    {coupon_badge}
                     <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <h3>Booking Details:</h3>
                         <p><strong>Booking Number:</strong> {booking_number}</p>
@@ -741,19 +776,20 @@ class EmailService:
                         <p><strong>Time:</strong> {booking_time}</p>
                         <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
                     </div>
-                    
+
                     <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
                         <h3>Payment Details:</h3>
+                        {discount_rows}
                         <p><strong>Convenience Fee (Paid Online):</strong> ₹{convenience_fee:.2f}</p>
                         <p><strong>Service Amount (Pay at Salon):</strong> ₹{service_price:.2f}</p>
                         <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
                     </div>
-                    
+
                     <p style="color: #666; font-size: 14px;">
-                        Please arrive 5 minutes before your appointment time. 
+                        Please arrive 5 minutes before your appointment time.
                         Remember to pay the service amount (₹{service_price:.2f}) at the salon after your service.
                     </p>
-                    
+
                     <p>See you soon!<br><strong>Lubist Team</strong></p>
                 </div>
             </body>
