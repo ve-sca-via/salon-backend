@@ -96,6 +96,18 @@ class _Query:
         self._filters.append(("in", col, list(vals)))
         return self
 
+    @property
+    def not_(self):
+        # Mirrors supabase-py's `.not_.in_(col, vals)` negated filter builder.
+        query = self
+
+        class _Not:
+            def in_(self, col, vals):
+                query._filters.append(("not_in", col, list(vals)))
+                return query
+
+        return _Not()
+
     def order(self, col, desc=False):
         self._order.append((col, desc))
         return self
@@ -120,6 +132,8 @@ class _Query:
             if op == "neq" and rv == v:
                 return False
             if op == "in" and rv not in v:
+                return False
+            if op == "not_in" and rv in v:
                 return False
             if op == "ilike":
                 needle = v.strip("%").lower()
@@ -745,3 +759,75 @@ def test_send_payment_reminder_requires_admin(sa):
     s = sa.seed_salon(registration_fee_paid=False)
     r = sa.client.post(f"{ADMIN_SALONS}/{s['id']}/send-payment-reminder")
     assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# GET /salons/{salon_id}/related  (Related Salons section)
+# =====================================================================
+def test_related_same_city_excludes_self(sa):
+    base = sa.seed_salon(business_name="Base", city="Mumbai")
+    sa.seed_salon(business_name="Neighbour A", city="Mumbai")
+    sa.seed_salon(business_name="Neighbour B", city="Mumbai")
+    sa.seed_salon(business_name="Faraway", city="Delhi")
+
+    r = sa.client.get(f"{SALONS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    names = [s["business_name"] for s in r.json()["salons"]]
+    assert base["business_name"] not in names           # never recommend itself
+    assert "Neighbour A" in names and "Neighbour B" in names
+
+
+def test_related_ranked_by_rating(sa):
+    base = sa.seed_salon(business_name="Base", city="Mumbai")
+    sa.seed_salon(business_name="Low", city="Mumbai", average_rating=3.0)
+    sa.seed_salon(business_name="High", city="Mumbai", average_rating=4.8)
+
+    r = sa.client.get(f"{SALONS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    names = [s["business_name"] for s in r.json()["salons"]]
+    assert names[0] == "High"                            # highest-rated first
+
+
+def test_related_hides_non_public_and_regular_buyer(sa):
+    base = sa.seed_salon(business_name="Base", city="Mumbai")
+    sa.seed_salon(business_name="Hidden", city="Mumbai", public=False)
+    sa.seed_salon(business_name="Buyer", city="Mumbai", salon_type="regular_buyer")
+    sa.seed_salon(business_name="Visible", city="Mumbai")
+
+    r = sa.client.get(f"{SALONS}/{base['id']}/related")
+    assert r.status_code == 200, r.text
+    names = [s["business_name"] for s in r.json()["salons"]]
+    assert "Hidden" not in names and "Buyer" not in names
+    assert "Visible" in names
+
+
+def test_related_backfills_other_cities(sa):
+    # Only one same-city neighbour, but limit asks for more -> backfill by state,
+    # then anywhere.
+    base = sa.seed_salon(business_name="Base", city="Mumbai", state="MH")
+    sa.seed_salon(business_name="Same City", city="Mumbai", state="MH")
+    sa.seed_salon(business_name="Same State", city="Pune", state="MH")
+    sa.seed_salon(business_name="Other State", city="Delhi", state="DL")
+
+    r = sa.client.get(f"{SALONS}/{base['id']}/related", params={"limit": 3})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 3                            # filled up to the limit
+    names = [s["business_name"] for s in body["salons"]]
+    assert names[0] == "Same City"                       # city match comes first
+    assert base["business_name"] not in names
+
+
+def test_related_respects_limit(sa):
+    base = sa.seed_salon(business_name="Base", city="Mumbai")
+    for i in range(8):
+        sa.seed_salon(business_name=f"N{i}", city="Mumbai")
+
+    r = sa.client.get(f"{SALONS}/{base['id']}/related", params={"limit": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 5
+
+
+def test_related_missing_salon_is_404(sa):
+    r = sa.client.get(f"{SALONS}/{uuid.uuid4()}/related")
+    assert r.status_code == 404, r.text
