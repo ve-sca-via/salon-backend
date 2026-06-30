@@ -205,6 +205,34 @@ async def get_salon(
     }
 
 
+@router.get("/{salon_id}/related", response_model=PublicSalonsResponse)
+async def get_related_salons(
+    salon_id: str,
+    limit: int = Query(10, ge=1, le=20, description="Maximum number of related salons"),
+    salon_service: SalonService = Depends(get_salon_service)
+):
+    """
+    Get salons related to the given salon, for the "Related Salons" section
+    shown at the bottom of the salon detail page.
+
+    Relevance is tiered (same city → same state → any public salon), ordered by
+    rating, and always excludes the source salon. Only public-visible salons are
+    returned, so the same cards as the public listing can render the results.
+
+    **Returns:**
+    - salons: Array of related salon objects
+    - count: Number of results returned
+    """
+    salons = await salon_service.get_related_salons(salon_id=salon_id, limit=limit)
+
+    return {
+        "salons": salons,
+        "count": len(salons),
+        "offset": 0,
+        "limit": limit
+    }
+
+
 @router.get("/{salon_id}/reviews", response_model=PublicSalonReviewsResponse)
 async def get_salon_reviews(
     salon_id: str,

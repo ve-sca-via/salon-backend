@@ -198,6 +198,41 @@ async def create_product(
 # CATCH-ALL PARAMETRIC ROUTES (must be last)
 # ========================================
 
+@router.get("/{product_id}/related", response_model=ProductListResponse)
+async def get_related_products(
+    product_id: str,
+    limit: int = Query(10, ge=1, le=20, description="Maximum number of related products"),
+    current_user: Optional[TokenData] = Depends(get_optional_user),
+    product_service: ProductService = Depends(get_product_service),
+):
+    """
+    Get products related to the given product, for the "Related Products"
+    section shown at the bottom of the product detail page.
+
+    Relevance is tiered (same category → same brand → any active product),
+    featured first then newest, and always excludes the source product. Only
+    active products are returned. B2B pricing is applied for B2B roles.
+
+    **Returns:**
+    - products: Array of related product objects
+    - count: Number of results returned
+    """
+    products = await product_service.get_related_products(
+        product_id,
+        limit=limit,
+        user_role=current_user.user_role if current_user else None,
+    )
+
+    return {
+        "success": True,
+        "products": products,
+        "count": len(products),
+        "offset": 0,
+        "limit": limit,
+        "total": len(products),
+    }
+
+
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product_by_id(
     product_id: str,
