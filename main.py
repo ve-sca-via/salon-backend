@@ -22,7 +22,7 @@ logger = setup_logging()
 
 # Create FastAPI app instance with lifespan support
 if settings.is_production:
-    app = FastAPI(.īṇ
+    app = FastAPI(
         title=f"{settings.APP_NAME} (Production)",
         description=settings.APP_DESCRIPTION,
         version=settings.APP_VERSION,
