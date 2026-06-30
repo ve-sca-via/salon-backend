@@ -23,7 +23,10 @@ from app.schemas import (
     CompleteRegistrationRequest,
     CompleteRegistrationResponse,
     SalonResponse,
-    VendorAnalyticsResponse
+    VendorAnalyticsResponse,
+    VendorCouponCreate,
+    CouponUpdate,
+    CouponResponse
 )
 from app.core.database import get_db_client
 from app.services.vendor_service import VendorService
@@ -259,6 +262,64 @@ async def apply_promotion(
     return await vendor_service.apply_salon_promotion(
         vendor_id=current_user.user_id,
         promo=promo
+    )
+
+
+# =====================================================
+# VENDOR COUPONS (shareable code-based discounts)
+# =====================================================
+
+@router.get("/coupons", response_model=List[CouponResponse], operation_id="vendor_list_coupons")
+async def list_vendor_coupons(
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """List coupons created by this vendor for their salon."""
+    return await vendor_service.list_vendor_coupons(vendor_id=current_user.user_id)
+
+
+@router.post("/coupons", response_model=CouponResponse, operation_id="vendor_create_coupon")
+async def create_vendor_coupon(
+    coupon: VendorCouponCreate,
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """
+    Create a coupon code for this salon. Customers enter the code at checkout.
+    Supports service or convenience-fee discounts (flat/percentage), caps,
+    minimum order, first-time-user restriction and usage limits.
+    """
+    return await vendor_service.create_vendor_coupon(
+        vendor_id=current_user.user_id,
+        data=coupon.model_dump()
+    )
+
+
+@router.patch("/coupons/{coupon_id}", response_model=CouponResponse, operation_id="vendor_update_coupon")
+async def update_vendor_coupon(
+    coupon_id: str,
+    updates: CouponUpdate,
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """Update one of this vendor's coupons (code and scope are immutable)."""
+    return await vendor_service.update_vendor_coupon(
+        vendor_id=current_user.user_id,
+        coupon_id=coupon_id,
+        updates=updates.model_dump(exclude_unset=True)
+    )
+
+
+@router.delete("/coupons/{coupon_id}", response_model=CouponResponse, operation_id="vendor_deactivate_coupon")
+async def deactivate_vendor_coupon(
+    coupon_id: str,
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """Deactivate one of this vendor's coupons (kept for redemption history)."""
+    return await vendor_service.deactivate_vendor_coupon(
+        vendor_id=current_user.user_id,
+        coupon_id=coupon_id
     )
 
 
