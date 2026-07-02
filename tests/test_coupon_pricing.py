@@ -235,6 +235,13 @@ class _CQuery:
         self._filters.append(("is", col, val))
         return self
 
+    def in_(self, col, vals):
+        self._filters.append(("in", col, list(vals)))
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
     def _match(self, row):
         for kind, col, val in self._filters:
             if kind == "eq" and row.get(col) != val:
@@ -242,6 +249,8 @@ class _CQuery:
             if kind == "neq" and row.get(col) == val:
                 return False
             if kind == "is" and val == "null" and row.get(col) is not None:
+                return False
+            if kind == "in" and row.get(col) not in val:
                 return False
         return True
 
@@ -374,6 +383,86 @@ async def test_first_time_blocks_on_active_booking():
     svc = CouponService(db)
     coupon, reason = await svc.get_valid_coupon("SAVE", "s1", "u1", 1000)
     assert coupon is None and "first-time" in reason
+
+
+# =====================================================================
+# 2b. CouponService.list_available_coupons (customer discovery)
+# =====================================================================
+async def test_available_includes_platform_without_salon():
+    svc = CouponService(_db_with_coupon(scope="platform", salon_id=None))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id=None)
+    assert [c["code"] for c in out] == ["SAVE"]
+    # Display fields are projected
+    assert out[0]["summary"] == "20% OFF"
+
+
+async def test_available_excludes_vendor_coupon_without_salon():
+    svc = CouponService(_db_with_coupon(scope="vendor", salon_id="s1"))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id=None)
+    assert out == []
+
+
+async def test_available_includes_vendor_coupon_for_matching_salon():
+    svc = CouponService(_db_with_coupon(scope="vendor", salon_id="s1"))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert [c["code"] for c in out] == ["SAVE"]
+
+
+async def test_available_excludes_vendor_coupon_for_other_salon():
+    svc = CouponService(_db_with_coupon(scope="vendor", salon_id="other"))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out == []
+
+
+async def test_available_excludes_expired():
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    svc = CouponService(_db_with_coupon(valid_until=past))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out == []
+
+
+async def test_available_excludes_total_limit_reached():
+    svc = CouponService(_db_with_coupon(usage_limit_total=3, used_count=3))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out == []
+
+
+async def test_available_excludes_per_user_limit_reached():
+    db = _db_with_coupon(usage_limit_per_user=1)
+    db.table("coupon_redemptions").rows.append(
+        {"id": "r1", "coupon_id": "coupon-1", "user_id": "u1"}
+    )
+    svc = CouponService(db)
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out == []
+
+
+async def test_available_excludes_first_time_ineligible():
+    db = _db_with_coupon(first_time_scope="platform")
+    db.table("bookings").rows.append(
+        {"id": "b1", "customer_id": "u1", "salon_id": "s9", "deleted_at": None, "status": "confirmed"}
+    )
+    svc = CouponService(db)
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out == []
+
+
+async def test_available_summary_and_condition_fields():
+    svc = CouponService(_db_with_coupon(
+        discount_type="percentage", discount_value=10, max_discount_cap=100,
+        min_order_amount=499, first_time_scope="platform",
+    ))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out[0]["summary"] == "10% OFF up to ₹100"
+    assert out[0]["subtitle"] == "On orders above ₹499 • First booking only"
+
+
+async def test_available_fee_coupon_summary():
+    svc = CouponService(_db_with_coupon(
+        applies_to="convenience_fee", discount_type="flat_amount", discount_value=50,
+    ))
+    out = await svc.list_available_coupons(customer_id="u1", salon_id="s1")
+    assert out[0]["summary"] == "₹50 OFF on booking fee"
 
 
 # =====================================================================

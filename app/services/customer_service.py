@@ -183,6 +183,25 @@ class CustomerService:
         return {"valid": False, "reason": pricing["coupon_reason"] or "This coupon could not be applied.",
                 "coupon_id": None, "coupon_code": None, "breakdown": breakdown}
 
+    async def list_available_coupons(
+        self,
+        customer_id: str,
+        salon_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List coupons the customer can currently discover ("available offers").
+
+        Platform coupons are always included; that salon's vendor coupons are added
+        when `salon_id` is provided (e.g. at checkout). Ineligible coupons are
+        filtered out — see CouponService.list_available_coupons.
+        """
+        from app.services.coupon_service import CouponService
+
+        return await CouponService(self.db).list_available_coupons(
+            customer_id=customer_id,
+            salon_id=salon_id,
+        )
+
     async def add_to_cart(
         self,
         customer_id: str,

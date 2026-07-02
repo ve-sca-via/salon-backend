@@ -151,6 +151,149 @@ class CouponService:
         return _REASON_MESSAGES.get(reason_code, "This coupon could not be applied.")
 
     # =====================================================
+    # DISCOVERY (customer-facing "available coupons" list)
+    # =====================================================
+    @staticmethod
+    def _coupon_summary(coupon: Dict[str, Any]) -> str:
+        """Headline discount label, e.g. '10% OFF up to ₹100' or '₹50 OFF'."""
+        dvalue = coupon.get("discount_value") or 0
+        try:
+            dvalue = float(dvalue)
+        except (TypeError, ValueError):
+            dvalue = 0
+        amount = int(dvalue) if float(dvalue).is_integer() else round(dvalue, 2)
+        is_fee = coupon.get("applies_to") == "convenience_fee"
+
+        if coupon.get("discount_type") == "percentage":
+            head = f"{amount}% OFF"
+            cap = coupon.get("max_discount_cap")
+            if cap is not None:
+                cap_amt = int(float(cap)) if float(cap).is_integer() else round(float(cap), 2)
+                head = f"{head} up to ₹{cap_amt}"
+        else:  # flat_amount
+            head = f"₹{amount} OFF"
+
+        return f"{head} on booking fee" if is_fee else head
+
+    @staticmethod
+    def _coupon_condition(coupon: Dict[str, Any]) -> Optional[str]:
+        """Human-readable eligibility condition shown under the headline."""
+        parts: List[str] = []
+        min_order = coupon.get("min_order_amount")
+        if min_order is not None and float(min_order) > 0:
+            min_amt = int(float(min_order)) if float(min_order).is_integer() else round(float(min_order), 2)
+            parts.append(f"On orders above ₹{min_amt}")
+        if coupon.get("first_time_scope"):
+            parts.append("First booking only")
+        return " • ".join(parts) if parts else None
+
+    def _to_public_coupon(self, coupon: Dict[str, Any]) -> Dict[str, Any]:
+        """Project a coupon row down to the fields safe to show a customer."""
+        return {
+            "id": coupon["id"],
+            "code": coupon["code"],
+            "title": coupon.get("title"),
+            "scope": coupon.get("scope"),
+            "salon_id": coupon.get("salon_id"),
+            "applies_to": coupon.get("applies_to"),
+            "discount_type": coupon.get("discount_type"),
+            "discount_value": float(coupon.get("discount_value") or 0),
+            "max_discount_cap": coupon.get("max_discount_cap"),
+            "min_order_amount": coupon.get("min_order_amount"),
+            "first_time_scope": coupon.get("first_time_scope"),
+            "valid_until": coupon.get("valid_until"),
+            "summary": self._coupon_summary(coupon),
+            "subtitle": self._coupon_condition(coupon),
+        }
+
+    async def list_available_coupons(
+        self,
+        customer_id: str,
+        salon_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Coupons a customer can currently discover and apply.
+
+        Always includes active, in-window platform coupons (usable anywhere); when
+        `salon_id` is given, also includes that salon's active vendor coupons.
+        Filters out coupons the customer can't actually use: expired/not-started,
+        total-limit exhausted, per-user-limit reached, and first-time offers the
+        customer is no longer eligible for. Min-order stays in (surfaced as a
+        condition) — the authoritative check still runs on apply (validate_coupon).
+        """
+        now = datetime.now(timezone.utc)
+        resp = self.db.table("coupons").select("*").eq("is_active", True).execute()
+        all_active = resp.data or []
+
+        # Scope + validity window + total-usage pre-filter
+        candidates: List[Dict[str, Any]] = []
+        for coupon in all_active:
+            scope = coupon.get("scope")
+            if scope == "platform":
+                pass
+            elif scope == "vendor":
+                if not salon_id or coupon.get("salon_id") != salon_id:
+                    continue
+            else:
+                continue
+
+            valid_from = _parse_dt(coupon.get("valid_from"))
+            valid_until = _parse_dt(coupon.get("valid_until"))
+            if valid_from and now < valid_from:
+                continue
+            if valid_until and now > valid_until:
+                continue
+
+            total_limit = coupon.get("usage_limit_total")
+            if total_limit is not None and int(coupon.get("used_count") or 0) >= int(total_limit):
+                continue
+
+            candidates.append(coupon)
+
+        if not candidates:
+            return []
+
+        # Per-user redemption counts in one query
+        coupon_ids = [c["id"] for c in candidates]
+        used_by_user: Dict[str, int] = {}
+        redemptions = (
+            self.db.table("coupon_redemptions")
+            .select("coupon_id")
+            .eq("user_id", customer_id)
+            .in_("coupon_id", coupon_ids)
+            .execute()
+        )
+        for row in (redemptions.data or []):
+            cid = row.get("coupon_id")
+            used_by_user[cid] = used_by_user.get(cid, 0) + 1
+
+        # First-time eligibility is the same for all coupons of a given scope —
+        # compute at most once per scope.
+        first_time_cache: Dict[str, bool] = {}
+
+        available: List[Dict[str, Any]] = []
+        for coupon in candidates:
+            per_user_limit = coupon.get("usage_limit_per_user")
+            if per_user_limit is not None and used_by_user.get(coupon["id"], 0) >= int(per_user_limit):
+                continue
+
+            first_time_scope = coupon.get("first_time_scope")
+            if first_time_scope:
+                # A vendor-scoped first-time check needs a salon context.
+                if first_time_scope == "vendor" and not salon_id:
+                    continue
+                if first_time_scope not in first_time_cache:
+                    first_time_cache[first_time_scope] = await self._is_first_time(
+                        customer_id, salon_id, first_time_scope
+                    )
+                if not first_time_cache[first_time_scope]:
+                    continue
+
+            available.append(self._to_public_coupon(coupon))
+
+        return available
+
+    # =====================================================
     # REDEMPTION (atomic, used by BookingService)
     # =====================================================
     async def redeem(
