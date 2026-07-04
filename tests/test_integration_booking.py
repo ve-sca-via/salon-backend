@@ -14,6 +14,7 @@ covered over HTTP. Payment (Razorpay) is intentionally out of scope.
 """
 import asyncio
 import uuid
+from datetime import date, timedelta
 
 import pytest
 
@@ -36,7 +37,12 @@ def _login(client, user):
     return resp.json()["access_token"]
 
 
-def _booking_payload(salon_id, service_id, quantity=1, booking_date="2026-07-01"):
+# Bookings must be dated today-or-later (DB check constraint `valid_booking_datetime`).
+# Use a relative near-future date so these fixtures never expire as the calendar rolls on.
+_DEFAULT_BOOKING_DATE = (date.today() + timedelta(days=7)).isoformat()
+
+
+def _booking_payload(salon_id, service_id, quantity=1, booking_date=_DEFAULT_BOOKING_DATE):
     return BookingCreate(
         salon_id=salon_id,
         booking_date=booking_date,
@@ -96,7 +102,8 @@ def test_customer_sees_own_booking_in_list(service_client, integration_client,
 
     svc = BookingService(db_client=service_client)
     created = asyncio.run(svc.create_booking(
-        _booking_payload(service["salon_id"], service["id"], booking_date="2026-07-02"),
+        _booking_payload(service["salon_id"], service["id"],
+                         booking_date=(date.today() + timedelta(days=8)).isoformat()),
         current_user_id=customer["id"],
     ))
     created_number = created["booking_number"]
@@ -120,7 +127,8 @@ def test_customer_cancels_own_booking(service_client, integration_client,
 
     svc = BookingService(db_client=service_client)
     created = asyncio.run(svc.create_booking(
-        _booking_payload(service["salon_id"], service["id"], booking_date="2026-12-31"),
+        _booking_payload(service["salon_id"], service["id"],
+                         booking_date=(date.today() + timedelta(days=180)).isoformat()),
         current_user_id=customer["id"],
     ))
 
@@ -155,7 +163,8 @@ def test_booking_with_service_coupon_records_discount_and_redemption(
     }).execute().data[0]
 
     try:
-        payload = _booking_payload(service["salon_id"], service["id"], booking_date="2026-08-01")
+        payload = _booking_payload(service["salon_id"], service["id"],
+                                   booking_date=(date.today() + timedelta(days=30)).isoformat())
         payload.coupon_code = code
         # Redemption only happens for a PAID booking (D2): unpaid/pending bookings
         # must not consume coupon usage. Mark this one paid.
@@ -190,7 +199,8 @@ def test_booking_with_service_coupon_records_discount_and_redemption(
         # An UNPAID booking with the same coupon must NOT redeem — proving
         # redemption is gated on payment (D2).
         customer2 = make_user(role="customer")
-        payload2 = _booking_payload(service["salon_id"], service["id"], booking_date="2026-08-02")
+        payload2 = _booking_payload(service["salon_id"], service["id"],
+                                    booking_date=(date.today() + timedelta(days=31)).isoformat())
         payload2.coupon_code = code  # payment_status defaults to unpaid/pending
         booking2 = asyncio.run(
             BookingService(db_client=service_client).create_booking(
