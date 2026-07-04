@@ -8,6 +8,7 @@ Handles all customer-facing operations:
 - Cart operations
 """
 
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from supabase import Client
@@ -24,7 +25,7 @@ from app.schemas import (
     ReviewOperationResponse, CartItemCreate, CartItemUpdate, ReviewCreate, ReviewUpdate,
     CartCheckoutCreate, FavoriteCreate, ProductFavoriteCreate,
     ProductCartResponse, ProductCartOperationResponse,
-    CouponValidateRequest, CouponValidationResult
+    CouponValidateRequest, CouponValidationResult, AvailableCouponResponse
 )
 
 router = APIRouter(prefix="/customers", tags=["Customer Portal"])
@@ -263,6 +264,24 @@ async def validate_cart_coupon(
     breakdown. Does NOT redeem the coupon — redemption happens at checkout.
     """
     return await customer_service.validate_coupon(current_user.user_id, body.code)
+
+
+@router.get("/available-coupons", response_model=List[AvailableCouponResponse])
+async def list_available_coupons(
+    salon_id: Optional[str] = None,
+    current_user: TokenData = Depends(get_current_user),
+    customer_service: CustomerService = Depends(get_customer_service)
+):
+    """
+    Coupons the customer can currently discover ("available offers").
+
+    Always returns active, in-window platform coupons (usable at any salon). When
+    `salon_id` is supplied (e.g. on the checkout screen), that salon's active
+    vendor coupons are added too. Ineligible coupons — expired, usage-exhausted,
+    already used, or first-time offers the customer no longer qualifies for — are
+    filtered out. The authoritative eligibility check still runs on apply.
+    """
+    return await customer_service.list_available_coupons(current_user.user_id, salon_id)
 
 
 # =====================================================

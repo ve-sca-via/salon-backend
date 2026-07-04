@@ -53,3 +53,21 @@ class CouponValidationResult(BaseModel):
     coupon_id: Optional[str] = None
     coupon_code: Optional[str] = None
     breakdown: Optional[CouponDiscountBreakdown] = None
+
+
+class AvailableCouponResponse(BaseModel):
+    """A customer-discoverable coupon (the 'available offers' list)."""
+    id: str
+    code: str
+    title: Optional[str] = None
+    scope: str
+    salon_id: Optional[str] = None
+    applies_to: str
+    discount_type: str
+    discount_value: float
+    max_discount_cap: Optional[float] = None
+    min_order_amount: Optional[float] = None
+    first_time_scope: Optional[str] = None
+    valid_until: Optional[datetime] = None
+    summary: str                           # headline label, e.g. "10% OFF up to ₹100"
+    subtitle: Optional[str] = None         # eligibility condition, e.g. "On orders above ₹499"
