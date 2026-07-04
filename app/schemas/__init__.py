@@ -91,7 +91,8 @@ from .response.payment import (
     VendorRegistrationVerificationResponse,
 )
 from .response.coupon import (
-    CouponResponse, CouponDiscountBreakdown, CouponValidationResult
+    CouponResponse, CouponDiscountBreakdown, CouponValidationResult,
+    AvailableCouponResponse
 )
 from .response.admin import (
     SystemConfigResponse, SystemConfigListResponse
@@ -173,6 +174,7 @@ __all__ = [
     "RazorpayOrderResponse",
     "VendorRegistrationVerificationResponse",
     "CouponResponse", "CouponDiscountBreakdown", "CouponValidationResult",
+    "AvailableCouponResponse",
     "SystemConfigResponse", "SystemConfigListResponse",
     "GeocodeResponse",
     "PopularCityResponse", "PopularCitiesResponse",

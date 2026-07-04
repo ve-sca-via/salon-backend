@@ -25,7 +25,7 @@ class VendorJoinRequestBase(BaseModel):
     """Vendor join request schema - comprehensive salon onboarding data"""
     # Business Info
     business_name: str = Field(..., min_length=2, max_length=255)
-    business_type: BusinessType = Field(..., description="Type of business: salon, spa, clinic, unisex_salon, barber_shop, beauty_parlor")
+    business_type: BusinessType = Field(..., description="Type of business: salon, spa, clinic, unisex_salon, barber_shop, beauty_parlor, retail_shop, wholesale_buyer")
     owner_name: str = Field(..., min_length=2, max_length=255)
     owner_email: EmailStr
     owner_phone: str = Field(..., max_length=20)
