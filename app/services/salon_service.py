@@ -477,25 +477,38 @@ class SalonService:
         Returns:
             List of matching salons
         """
-        query = self._public_salons_query()
+        # Build a fresh filtered base query. Callers get their own instance each
+        # time so the name/city text variants below don't share mutable state.
+        def base_query():
+            q = self._public_salons_query()
+            q = self._apply_city_filter(q, city)
+            if state:
+                q = q.eq("state", state)
+            if service_type:
+                q = q.eq("business_type", service_type)
+            return q.order("created_at", desc=True).limit(limit)
 
-        # Apply text search if provided
-        if query_text:
-            query = query.ilike("business_name", f"%{query_text}%")
+        term = (query_text or "").strip()
+        if term:
+            # A single search box has to serve both "find a salon by name" and
+            # "show salons in <city>", so match either. postgrest 0.13.x has no
+            # cross-column OR helper, so run each side and merge (dedupe by id,
+            # preserve created_at desc order). Lists are small, so this is cheap.
+            name_rows = base_query().ilike("business_name", f"%{term}%").execute().data or []
+            city_rows = base_query().ilike("city", f"%{term}%").execute().data or []
 
-        query = self._apply_city_filter(query, city)
-
-        if state:
-            query = query.eq("state", state)
-
-        if service_type:
-            query = query.eq("business_type", service_type)
-
-        # Order and limit
-        query = query.order("created_at", desc=True).limit(limit)
-
-        response = query.execute()
-        salons = response.data or []
+            merged: Dict[str, Any] = {}
+            for row in [*name_rows, *city_rows]:
+                rid = row.get("id")
+                if rid and rid not in merged:
+                    merged[rid] = row
+            salons = sorted(
+                merged.values(),
+                key=lambda s: s.get("created_at") or "",
+                reverse=True,
+            )[:limit]
+        else:
+            salons = base_query().execute().data or []
 
         await self._finalize_public_salons(salons)
 
