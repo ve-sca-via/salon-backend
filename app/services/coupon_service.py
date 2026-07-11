@@ -293,6 +293,70 @@ class CouponService:
 
         return available
 
+    def _is_publicly_listable(self, coupon: Dict[str, Any], now: datetime) -> bool:
+        """
+        Whether an active coupon should be shown on public marketing surfaces
+        (salon cards, salon-detail offers carousel). No per-user eligibility —
+        just in-window and not globally exhausted. The authoritative per-user
+        checks still run on apply (get_valid_coupon / redeem_coupon).
+        """
+        valid_from = _parse_dt(coupon.get("valid_from"))
+        valid_until = _parse_dt(coupon.get("valid_until"))
+        if valid_from and now < valid_from:
+            return False
+        if valid_until and now > valid_until:
+            return False
+        total_limit = coupon.get("usage_limit_total")
+        if total_limit is not None and int(coupon.get("used_count") or 0) >= int(total_limit):
+            return False
+        return True
+
+    def public_vendor_coupons_by_salon(
+        self, salon_ids: List[str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Active, in-window vendor coupons grouped by salon id, projected to public
+        display fields. One query for the whole set (no N+1 for salon lists).
+        Public/unfiltered — usable by logged-out browsers.
+        """
+        if not salon_ids:
+            return {}
+        now = datetime.now(timezone.utc)
+        resp = (
+            self.db.table("coupons")
+            .select("*")
+            .eq("is_active", True)
+            .eq("scope", "vendor")
+            .in_("salon_id", salon_ids)
+            .execute()
+        )
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for coupon in (resp.data or []):
+            if not self._is_publicly_listable(coupon, now):
+                continue
+            sid = coupon.get("salon_id")
+            grouped.setdefault(sid, []).append(self._to_public_coupon(coupon))
+        return grouped
+
+    def public_platform_coupons(self) -> List[Dict[str, Any]]:
+        """
+        Active, in-window platform coupons (usable at any salon), projected to
+        public display fields. Public/unfiltered.
+        """
+        now = datetime.now(timezone.utc)
+        resp = (
+            self.db.table("coupons")
+            .select("*")
+            .eq("is_active", True)
+            .eq("scope", "platform")
+            .execute()
+        )
+        return [
+            self._to_public_coupon(c)
+            for c in (resp.data or [])
+            if self._is_publicly_listable(c, now)
+        ]
+
     # =====================================================
     # REDEMPTION (atomic, used by BookingService)
     # =====================================================

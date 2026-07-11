@@ -65,10 +65,13 @@ class SalonService:
 
     async def _attach_discount_flags(self, salons: List[Dict[str, Any]]) -> None:
         """
-        Enrich salons with `has_discounted_services`.
+        Enrich salons with `has_discounted_services` and `max_discount_percentage`.
 
-        This flag is true when at least one active service for the salon has
-        either discounted_price set or discount_percentage > 0.
+        `has_discounted_services` is true when at least one active service for the
+        salon has either discounted_price set or discount_percentage > 0.
+        `max_discount_percentage` is the largest service discount % for the salon
+        (drives the "UPTO X% OFF" card badge); derived from discount_percentage,
+        or from price vs discounted_price when only the absolute price is set.
         """
         if not salons:
             return
@@ -78,20 +81,59 @@ class SalonService:
             return
 
         discounted_response = self.db.table("services").select(
-            "salon_id, discounted_price, discount_percentage"
+            "salon_id, price, discounted_price, discount_percentage"
         ).in_("salon_id", salon_ids).eq("is_active", True).execute()
 
         discounted_salon_ids = set()
+        max_pct_by_salon: Dict[str, float] = {}
         for service in (discounted_response.data or []):
-            has_discount = (
-                service.get("discounted_price") is not None
-                or (service.get("discount_percentage") is not None and float(service.get("discount_percentage") or 0) > 0)
-            )
-            if has_discount:
-                discounted_salon_ids.add(service.get("salon_id"))
+            sid = service.get("salon_id")
+            pct = float(service.get("discount_percentage") or 0)
+            # Fall back to deriving a % from an absolute discounted_price.
+            if pct <= 0 and service.get("discounted_price") is not None:
+                price = float(service.get("price") or 0)
+                discounted = float(service.get("discounted_price") or 0)
+                if price > 0 and 0 <= discounted < price:
+                    pct = (price - discounted) / price * 100
+            if pct > 0 or service.get("discounted_price") is not None:
+                discounted_salon_ids.add(sid)
+            if pct > max_pct_by_salon.get(sid, 0):
+                max_pct_by_salon[sid] = pct
 
         for salon in salons:
-            salon["has_discounted_services"] = salon.get("id") in discounted_salon_ids
+            sid = salon.get("id")
+            salon["has_discounted_services"] = sid in discounted_salon_ids
+            max_pct = max_pct_by_salon.get(sid, 0)
+            salon["max_discount_percentage"] = round(max_pct) if max_pct > 0 else None
+
+    async def _attach_vendor_coupons(self, salons: List[Dict[str, Any]]) -> None:
+        """
+        Attach each salon's active, in-window vendor coupons as `coupons`
+        (public display projection). Powers the coupon carousel on salon cards.
+        """
+        if not salons:
+            return
+        salon_ids = [s.get("id") for s in salons if s.get("id")]
+        if not salon_ids:
+            return
+        from app.services.coupon_service import CouponService
+        grouped = CouponService(self.db).public_vendor_coupons_by_salon(salon_ids)
+        for salon in salons:
+            salon["coupons"] = grouped.get(salon.get("id"), [])
+
+    async def enrich_salon_detail(self, salon: Dict[str, Any]) -> None:
+        """
+        Attach discount + coupon display data to a single salon for the public
+        detail page: `has_discounted_services`, `max_discount_percentage`,
+        `coupons` (this salon's vendor coupons) and `platform_coupons`
+        (platform-wide coupons). Public/unfiltered. Mutates `salon` in place.
+        """
+        if not salon:
+            return
+        await self._attach_discount_flags([salon])
+        await self._attach_vendor_coupons([salon])
+        from app.services.coupon_service import CouponService
+        salon["platform_coupons"] = CouponService(self.db).public_platform_coupons()
 
     @staticmethod
     def is_publicly_visible(salon: Dict[str, Any]) -> bool:
@@ -131,6 +173,7 @@ class SalonService:
 
         self._normalize_salon_cities(salons)
         await self._attach_discount_flags(salons)
+        await self._attach_vendor_coupons(salons)
 
     async def get_salon(
         self,
@@ -147,26 +190,31 @@ class SalonService:
         Returns:
             Salon data with optional relations
         """
-        # Build select query
-        select_parts = ["*"]
-        
+        # Build select query. business_type lives on the vendor_join_request, not
+        # the salons table, so join + flatten it (same pattern as the public list)
+        # to keep the detail response consistent with the listing cards.
+        select_parts = ["*", "vendor_join_requests(business_type)"]
+
         if include_services:
             select_parts.append("services(*)")
-        
+
         select_query = ", ".join(select_parts)
-        
+
         try:
             response = self.db.table("salons").select(select_query).eq("id", salon_id).execute()
-            
+
             # Check if we got results
             if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Salon {salon_id} not found"
                 )
-            
-            # Return first result
-            return response.data[0]
+
+            salon = response.data[0]
+            vjr = salon.pop("vendor_join_requests", None)
+            if vjr and isinstance(vjr, dict):
+                salon["business_type"] = vjr.get("business_type")
+            return salon
             
         except HTTPException:
             raise
