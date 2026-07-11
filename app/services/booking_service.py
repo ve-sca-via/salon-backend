@@ -182,6 +182,12 @@ class BookingService:
             # Get salon details
             salon_data = await self._get_salon_details(booking.salon_id)
 
+            # Guard: reject past-dated / past-time / closed-day bookings server-side.
+            # The slots endpoint already hides these, but a stale or tampered
+            # client must not be able to book a slot that is in the past or on a
+            # day the salon is closed. Same rules as the slots endpoint (IST).
+            self._validate_booking_datetime(salon_data, booking)
+
             # Extract all service IDs for batch query (fix N+1 problem)
             service_ids = []
             service_quantities = {}
@@ -709,12 +715,34 @@ class BookingService:
             booking_id=booking["id"]
         )
     
+    def _validate_booking_datetime(self, salon_data: Dict[str, Any], booking) -> None:
+        """
+        Reject bookings for a past date, a past time slot, a day the salon is
+        closed, or a time outside working hours. Enforces the same rules the
+        public slots endpoint uses, so a stale/tampered client cannot bypass them.
+        """
+        from app.core.exceptions import ValidationError
+        from app.utils.scheduling import parse_date, is_slot_bookable
+
+        try:
+            on_date = parse_date(str(booking.booking_date))
+        except (ValueError, TypeError):
+            raise ValidationError("Invalid booking_date. Use YYYY-MM-DD.", "booking_date")
+
+        slots = booking.time_slots if getattr(booking, "time_slots", None) else []
+        for slot in slots:
+            ok, reason = is_slot_bookable(salon_data, on_date, str(slot))
+            if not ok:
+                raise ValidationError(reason, "time_slots")
+
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
         """Get salon details with vendor email."""
         try:
-            # Get salon details first
+            # Get salon details first (include scheduling fields so booking
+            # creation can enforce closed-day / working-hours rules server-side)
             response = self.db.table("salons").select(
-                "id, business_name, vendor_id"
+                "id, business_name, vendor_id, opening_time, closing_time, "
+                "working_days, business_hours"
             ).eq("id", salon_id).execute()
             
             if not response.data or len(response.data) == 0:

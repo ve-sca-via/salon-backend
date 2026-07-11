@@ -481,26 +481,34 @@ def test_salon_services_missing_salon_404(sa):
 # =====================================================================
 # GET /salons/{salon_id}/available-slots
 # =====================================================================
+# A pure future date (never today) so slot generation isn't affected by the
+# current time — only the past-time filter cares about "today".
+FUTURE_DATE = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+
 def test_available_slots_happy(sa):
     s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
                       closing_time="12:00:00")
 
     r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
-                      params={"date": "2026-07-01"})
+                      params={"date": FUTURE_DATE})
     assert r.status_code == 200, r.text
     body = r.json()
-    # 09-12 with default 60-min slots at 1h cadence -> 09,10,11
-    assert body["available_slots"] == ["09:00 AM", "10:00 AM", "11:00 AM"]
+    # 09-12 with default 60-min service on a 30-min grid: a slot is offered when
+    # start+60min <= 12:00 -> 09:00, 09:30, 10:00, 10:30, 11:00.
+    assert body["available_slots"] == [
+        "09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM"
+    ]
 
 
 def test_available_slots_excludes_booked_hour(sa):
     """P4 regression guard: conflict detection runs (the stray await is gone)."""
     s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
                       closing_time="12:00:00")
-    sa.seed_booking(s["id"], "2026-07-01", "10:00:00", duration_minutes=60)
+    sa.seed_booking(s["id"], FUTURE_DATE, "10:00:00", duration_minutes=60)
 
     r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
-                      params={"date": "2026-07-01"})
+                      params={"date": FUTURE_DATE})
     assert r.status_code == 200, r.text
     slots = r.json()["available_slots"]
     assert "10:00 AM" not in slots          # booked hour removed
@@ -510,18 +518,41 @@ def test_available_slots_excludes_booked_hour(sa):
 def test_available_slots_cancelled_booking_ignored(sa):
     s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
                       closing_time="12:00:00")
-    sa.seed_booking(s["id"], "2026-07-01", "10:00:00", status="cancelled")
+    sa.seed_booking(s["id"], FUTURE_DATE, "10:00:00", status="cancelled")
 
     r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
-                      params={"date": "2026-07-01"})
+                      params={"date": FUTURE_DATE})
     assert r.status_code == 200, r.text
     assert "10:00 AM" in r.json()["available_slots"]
+
+
+def test_available_slots_past_date_empty(sa):
+    """Past dates must never yield bookable slots."""
+    s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
+                      closing_time="18:00:00")
+    past = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
+                      params={"date": past})
+    assert r.status_code == 200, r.text
+    assert r.json()["available_slots"] == []
+
+
+def test_available_slots_closed_day_empty(sa):
+    """A day not in working_days yields no slots."""
+    # Salon open only on the weekday *after* our future date, so FUTURE_DATE is closed.
+    open_day = (datetime.now() + timedelta(days=4)).strftime("%A")
+    s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
+                      closing_time="18:00:00", working_days=[open_day])
+    r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
+                      params={"date": FUTURE_DATE})
+    assert r.status_code == 200, r.text
+    assert r.json()["available_slots"] == []
 
 
 def test_available_slots_not_public_404(sa):
     s = sa.seed_salon(business_name="Hidden", public=False)
     r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
-                      params={"date": "2026-07-01"})
+                      params={"date": FUTURE_DATE})
     assert r.status_code == 404, r.text
 
 

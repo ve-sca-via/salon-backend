@@ -209,8 +209,11 @@ class OTPService:
         # Clean phone number (remove +, spaces, dashes)
         clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
 
-        # Remove country code if present at start
-        if clean_phone.startswith(country_code):
+        # Remove country code only when present as a prefix on a longer number.
+        # A bare 10-digit number that itself begins with the country code
+        # (e.g. "9123456789" starts with "91") must not be stripped, otherwise
+        # MessageCentral receives an 8-digit number and rejects it with a 400.
+        if clean_phone.startswith(country_code) and len(clean_phone) > 10:
             clean_phone = clean_phone[len(country_code):]
 
         # Dev mode: generate + log the OTP locally instead of calling MessageCentral.
