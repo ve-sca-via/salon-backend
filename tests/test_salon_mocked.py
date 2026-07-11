@@ -278,6 +278,30 @@ class Handle:
         self.db.table("services").rows.append(row)
         return row
 
+    def seed_coupon(self, *, scope, salon_id=None, code="SAVE10", **fields):
+        """Seed a coupon row (defaults to an active, no-window percentage coupon)."""
+        row = {
+            "id": fields.pop("id", str(uuid.uuid4())),
+            "code": code,
+            "title": fields.pop("title", "Save now"),
+            "scope": scope,
+            "salon_id": salon_id,
+            "applies_to": "service_price",
+            "discount_type": "percentage",
+            "discount_value": 10.0,
+            "max_discount_cap": None,
+            "min_order_amount": None,
+            "first_time_scope": None,
+            "valid_from": None,
+            "valid_until": None,
+            "usage_limit_total": None,
+            "used_count": 0,
+            "is_active": True,
+        }
+        row.update(fields)
+        self.db.table("coupons").rows.append(row)
+        return row
+
     def seed_booking(self, salon_id, date, time_slot, duration_minutes=60, status="confirmed"):
         self.db.table("bookings").rows.append({
             "id": str(uuid.uuid4()),
@@ -381,6 +405,72 @@ def test_public_list_discount_flag_true_when_service_discounted(sa):
     assert r.json()["salons"][0]["has_discounted_services"] is True
 
 
+def test_public_list_max_discount_percentage(sa):
+    s = sa.seed_salon(business_name="Big Sale")
+    sa.seed_service(s["id"], name="Small", discount_percentage=10.0)
+    sa.seed_service(s["id"], name="Big", discount_percentage=25.0)
+
+    r = sa.client.get(f"{SALONS}/public")
+    assert r.status_code == 200, r.text
+    assert r.json()["salons"][0]["max_discount_percentage"] == 25
+
+
+def test_public_list_max_discount_from_discounted_price(sa):
+    # No explicit %, only an absolute discounted_price -> % is derived.
+    s = sa.seed_salon(business_name="Derived")
+    sa.seed_service(s["id"], price=400.0, discounted_price=300.0)  # 25% off
+
+    r = sa.client.get(f"{SALONS}/public")
+    assert r.status_code == 200, r.text
+    assert r.json()["salons"][0]["max_discount_percentage"] == 25
+
+
+def test_public_list_attaches_vendor_coupons(sa):
+    s = sa.seed_salon(business_name="Couponed")
+    sa.seed_coupon(scope="vendor", salon_id=s["id"], code="SALON20", discount_value=20.0)
+    # A platform coupon must NOT appear on the card (vendor-only there).
+    sa.seed_coupon(scope="platform", code="PLAT5", discount_value=5.0)
+
+    r = sa.client.get(f"{SALONS}/public")
+    assert r.status_code == 200, r.text
+    coupons = r.json()["salons"][0]["coupons"]
+    codes = [c["code"] for c in coupons]
+    assert codes == ["SALON20"]
+    assert coupons[0]["summary"] == "20% OFF"
+
+
+def test_public_list_hides_expired_and_inactive_coupons(sa):
+    s = sa.seed_salon(business_name="Stale")
+    sa.seed_coupon(scope="vendor", salon_id=s["id"], code="LIVE")
+    sa.seed_coupon(scope="vendor", salon_id=s["id"], code="OFF", is_active=False)
+    sa.seed_coupon(
+        scope="vendor", salon_id=s["id"], code="EXPIRED",
+        valid_until="2000-01-01T00:00:00+00:00",
+    )
+    sa.seed_coupon(
+        scope="vendor", salon_id=s["id"], code="MAXED",
+        usage_limit_total=5, used_count=5,
+    )
+
+    r = sa.client.get(f"{SALONS}/public")
+    assert r.status_code == 200, r.text
+    codes = [c["code"] for c in r.json()["salons"][0]["coupons"]]
+    assert codes == ["LIVE"]
+
+
+def test_salon_detail_attaches_vendor_and_platform_coupons(sa):
+    s = sa.seed_salon(business_name="Detail Offers")
+    sa.seed_coupon(scope="vendor", salon_id=s["id"], code="MYSALON")
+    sa.seed_coupon(scope="vendor", salon_id="other-salon", code="NOTMINE")
+    sa.seed_coupon(scope="platform", code="PLATFORM10", discount_value=10.0)
+
+    r = sa.client.get(f"{SALONS}/{s['id']}")
+    assert r.status_code == 200, r.text
+    salon = r.json()["salon"]
+    assert [c["code"] for c in salon["coupons"]] == ["MYSALON"]
+    assert [c["code"] for c in salon["platform_coupons"]] == ["PLATFORM10"]
+
+
 # =====================================================================
 # GET /salons/popular-cities
 # =====================================================================
@@ -407,6 +497,19 @@ def test_get_salon_happy(sa):
     body = r.json()
     assert body["salon"]["id"] == s["id"]
     assert body["services"] is None
+
+
+def test_get_salon_business_type_flattened(sa):
+    # business_type lives on the join request; the detail endpoint must join +
+    # flatten it (same as the public list) so it matches the listing cards.
+    s = sa.seed_salon(business_name="Barber", vendor_join_requests={"business_type": "barber_shop"})
+
+    r = sa.client.get(f"{SALONS}/{s['id']}")
+    assert r.status_code == 200, r.text
+    salon = r.json()["salon"]
+    assert salon["business_type"] == "barber_shop"
+    # the raw join key must be popped, not leaked
+    assert "vendor_join_requests" not in salon
 
 
 def test_get_salon_include_services(sa):

@@ -199,7 +199,11 @@ async def get_salon(
     
     # Extract services from the salon data if present
     services = salon_data.pop('services', None) if include_services else None
-    
+
+    # Attach public coupon + discount display data (vendor + platform coupons,
+    # max discount %) for the salon-detail offers carousel.
+    await salon_service.enrich_salon_detail(salon_data)
+
     return {
         "salon": salon_data,
         "services": services

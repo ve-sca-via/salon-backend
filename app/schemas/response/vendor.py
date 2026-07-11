@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
 from ..domain.common import BusinessType, RequestStatus
+from .coupon import AvailableCouponResponse
 
 
 # =====================================================
@@ -93,6 +94,7 @@ class SalonResponse(BaseModel):
 
     # Include all base fields
     business_name: str = Field(..., min_length=2, max_length=255)
+    business_type: Optional[BusinessType] = None  # Joined from vendor_join_requests (not stored on salons)
     description: Optional[str] = None
     phone: str = Field(..., max_length=20)
     email: Optional[EmailStr] = None
@@ -117,6 +119,12 @@ class SalonResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Public coupon/discount display data (attached on the detail endpoint)
+    has_discounted_services: Optional[bool] = None
+    max_discount_percentage: Optional[float] = None  # largest service discount %, for "UPTO X% OFF"
+    coupons: Optional[List[AvailableCouponResponse]] = None          # this salon's vendor coupons
+    platform_coupons: Optional[List[AvailableCouponResponse]] = None  # platform-wide coupons
+
     class Config:
         from_attributes = True
 
@@ -138,6 +146,10 @@ class SalonListResponse(BaseModel):
     distance_km: Optional[float] = None  # Calculated field for nearby search
     accepting_bookings: Optional[bool] = True
     facilities: Optional[Dict[str, bool]] = None
+    # Public coupon/discount display data (attached on list endpoints)
+    has_discounted_services: Optional[bool] = None
+    max_discount_percentage: Optional[float] = None  # largest service discount %, for "UPTO X% OFF"
+    coupons: Optional[List[AvailableCouponResponse]] = None  # this salon's vendor coupons
 
     class Config:
         from_attributes = True
