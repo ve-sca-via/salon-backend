@@ -15,6 +15,7 @@ import logging
 
 from app.core.database import get_db_client
 from app.services.salon_service import SalonService
+from app.utils.scheduling import generate_slots, parse_date
 from app.schemas import (
     PublicSalonsResponse,
     SalonDetailResponse,
@@ -198,7 +199,11 @@ async def get_salon(
     
     # Extract services from the salon data if present
     services = salon_data.pop('services', None) if include_services else None
-    
+
+    # Attach public coupon + discount display data (vendor + platform coupons,
+    # max discount %) for the salon-detail offers carousel.
+    await salon_service.enrich_salon_detail(salon_data)
+
     return {
         "salon": salon_data,
         "services": services
@@ -328,6 +333,12 @@ async def get_available_slots(
     if not salon_service.is_publicly_visible(salon):
         raise HTTPException(status_code=404, detail="Salon not available")
     
+    # Parse the requested date (past dates yield no slots).
+    try:
+        on_date = parse_date(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD.")
+
     # Parse service IDs if provided
     service_id_list = [s.strip() for s in service_ids.split(',') if s.strip()] if service_ids else []
 
@@ -344,7 +355,7 @@ async def get_available_slots(
             total_duration = 60
     else:
         total_duration = 60  # Default duration if no services specified
-    
+
     # Get existing bookings for this date
     # NOTE: the Supabase client here is synchronous — do NOT await .execute()
     # (a stray await previously made this always throw, silently disabling
@@ -355,70 +366,22 @@ async def get_available_slots(
     except Exception as e:
         logger.warning(f"Could not fetch existing bookings: {e}")
         existing_bookings = []
-    
-    # Parse business hours
-    opening_time = salon.get('opening_time')
-    closing_time = salon.get('closing_time')
-    
-    if not opening_time or not closing_time:
-        # Default business hours if not set
-        opening_time = "09:00:00"
-        closing_time = "18:00:00"
-    
-    # Generate available slots (1-hour intervals by default)
-    from datetime import datetime, timedelta
-    slots = []
-    
-    try:
-        opening = datetime.strptime(opening_time, "%H:%M:%S").time()
-        closing = datetime.strptime(closing_time, "%H:%M:%S").time()
-        
-        current = datetime.combine(datetime.today(), opening)
-        closing_datetime = datetime.combine(datetime.today(), closing)
-        
-        while current + timedelta(minutes=total_duration) <= closing_datetime:
-            slot_time = current.time()
-            slot_str = slot_time.strftime("%I:%M %p")
-            
-            # Check if this slot conflicts with existing bookings
-            conflict = False
-            slot_end = current + timedelta(minutes=total_duration)
-            
-            for booking in existing_bookings:
-                # Use first time slot from the array. Parse each booking
-                # defensively so one malformed row can't void the whole
-                # slot calculation (which would fall back to sample slots).
-                try:
-                    time_slots = booking.get('time_slots') or []
-                    if not time_slots:
-                        continue
-                    booking_time = datetime.strptime(time_slots[0], "%H:%M:%S").time()
-                    booking_start = datetime.combine(datetime.today(), booking_time)
-                    booking_duration = booking.get('duration_minutes') or total_duration
-                    booking_end = booking_start + timedelta(minutes=booking_duration)
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Skipping unparsable booking in slot calc: {e}")
-                    continue
 
-                # Check for overlap
-                if (current < booking_end and slot_end > booking_start):
-                    conflict = True
-                    break
-            
-            if not conflict:
-                slots.append(slot_str)
-            
-            # Move to next slot (1 hour intervals)
-            current += timedelta(hours=1)
-            
+    # Slot generation lives in app.utils.scheduling so the public endpoint and
+    # the booking-creation guard enforce identical rules: future-only (IST),
+    # closed-day aware (business_hours / working_days), within working hours,
+    # 30-min grid, and skipping slots that overlap existing bookings.
+    try:
+        slots = generate_slots(
+            salon=salon,
+            on_date=on_date,
+            total_duration_minutes=total_duration,
+            existing_bookings=existing_bookings,
+        )
     except Exception as e:
-        logger.error(f"Error calculating slots: {e}")
-        # Fallback to sample slots
-        slots = [
-            "09:00 AM", "10:00 AM", "11:00 AM", 
-            "02:00 PM", "03:00 PM", "04:00 PM"
-        ]
-    
+        logger.error(f"Error calculating slots for salon {salon_id} on {date}: {e}")
+        slots = []
+
     return {
         "salon_id": salon_id,
         "date": date,

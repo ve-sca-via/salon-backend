@@ -35,8 +35,11 @@ def normalize_phone(phone: Optional[str], country_code: str = "91") -> Optional[
     # Remove common formatting characters
     phone = phone.replace("+", "").replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
 
-    # Check if phone starts with country code digits (but not full)
-    if phone.startswith(country_code):
+    # Strip the country code only when the number is longer than a bare local
+    # number. A valid 10-digit Indian number can itself begin with the country
+    # code digits (e.g. "9123456789" starts with "91"); stripping unconditionally
+    # would corrupt it into an 8-digit number.
+    if phone.startswith(country_code) and len(phone) > 10:
         # Remove country code prefix (e.g., "918791464313" -> "8791464313")
         phone = phone[len(country_code):]
 
