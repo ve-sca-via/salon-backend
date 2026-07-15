@@ -85,16 +85,20 @@ class ProductOrderService:
 
             key_id, key_secret, is_dev_mode = await self._get_razorpay_creds()
 
+            # amount is in rupees; amount_paise is the smallest-unit value the
+            # Razorpay checkout expects (matches payment_service's cart order).
+            rzp_amount = float(total_amount)
+            rzp_amount_paise = int(round(total_amount * 100))
+
             if is_dev_mode:
                 # Simulation mode: Use a fake Razorpay order ID
                 logger.info(f"Using simulation mode for order {order_number} (invalid/placeholder credentials)")
                 razorpay_order_id = f"dev_order_{uuid.uuid4().hex[:16]}"
-                rzp_amount = float(total_amount)
                 rzp_currency = "INR"
             else:
                 # Real Razorpay mode: Initialize service with current keys
                 temp_rzp_service = RazorpayService(razorpay_key_id=key_id, razorpay_key_secret=key_secret)
-                
+
                 rzp_order = temp_rzp_service.create_order(
                     amount=float(total_amount),
                     receipt=order_number,
@@ -106,6 +110,7 @@ class ProductOrderService:
                 )
                 razorpay_order_id = rzp_order['order_id']
                 rzp_amount = rzp_order['amount']
+                rzp_amount_paise = rzp_order['amount_paise']
                 rzp_currency = rzp_order['currency']
 
             # 3. Insert order into database
@@ -149,6 +154,7 @@ class ProductOrderService:
                 "order": order_row,
                 "razorpay_order_id": razorpay_order_id,
                 "amount": rzp_amount,
+                "amount_paise": rzp_amount_paise,
                 "currency": rzp_currency,
                 "key_id": key_id,
                 "dev_mode": is_dev_mode
