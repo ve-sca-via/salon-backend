@@ -245,10 +245,7 @@ class SalonService:
         
         if params.state:
             query = query.eq("state", params.state)
-        
-        if params.business_type:
-            query = query.eq("business_type", params.business_type)
-        
+
         if params.is_active is not None:
             query = query.eq("is_active", params.is_active)
         

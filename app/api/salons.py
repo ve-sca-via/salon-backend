@@ -314,9 +314,11 @@ async def get_available_slots(
     
     Calculates available slots based on:
     - Salon business hours for the given date
-    - Existing bookings
     - Service duration
-    
+
+    Slots are not consumed by existing bookings: a salon can serve several
+    customers at the same time, so the same slot stays offered to everyone.
+
     
     **Parameters:**
     - salon_id: Salon UUID
@@ -356,27 +358,16 @@ async def get_available_slots(
     else:
         total_duration = 60  # Default duration if no services specified
 
-    # Get existing bookings for this date
-    # NOTE: the Supabase client here is synchronous — do NOT await .execute()
-    # (a stray await previously made this always throw, silently disabling
-    # conflict detection so every slot looked free).
-    try:
-        bookings_result = db.table('bookings').select('time_slots, duration_minutes, status').eq('salon_id', salon_id).eq('booking_date', date).neq('status', 'cancelled').execute()
-        existing_bookings = bookings_result.data or []
-    except Exception as e:
-        logger.warning(f"Could not fetch existing bookings: {e}")
-        existing_bookings = []
-
     # Slot generation lives in app.utils.scheduling so the public endpoint and
     # the booking-creation guard enforce identical rules: future-only (IST),
     # closed-day aware (business_hours / working_days), within working hours,
-    # 30-min grid, and skipping slots that overlap existing bookings.
+    # 30-min grid. Existing bookings do not reduce availability — a salon takes
+    # multiple bookings for the same time.
     try:
         slots = generate_slots(
             salon=salon,
             on_date=on_date,
             total_duration_minutes=total_duration,
-            existing_bookings=existing_bookings,
         )
     except Exception as e:
         logger.error(f"Error calculating slots for salon {salon_id} on {date}: {e}")
