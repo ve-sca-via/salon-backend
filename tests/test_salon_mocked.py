@@ -21,8 +21,8 @@ P1-P4 cleanup invariants for this module:
     predicate, and excludes regular_buyer (product-only) salons;
   * search + public list share the _public_salons_query / _finalize_public_salons
     helpers (business_type flattening, city normalization, discount flags);
-  * available-slots conflict detection actually runs now that the stray `await`
-    on the sync client was removed (P4) — a booked hour disappears from slots.
+  * available-slots depends only on the salon's hours — existing bookings never
+    remove a slot, because a salon takes multiple bookings for the same time.
 
 No marker -> these run in the fast (no-stack) job alongside the smoke suite.
 """
@@ -604,8 +604,8 @@ def test_available_slots_happy(sa):
     ]
 
 
-def test_available_slots_excludes_booked_hour(sa):
-    """P4 regression guard: conflict detection runs (the stray await is gone)."""
+def test_available_slots_keeps_booked_hour(sa):
+    """A salon serves several customers at once: a booked hour stays offered."""
     s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
                       closing_time="12:00:00")
     sa.seed_booking(s["id"], FUTURE_DATE, "10:00:00", duration_minutes=60)
@@ -614,19 +614,23 @@ def test_available_slots_excludes_booked_hour(sa):
                       params={"date": FUTURE_DATE})
     assert r.status_code == 200, r.text
     slots = r.json()["available_slots"]
-    assert "10:00 AM" not in slots          # booked hour removed
+    assert "10:00 AM" in slots
     assert "09:00 AM" in slots and "11:00 AM" in slots
 
 
-def test_available_slots_cancelled_booking_ignored(sa):
+def test_available_slots_unaffected_by_repeat_bookings(sa):
+    """Several bookings on the same hour still leave that hour bookable."""
     s = sa.seed_salon(business_name="Slots", opening_time="09:00:00",
                       closing_time="12:00:00")
-    sa.seed_booking(s["id"], FUTURE_DATE, "10:00:00", status="cancelled")
+    for _ in range(3):
+        sa.seed_booking(s["id"], FUTURE_DATE, "10:00:00", duration_minutes=60)
 
     r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
                       params={"date": FUTURE_DATE})
     assert r.status_code == 200, r.text
-    assert "10:00 AM" in r.json()["available_slots"]
+    assert r.json()["available_slots"] == [
+        "09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM"
+    ]
 
 
 def test_available_slots_past_date_empty(sa):

@@ -140,7 +140,6 @@ def generate_slots(
     salon: Dict[str, Any],
     on_date: date_cls,
     total_duration_minutes: int,
-    existing_bookings: Optional[List[Dict[str, Any]]] = None,
     now: Optional[datetime] = None,
 ) -> List[str]:
     """
@@ -150,8 +149,13 @@ def generate_slots(
       - past dates yield no slots,
       - a closed day yields no slots,
       - slots stay within the day's open/close window and fit the service duration,
-      - on the current day, only slots strictly in the future (+ lead time) are offered,
-      - slots overlapping a non-cancelled existing booking are dropped.
+      - on the current day, only slots strictly in the future (+ lead time) are offered.
+
+    Existing bookings deliberately do NOT remove a slot: a salon serves several
+    customers at the same time, so every open slot stays bookable regardless of
+    how many bookings it already holds. Capacity-aware slot management is a
+    future feature (vendor-configured limits); until then availability is purely
+    a function of the salon's hours.
     """
     now = now or now_ist()
     today = now.date()
@@ -164,40 +168,18 @@ def generate_slots(
         return []
 
     duration = total_duration_minutes if total_duration_minutes > 0 else 60
-    existing_bookings = existing_bookings or []
 
     earliest = None
     if on_date == today:
         earliest = now + timedelta(minutes=SLOT_MIN_LEAD_MINUTES)
-
-    # Precompute existing booking intervals for the day (defensive parsing).
-    busy: List[Tuple[datetime, datetime]] = []
-    for booking in existing_bookings:
-        raw_slots = booking.get("time_slots") or []
-        if not isinstance(raw_slots, list):
-            continue
-        b_duration = booking.get("duration_minutes") or duration
-        for raw in raw_slots:
-            t = _parse_time(str(raw))
-            if t is None:
-                continue
-            b_start = datetime.combine(on_date, t)
-            busy.append((b_start, b_start + timedelta(minutes=b_duration)))
 
     slots: List[str] = []
     current = datetime.combine(on_date, opening)
     closing_dt = datetime.combine(on_date, closing)
 
     while current + timedelta(minutes=duration) <= closing_dt:
-        slot_end = current + timedelta(minutes=duration)
-
         # Future-only on the current day.
         if earliest is not None and current <= earliest:
-            current += timedelta(minutes=SLOT_INTERVAL_MINUTES)
-            continue
-
-        # Skip slots that overlap an existing booking.
-        if any(current < b_end and slot_end > b_start for b_start, b_end in busy):
             current += timedelta(minutes=SLOT_INTERVAL_MINUTES)
             continue
 
