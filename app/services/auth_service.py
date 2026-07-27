@@ -26,10 +26,21 @@ class AuthService:
         self.auth_client = auth_client
 
     @staticmethod
-    def format_public_user(profile: dict, email: str | None = None) -> dict:
-        """Build sanitized user payload returned from auth endpoints."""
+    def format_public_user(
+        profile: dict,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> dict:
+        """
+        Build sanitized user payload returned from auth endpoints.
+
+        `email_verified` is None when the caller could not determine it. Clients
+        must treat None as "unknown" and stay silent rather than warn the user —
+        only False means the address is genuinely unconfirmed.
+        """
         phone = profile.get("phone") or ""
         return {
+            "email_verified": email_verified,
             "id": profile.get("id"),
             "email": email or profile.get("email"),
             "full_name": html.escape(profile.get("full_name") or ""),
@@ -103,8 +114,13 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Sanitize user data (XSS protection)
-            user_data = self.format_public_user(profile, email=user.email)
+            # Sanitize user data (XSS protection). The Supabase user object is
+            # already loaded here, so the confirmation flag costs nothing.
+            user_data = self.format_public_user(
+                profile,
+                email=user.email,
+                email_verified=bool(getattr(user, "email_confirmed_at", None)),
+            )
             
             logger.info(f"User authenticated: {user.email} (role: {profile.get('user_role')})")
             
@@ -128,7 +144,19 @@ class AuthService:
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid email or password. Please check your credentials and try again."
                 )
-            
+
+            # Supabase refuses sign_in_with_password until the address is
+            # confirmed. Say so plainly instead of masking it as a generic 500
+            # below, which reads as "wrong password" to the user. Resending the
+            # link needs a token (/resend-verification is authenticated), so the
+            # only self-service route from the login screen is the original email.
+            if "email not confirmed" in error_message:
+                logger.warning(f"Login blocked, email not confirmed: {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Please confirm your email address before logging in. We sent a confirmation link when you signed up — check your inbox and spam folder."
+                )
+
             # Log unexpected errors with full traceback
             logger.error(f"Authentication error: {str(e)}")
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
@@ -267,7 +295,7 @@ class AuthService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Failed to create user account"
                 )
-            
+
             # Wait for auth user creation to propagate (async sleep)
             await asyncio.sleep(0.1)  # Much shorter delay, non-blocking
             
@@ -324,8 +352,13 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Build user response
-            user_data = self.format_public_user(profile_data, email=email)
+            # Build user response. Fresh signups are unconfirmed until the emailed
+            # link is clicked, which is exactly what the client banner keys off.
+            user_data = self.format_public_user(
+                profile_data,
+                email=email,
+                email_verified=bool(getattr(user, "email_confirmed_at", None)),
+            )
             
             logger.info(f"New user registered: {email}")
             
@@ -660,8 +693,12 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
 
-            # Sanitize user data for response
-            user_data = self.format_public_user(profile)
+            # Sanitize user data for response. Phone-OTP users often never confirm
+            # their email, so the flag matters most here.
+            user_data = self.format_public_user(
+                profile,
+                email_verified=await self._is_auth_user_email_confirmed(profile["id"]),
+            )
 
             logger.info(f"User logged in via phone OTP: {profile['email']}")
 
@@ -790,7 +827,13 @@ class AuthService:
             profile = response.data
             # Add 'role' field for frontend backward compatibility
             profile['role'] = profile.get('user_role', 'customer')
-            
+
+            # `profiles` has no email-confirmation column, so this comes from
+            # Supabase's auth.users. It costs one extra call, but /auth/me is the
+            # only endpoint a long-lived session re-checks, so it is where a
+            # "confirm your email" banner has to get its truth from.
+            profile['email_verified'] = await self._is_auth_user_email_confirmed(user_id)
+
             return {
                 "success": True,
                 "user": profile
@@ -1170,8 +1213,14 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Sanitize user data
-            user_data = self.format_public_user(profile, email=user_email)
+            # Sanitize user data. Completing a password reset proves control of the
+            # inbox, so Supabase may have confirmed the address as a side effect —
+            # re-read it rather than assuming either way.
+            user_data = self.format_public_user(
+                profile,
+                email=user_email,
+                email_verified=await self._is_auth_user_email_confirmed(user_id),
+            )
             
             logger.info(f"Password reset confirmed for user: {user_id}")
             
@@ -1194,15 +1243,22 @@ class AuthService:
     def _email_verification_redirect_url(self) -> str:
         return f"{settings.FRONTEND_URL.rstrip('/')}/"
 
-    def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
-        """Return True/False when known, or None if auth user could not be loaded."""
+    async def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
+        """
+        Return True/False when known, or None if auth user could not be loaded.
+
+        `email_confirmed_at` lives only in Supabase's `auth.users`; there is no
+        mirrored column on `profiles`, so callers that hold a Supabase user object
+        should read it from there instead of paying for this extra round trip.
+        """
         url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
         headers = {
             "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
         }
         try:
-            response = httpx.get(url, headers=headers, timeout=15.0)
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=headers)
             if response.status_code != 200:
                 logger.warning(
                     "Could not load auth user %s for verification check: %s %s",
@@ -1294,7 +1350,7 @@ class AuthService:
         Raises:
             HTTPException: If resend fails
         """
-        email_confirmed = self._is_auth_user_email_confirmed(user_id)
+        email_confirmed = await self._is_auth_user_email_confirmed(user_id)
         if email_confirmed is True:
             return {
                 "success": True,

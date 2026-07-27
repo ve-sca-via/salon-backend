@@ -151,9 +151,12 @@ class FakeSupabase:
 # In-memory fake GoTrue (auth) client
 # =====================================================================
 class _User:
-    def __init__(self, id, email):
+    def __init__(self, id, email, email_confirmed_at=None):
         self.id = id
         self.email = email
+        # Supabase sets this when the address is confirmed; auth responses expose
+        # it to clients as `email_verified`.
+        self.email_confirmed_at = email_confirmed_at
 
 
 class _AuthResult:
@@ -300,6 +303,38 @@ def test_login_happy(mock_auth):
     assert body["user"]["role"] == "customer"  # admin validateSession reads user.role
 
 
+def test_login_reports_email_verified(mock_auth):
+    """Clients render the 'confirm your email' banner off this flag."""
+    prof = mock_auth.seed_profile(user_role="customer")
+    mock_auth.gotrue.sign_in_user = _User(
+        prof["id"], prof["email"], email_confirmed_at="2026-01-01T00:00:00Z"
+    )
+
+    r = mock_auth.client.post(f"{API}/auth/login", json={"email": prof["email"], "password": "pw"})
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email_verified"] is True
+
+
+def test_login_reports_email_unverified(mock_auth):
+    prof = mock_auth.seed_profile(user_role="customer")
+    mock_auth.gotrue.sign_in_user = _User(prof["id"], prof["email"])  # never confirmed
+
+    r = mock_auth.client.post(f"{API}/auth/login", json={"email": prof["email"], "password": "pw"})
+    assert r.status_code == 200, r.text
+    # Explicitly False, not None: None means "unknown" and keeps clients silent.
+    assert r.json()["user"]["email_verified"] is False
+
+
+def test_login_unconfirmed_email_returns_403(mock_auth):
+    """Supabase refuses unconfirmed logins; that must not surface as a 500."""
+    mock_auth.gotrue.sign_in_error = "Email not confirmed"
+    r = mock_auth.client.post(
+        f"{API}/auth/login", json={"email": "x@example.com", "password": "pw"}
+    )
+    assert r.status_code == 403, r.text
+    assert "confirm" in r.json()["message"].lower()
+
+
 def test_login_bad_credentials(mock_auth):
     mock_auth.gotrue.sign_in_error = "Invalid login credentials"
     r = mock_auth.client.post(f"{API}/auth/login", json={"email": "x@example.com", "password": "bad"})
@@ -392,6 +427,42 @@ def test_me_get_happy(mock_auth):
     body = r.json()
     assert body["user"]["email"] == prof["email"]
     assert body["user"]["role"] == "customer"  # frontend backward-compat field
+
+
+def test_me_includes_email_verified(mock_auth, monkeypatch):
+    """
+    /auth/me is the only endpoint a long-lived session re-checks, so it is where
+    the confirm-your-email banner gets its truth. `profiles` has no such column —
+    it comes from Supabase auth.users via _is_auth_user_email_confirmed.
+    """
+    from app.services.auth_service import AuthService
+
+    async def _unconfirmed(self, uid):
+        return False
+
+    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", _unconfirmed)
+
+    prof = mock_auth.seed_profile()
+    mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
+    r = mock_auth.client.get(f"{API}/auth/me")
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email_verified"] is False
+
+
+def test_me_email_verified_unknown_stays_none(mock_auth, monkeypatch):
+    """A failed auth-user lookup must report None, never a bogus False."""
+    from app.services.auth_service import AuthService
+
+    async def _unknown(self, uid):
+        return None
+
+    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", _unknown)
+
+    prof = mock_auth.seed_profile()
+    mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
+    r = mock_auth.client.get(f"{API}/auth/me")
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email_verified"] is None
 
 
 def test_me_get_profile_missing_returns_404(mock_auth):
@@ -523,7 +594,11 @@ def test_password_reset_confirm_invalid_token(mock_auth):
 # =====================================================================
 def test_resend_verification_already_verified(mock_auth, monkeypatch):
     from app.services.auth_service import AuthService
-    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", lambda self, uid: True)
+
+    async def _confirmed(self, uid):
+        return True
+
+    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", _confirmed)
 
     prof = mock_auth.seed_profile()
     mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
@@ -534,7 +609,11 @@ def test_resend_verification_already_verified(mock_auth, monkeypatch):
 
 def test_resend_verification_sends(mock_auth, monkeypatch):
     from app.services.auth_service import AuthService
-    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", lambda self, uid: False)
+
+    async def _unconfirmed(self, uid):
+        return False
+
+    monkeypatch.setattr(AuthService, "_is_auth_user_email_confirmed", _unconfirmed)
 
     async def _resend(self, email):
         return None
