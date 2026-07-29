@@ -33,13 +33,15 @@ API = settings.API_PREFIX
 # In-memory fake Supabase (DB) client
 # =====================================================================
 class _Resp:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class _Query:
     """A chainable query that mimics the supabase-py builder for the ops the
-    auth module actually uses: select/insert/update/delete + eq + single/maybe_single."""
+    auth module actually uses: select/insert/update/delete, the eq/gte/in_/is_
+    filters, count="exact", and single/maybe_single."""
 
     def __init__(self, table):
         self._table = table
@@ -47,10 +49,12 @@ class _Query:
         self._op = ("select", "*")
         self._single = False
         self._maybe_single = False
+        self._count = None
 
     # --- builder ops ---
-    def select(self, cols="*"):
+    def select(self, cols="*", count=None):
         self._op = ("select", cols)
+        self._count = count
         return self
 
     def insert(self, payload):
@@ -66,7 +70,23 @@ class _Query:
         return self
 
     def eq(self, col, val):
-        self._filters.append((col, val))
+        self._filters.append(lambda r: r.get(col) == val)
+        return self
+
+    def gte(self, col, val):
+        self._filters.append(lambda r: r.get(col) is not None and r.get(col) >= val)
+        return self
+
+    def in_(self, col, vals):
+        self._filters.append(lambda r: r.get(col) in vals)
+        return self
+
+    def is_(self, col, val):
+        # supabase spells IS NULL as .is_(col, "null")
+        if val == "null":
+            self._filters.append(lambda r: r.get(col) is None)
+        else:
+            self._filters.append(lambda r: r.get(col) is val)
         return self
 
     def single(self):
@@ -78,7 +98,7 @@ class _Query:
         return self
 
     def _match(self, row):
-        return all(row.get(c) == v for c, v in self._filters)
+        return all(f(row) for f in self._filters)
 
     def execute(self):
         op, payload = self._op
@@ -86,6 +106,8 @@ class _Query:
 
         if op == "select":
             matched = [dict(r) for r in rows if self._match(r)]
+            if self._count == "exact":
+                return _Resp(matched, count=len(matched))
             if self._single:
                 if len(matched) != 1:
                     # supabase .single() raises (PGRST116) when not exactly one row
@@ -126,8 +148,8 @@ class _Table:
     def __init__(self):
         self.rows = []
 
-    def select(self, cols="*"):
-        return _Query(self).select(cols)
+    def select(self, cols="*", count=None):
+        return _Query(self).select(cols, count=count)
 
     def insert(self, payload):
         return _Query(self).insert(payload)
@@ -139,9 +161,41 @@ class _Table:
         return _Query(self).delete()
 
 
+class _FakeGoTrueAdmin:
+    """Stand-in for `supabase.auth.admin` on the service-role client.
+
+    delete_user CASCADEs to profiles in real Postgres, so the fake mirrors that
+    by dropping the matching profile row.
+    """
+
+    def __init__(self, db):
+        self._db = db
+        self.deleted = []
+        self.updated = {}
+        self.delete_error = None
+
+    def delete_user(self, user_id):
+        if self.delete_error:
+            raise Exception(self.delete_error)
+        self.deleted.append(user_id)
+        profiles = self._db.table("profiles").rows
+        profiles[:] = [r for r in profiles if r.get("id") != user_id]
+        return True
+
+    def update_user_by_id(self, user_id, attrs):
+        self.updated[user_id] = attrs
+        return True
+
+
+class _FakeDbAuth:
+    def __init__(self, db):
+        self.admin = _FakeGoTrueAdmin(db)
+
+
 class FakeSupabase:
     def __init__(self):
         self._tables = {}
+        self.auth = _FakeDbAuth(self)
 
     def table(self, name):
         return self._tables.setdefault(name, _Table())
@@ -537,6 +591,165 @@ def test_logout_all_wrong_password(mock_auth):
     mock_auth.gotrue.sign_in_user = None  # falsy user -> invalid password
     r = mock_auth.client.post(f"{API}/auth/logout-all", json={"password": "wrong"})
     assert r.status_code == 401, r.text
+
+
+# =====================================================================
+# DELETE /auth/me  (Google Play account-deletion requirement)
+# =====================================================================
+def _seed_deletable_customer(mock_auth, **fields):
+    """A signed-in customer whose password check will succeed."""
+    prof = mock_auth.seed_profile(user_role="customer", **fields)
+    mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
+    mock_auth.gotrue.sign_in_user = _User(prof["id"], prof["email"])
+    return prof
+
+
+def _delete_me(mock_auth, password="correct", confirmation="DELETE"):
+    return mock_auth.client.request(
+        "DELETE",
+        f"{API}/auth/me",
+        json={"password": password, "confirmation": confirmation},
+    )
+
+
+def test_delete_account_hard_deletes_when_no_history(mock_auth):
+    """A customer who never booked leaves nothing worth retaining, so the rows go."""
+    prof = _seed_deletable_customer(mock_auth)
+
+    r = _delete_me(mock_auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["retained_records"] == {"bookings": 0, "payments": 0}
+    # Auth user removed -> profile CASCADEd away
+    assert prof["id"] in mock_auth.db.auth.admin.deleted
+    assert mock_auth.db.table("profiles").rows == []
+
+
+def test_delete_account_anonymises_when_records_must_be_retained(mock_auth):
+    """Booking/payment rows are ON DELETE RESTRICT, so the profile is scrubbed instead."""
+    prof = _seed_deletable_customer(mock_auth, phone="+919876543210", phone_verified=True)
+    original_email = prof["email"]  # the fake DB stores the same dict, so copy it first
+    mock_auth.db.table("bookings").rows.append({
+        "id": str(uuid.uuid4()),
+        "customer_id": prof["id"],
+        "status": "completed",
+        "booking_date": "2020-01-01",
+        "deleted_at": None,
+    })
+    mock_auth.db.table("cart_items").rows.append({"id": "c1", "user_id": prof["id"]})
+    mock_auth.db.table("favorites").rows.append({"id": "f1", "user_id": prof["id"]})
+
+    r = _delete_me(mock_auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["retained_records"]["bookings"] == 1
+
+    # Profile survives (the booking FK needs it) but carries nothing identifying.
+    row = mock_auth.db.table("profiles").rows[0]
+    assert row["full_name"] == "Deleted User"
+    assert row["email"].endswith("@deleted.lubist.com")
+    assert row["email"] != original_email
+    assert row["phone"] is None
+    assert row["phone_verified"] is False
+    assert row["is_active"] is False
+    assert row["deleted_at"]
+    assert row["token_valid_after"]  # every existing token is now rejected
+
+    # Personal-only data is gone, and the credentials were rewritten.
+    assert mock_auth.db.table("cart_items").rows == []
+    assert mock_auth.db.table("favorites").rows == []
+    assert mock_auth.db.auth.admin.updated[prof["id"]]["email"] == row["email"]
+
+
+def test_delete_account_soft_deletes_reviews(mock_auth):
+    """A named public review must not outlive the account."""
+    prof = _seed_deletable_customer(mock_auth)
+    mock_auth.db.table("bookings").rows.append({
+        "id": str(uuid.uuid4()), "customer_id": prof["id"],
+        "status": "completed", "booking_date": "2020-01-01", "deleted_at": None,
+    })
+    mock_auth.db.table("reviews").rows.append({
+        "id": "r1", "customer_id": prof["id"], "deleted_at": None,
+    })
+
+    assert _delete_me(mock_auth).status_code == 200
+    assert mock_auth.db.table("reviews").rows[0]["deleted_at"]
+
+
+def test_delete_account_blocked_by_upcoming_booking(mock_auth):
+    """Money is in flight - the user is told to resolve it first."""
+    prof = _seed_deletable_customer(mock_auth)
+    future = (datetime.utcnow() + timedelta(days=3)).date().isoformat()
+    mock_auth.db.table("bookings").rows.append({
+        "id": str(uuid.uuid4()), "customer_id": prof["id"],
+        "status": "confirmed", "booking_date": future, "deleted_at": None,
+    })
+
+    r = _delete_me(mock_auth)
+    assert r.status_code == 409, r.text
+    assert "upcoming booking" in r.json()["message"]
+    # Nothing was touched.
+    assert mock_auth.db.table("profiles").rows[0]["full_name"] == "Test User"
+
+
+def test_delete_account_ignores_past_and_cancelled_bookings(mock_auth):
+    """Only open, future bookings block deletion."""
+    prof = _seed_deletable_customer(mock_auth)
+    future = (datetime.utcnow() + timedelta(days=3)).date().isoformat()
+    mock_auth.db.table("bookings").rows.extend([
+        {"id": "b1", "customer_id": prof["id"], "status": "cancelled",
+         "booking_date": future, "deleted_at": None},
+        {"id": "b2", "customer_id": prof["id"], "status": "completed",
+         "booking_date": "2020-01-01", "deleted_at": None},
+    ])
+
+    assert _delete_me(mock_auth).status_code == 200
+
+
+def test_delete_account_wrong_password(mock_auth):
+    prof = _seed_deletable_customer(mock_auth)
+    mock_auth.gotrue.sign_in_user = None  # falsy user -> invalid password
+
+    r = _delete_me(mock_auth, password="wrong")
+    assert r.status_code == 401, r.text
+    assert mock_auth.db.table("profiles").rows[0]["full_name"] == "Test User"
+
+
+def test_delete_account_requires_typed_confirmation(mock_auth):
+    _seed_deletable_customer(mock_auth)
+
+    r = _delete_me(mock_auth, confirmation="yes")
+    assert r.status_code == 400, r.text
+    assert mock_auth.db.table("profiles").rows[0]["full_name"] == "Test User"
+
+
+def test_delete_account_confirmation_is_case_insensitive(mock_auth):
+    _seed_deletable_customer(mock_auth)
+    assert _delete_me(mock_auth, confirmation=" delete ").status_code == 200
+
+
+def test_delete_account_blocked_for_business_roles(mock_auth):
+    """Vendors hold salon and payout records - routed to support instead."""
+    prof = mock_auth.seed_profile(user_role="vendor")
+    mock_auth.login_as(prof["id"], email=prof["email"], role="vendor")
+    mock_auth.gotrue.sign_in_user = _User(prof["id"], prof["email"])
+
+    r = _delete_me(mock_auth)
+    assert r.status_code == 403, r.text
+    assert "support@lubist.com" in r.json()["message"]
+
+
+def test_delete_account_already_deleted(mock_auth):
+    _seed_deletable_customer(mock_auth, deleted_at="2026-01-01T00:00:00")
+
+    r = _delete_me(mock_auth)
+    assert r.status_code == 410, r.text
+
+
+def test_delete_account_requires_auth(mock_auth):
+    mock_auth.app.dependency_overrides.pop(get_current_user, None)
+    r = _delete_me(mock_auth)
+    assert r.status_code in (401, 403)
 
 
 # =====================================================================

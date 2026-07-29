@@ -21,7 +21,7 @@ from .domain.rm import (
 # REQUEST SCHEMAS (API Input Validation)
 # =====================================================
 from .request.auth import (
-    LoginRequest, SignupRequest, LogoutAllRequest, RefreshTokenRequest,
+    LoginRequest, SignupRequest, LogoutAllRequest, AccountDeleteRequest, RefreshTokenRequest,
     PasswordResetRequest, PasswordResetConfirm, UserProfileUpdate,
     PhoneLoginSendOTPRequest, PhoneLoginVerifyOTPRequest,
     PhoneVerificationSendOTPRequest, PhoneVerificationConfirmRequest,
@@ -72,6 +72,7 @@ from .response.common import (
 )
 from .response.auth import (
     LoginResponse, SignupResponse, PasswordResetResponse, PasswordResetConfirmResponse,
+    AccountDeleteResponse,
     PhoneLoginSendOTPResponse, PhoneLoginVerifyOTPResponse,
     PhoneVerificationSendOTPResponse, PhoneVerificationConfirmResponse
 )
@@ -140,7 +141,7 @@ __all__ = [
     "TimestampMixin", "ProfileBase", "ProfileCreate", "ProfileUpdate", "ProfileResponse",
     "RMProfileBase", "RMProfileCreate", "RMProfileResponse", "RMScoreHistoryResponse",
     # --- Request schemas ---
-    "LoginRequest", "SignupRequest", "LogoutAllRequest", "RefreshTokenRequest",
+    "LoginRequest", "SignupRequest", "LogoutAllRequest", "AccountDeleteRequest", "RefreshTokenRequest",
     "PasswordResetRequest", "PasswordResetConfirm", "UserProfileUpdate",
     "PhoneLoginSendOTPRequest", "PhoneLoginVerifyOTPRequest",
     "PhoneVerificationSendOTPRequest", "PhoneVerificationConfirmRequest",
@@ -162,6 +163,7 @@ __all__ = [
     # --- Response schemas ---
     "SuccessResponse", "ErrorResponse", "ValidationErrorResponse",
     "LoginResponse", "SignupResponse", "PasswordResetResponse", "PasswordResetConfirmResponse",
+    "AccountDeleteResponse",
     "PhoneLoginSendOTPResponse", "PhoneLoginVerifyOTPResponse",
     "PhoneVerificationSendOTPResponse", "PhoneVerificationConfirmResponse",
     "VendorJoinRequestResponse", "SalonResponse", "SalonListResponse",

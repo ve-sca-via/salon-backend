@@ -29,6 +29,15 @@ class PasswordResetResponse(BaseModel):
     success: bool
     message: str
 
+class AccountDeleteResponse(BaseModel):
+    """Response after a user deletes their own account"""
+    success: bool
+    message: str
+    deleted_at: str
+    # Records we are legally required to keep (booking/payment history), retained
+    # in anonymised form with no link back to the person.
+    retained_records: Dict[str, int] = {}
+
 class PasswordResetConfirmResponse(BaseModel):
     success: bool
     message: str
