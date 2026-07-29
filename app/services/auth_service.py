@@ -1063,7 +1063,121 @@ class AuthService:
     # to unwind, so they are routed to support instead.
     SELF_DELETE_ROLES = {"customer", "regular_buyer"}
 
-    async def delete_own_account(self, user_id: str, email: str, password: str) -> Dict:
+    async def send_account_deletion_otp(self, user_id: str) -> Dict:
+        """
+        Send a deletion-confirmation OTP to the phone already on the account.
+
+        Deliberately does NOT take a phone number from the caller: the whole point
+        is to prove the requester holds the number we have on file.
+        """
+        from app.utils.phone import mask_phone, split_e164
+        from app.services.otp_service import OTPService
+
+        profile_response = self.db.table("profiles").select(
+            "id, phone, phone_verified, deleted_at"
+        ).eq("id", user_id).maybe_single().execute()
+        profile = getattr(profile_response, "data", None)
+
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found"
+            )
+
+        if profile.get("deleted_at"):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This account has already been deleted."
+            )
+
+        phone = profile.get("phone")
+        if not phone or not profile.get("phone_verified"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No verified phone number on this account. Confirm with your password instead."
+            )
+
+        country_code_clean, clean_phone = split_e164(phone, "91")
+        otp_result = await OTPService.send_otp(phone=clean_phone, country_code=country_code_clean)
+
+        logger.info(f"Account-deletion OTP sent for user {user_id}")
+        return {
+            "success": True,
+            "message": f"OTP sent to {mask_phone(phone)}",
+            "verification_id": otp_result["verification_id"],
+            "expires_in": otp_result["expires_in"],
+            "phone": otp_result["phone"],
+        }
+
+    async def _verify_deletion_identity(
+        self,
+        user_id: str,
+        email: str,
+        password: Optional[str],
+        verification_id: Optional[str],
+        otp: Optional[str],
+    ) -> None:
+        """
+        Re-prove identity before an irreversible delete, by password or by OTP.
+
+        Phone-first signups never choose a password - the client generates a
+        throwaway one the user never sees - so demanding a password there would
+        make deletion impossible for the app's primary signup path.
+        """
+        from app.services.otp_service import OTPService
+
+        if verification_id and otp:
+            profile_response = self.db.table("profiles").select(
+                "phone, phone_verified"
+            ).eq("id", user_id).maybe_single().execute()
+            profile = getattr(profile_response, "data", None) or {}
+
+            if not profile.get("phone") or not profile.get("phone_verified"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No verified phone number on this account."
+                )
+
+            if not await OTPService.verify_otp(verification_id=verification_id, otp_code=otp):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired OTP. Please try again."
+                )
+            return
+
+        if password:
+            try:
+                auth_response = self.auth_client.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+            except Exception as e:
+                logger.warning(f"Account deletion blocked: password check failed for {user_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect password. Please try again."
+                )
+
+            if not auth_response.user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect password. Please try again."
+                )
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirm deletion with your password or with an OTP sent to your phone."
+        )
+
+    async def delete_own_account(
+        self,
+        user_id: str,
+        email: str,
+        password: Optional[str] = None,
+        verification_id: Optional[str] = None,
+        otp: Optional[str] = None,
+    ) -> Dict:
         """
         Permanently delete the caller's own account (Google Play account-deletion
         requirement).
@@ -1072,7 +1186,7 @@ class AuthService:
         and payment-reconciliation purposes, so a customer with history cannot be
         row-deleted. Instead we:
 
-          1. verify the password (deletion is irreversible),
+          1. re-prove identity by password or phone OTP (deletion is irreversible),
           2. refuse while an upcoming booking is still open - money is involved,
           3. hard-delete everything purely personal (cart, favourites),
           4. scrub every identifying field from the profile and mark it deleted,
@@ -1085,24 +1199,7 @@ class AuthService:
         import secrets
         import uuid
 
-        # 1. Confirm the password - the token alone must not be enough to wipe an account.
-        try:
-            auth_response = self.auth_client.auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
-        except Exception as e:
-            logger.warning(f"Account deletion blocked: password check failed for {user_id}: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect password. Please try again."
-            )
-
-        if not auth_response.user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect password. Please try again."
-            )
+        await self._verify_deletion_identity(user_id, email, password, verification_id, otp)
 
         profile_response = self.db.table("profiles").select(
             "id, user_role, email, deleted_at"
