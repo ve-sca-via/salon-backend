@@ -1058,6 +1058,226 @@ class AuthService:
                 detail="Failed to logout from all devices"
             )
     
+    # Roles allowed to delete their own account from the apps. Vendors, RMs and
+    # admins hold business records (salons, payouts, approvals) that need a human
+    # to unwind, so they are routed to support instead.
+    SELF_DELETE_ROLES = {"customer", "regular_buyer"}
+
+    async def delete_own_account(self, user_id: str, email: str, password: str) -> Dict:
+        """
+        Permanently delete the caller's own account (Google Play account-deletion
+        requirement).
+
+        Booking and payment rows carry ON DELETE RESTRICT and must be kept for tax
+        and payment-reconciliation purposes, so a customer with history cannot be
+        row-deleted. Instead we:
+
+          1. verify the password (deletion is irreversible),
+          2. refuse while an upcoming booking is still open - money is involved,
+          3. hard-delete everything purely personal (cart, favourites),
+          4. scrub every identifying field from the profile and mark it deleted,
+          5. rewrite the Supabase auth user so the credentials stop working and the
+             email/phone are freed for reuse.
+
+        What survives is an anonymous booking/payment row with no path back to the
+        person. Accounts with no history at all are hard-deleted outright.
+        """
+        import secrets
+        import uuid
+
+        # 1. Confirm the password - the token alone must not be enough to wipe an account.
+        try:
+            auth_response = self.auth_client.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
+        except Exception as e:
+            logger.warning(f"Account deletion blocked: password check failed for {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect password. Please try again."
+            )
+
+        if not auth_response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect password. Please try again."
+            )
+
+        profile_response = self.db.table("profiles").select(
+            "id, user_role, email, deleted_at"
+        ).eq("id", user_id).maybe_single().execute()
+        profile = getattr(profile_response, "data", None)
+
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found"
+            )
+
+        if profile.get("deleted_at"):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This account has already been deleted."
+            )
+
+        user_role = profile.get("user_role")
+        if user_role not in self.SELF_DELETE_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Business accounts cannot be deleted from the app because they hold "
+                    "salon and payout records. Email support@lubist.com and we will "
+                    "process your deletion request."
+                )
+            )
+
+        # 2. Block while money is in flight - an upcoming booking is a live commitment
+        #    to a salon, and deleting the payer mid-flight strands both sides.
+        today = datetime.utcnow().date().isoformat()
+        upcoming = self.db.table("bookings").select("id", count="exact") \
+            .eq("customer_id", user_id) \
+            .gte("booking_date", today) \
+            .in_("status", ["pending", "confirmed"]) \
+            .is_("deleted_at", "null") \
+            .execute()
+
+        if upcoming.count and upcoming.count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"You have {upcoming.count} upcoming booking(s). Please cancel or "
+                    "complete them before deleting your account."
+                )
+            )
+
+        # 3. Drop everything that is purely personal and has no retention duty.
+        for table, column in (
+            ("cart_items", "user_id"),
+            ("product_cart_items", "user_id"),
+            ("favorites", "user_id"),
+            ("product_favorites", "user_id"),
+        ):
+            try:
+                self.db.table(table).delete().eq(column, user_id).execute()
+            except Exception as e:
+                # Never abort the deletion over a leftover cart row.
+                logger.warning(f"Account deletion: failed clearing {table} for {user_id}: {e}")
+
+        # Count what we are legally obliged to keep, so the user can be told plainly.
+        retained = {}
+        for label, table in (("bookings", "bookings"), ("payments", "booking_payments")):
+            try:
+                res = self.db.table(table).select("id", count="exact") \
+                    .eq("customer_id", user_id).execute()
+                retained[label] = res.count or 0
+            except Exception as e:
+                logger.warning(f"Account deletion: failed counting {table} for {user_id}: {e}")
+                retained[label] = 0
+
+        has_history = any(count > 0 for count in retained.values())
+
+        # Reviews are authored content: unpublish them rather than leave a named review behind.
+        try:
+            self.db.table("reviews").update({
+                "deleted_at": datetime.utcnow().isoformat()
+            }).eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        except Exception as e:
+            logger.warning(f"Account deletion: failed soft-deleting reviews for {user_id}: {e}")
+
+        now = datetime.utcnow()
+        anon_email = f"deleted-{uuid.uuid4().hex[:16]}@deleted.lubist.com"
+
+        # 4a. No history at all -> nothing to retain, so remove the rows outright.
+        #     Deleting the auth user CASCADEs to profiles.
+        if not has_history:
+            try:
+                self.db.auth.admin.delete_user(user_id)
+                logger.info(f"Account {user_id} hard-deleted (no retained records)")
+                await self._log_account_deletion(user_id, "hard_delete", now, retained)
+                return {
+                    "success": True,
+                    "message": "Your account and all associated data have been permanently deleted.",
+                    "deleted_at": now.isoformat(),
+                    "retained_records": retained,
+                }
+            except Exception as e:
+                # Fall through to anonymisation - the user still gets their deletion.
+                logger.warning(f"Hard delete failed for {user_id}, anonymising instead: {e}")
+
+        # 4b. Scrub every identifying field. age/gender are NOT NULL, so they are
+        #     reset to neutral placeholders rather than nulled.
+        try:
+            self.db.table("profiles").update({
+                "full_name": "Deleted User",
+                "email": anon_email,
+                "phone": None,
+                "avatar_url": None,
+                "address_line1": None,
+                "address_line2": None,
+                "city": None,
+                "state": None,
+                "pincode": None,
+                "age": 18,
+                "gender": "other",
+                "phone_verified": False,
+                "phone_verified_at": None,
+                "phone_verification_method": None,
+                "is_active": False,
+                "deleted_at": now.isoformat(),
+                "deleted_by": user_id,
+                "token_valid_after": now.isoformat(),
+            }).eq("id", user_id).execute()
+        except Exception as e:
+            logger.error(f"Account deletion: failed anonymising profile {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not delete your account. Please contact support@lubist.com."
+            )
+
+        # 5. Kill the credentials and free the email/phone for reuse. The auth row
+        #    itself must stay because profiles.id -> auth.users.id CASCADEs.
+        try:
+            self.db.auth.admin.update_user_by_id(user_id, {
+                "email": anon_email,
+                "email_confirm": True,
+                "phone": None,
+                "password": secrets.token_urlsafe(32),
+                "user_metadata": {"deleted": True},
+            })
+        except Exception as e:
+            # The profile is already deactivated, so no login can succeed regardless.
+            logger.error(f"Account deletion: failed scrubbing auth user {user_id}: {e}")
+
+        logger.info(f"Account {user_id} deleted (anonymised, retained={retained})")
+        await self._log_account_deletion(user_id, "anonymised", now, retained)
+
+        return {
+            "success": True,
+            "message": (
+                "Your account has been deleted and your personal details erased. "
+                "Booking and payment records are kept in anonymous form only where "
+                "the law requires it."
+            ),
+            "deleted_at": now.isoformat(),
+            "retained_records": retained,
+        }
+
+    async def _log_account_deletion(
+        self, user_id: str, method: str, when: datetime, retained: Dict
+    ) -> None:
+        """Best-effort audit trail for a self-service deletion (never fails the request)."""
+        try:
+            await ActivityLogService.log(
+                user_id=None if method == "hard_delete" else user_id,
+                action="account_self_deleted",
+                entity_type="auth",
+                entity_id=user_id,
+                details={"method": method, "timestamp": when.isoformat(), "retained": retained},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log account deletion for {user_id}: {e}")
+
     async def initiate_password_reset(self, email: str) -> Dict:
         """
         Initiate password reset process

@@ -28,6 +28,14 @@ class LogoutAllRequest(BaseModel):
     """Request to logout from all devices"""
     password: str  # Require password confirmation for security
 
+class AccountDeleteRequest(BaseModel):
+    """Request to permanently delete the caller's own account"""
+    password: str  # Require password confirmation - deletion is irreversible
+    confirmation: str = Field(
+        ...,
+        description='Must be the literal string "DELETE" to guard against accidental calls',
+    )
+
 class RefreshTokenRequest(BaseModel):
     """Request to refresh access token"""
     refresh_token: str

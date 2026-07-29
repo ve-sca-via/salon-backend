@@ -10,6 +10,7 @@ from .common import (
 from .auth import (
     LoginResponse,
     SignupResponse,
+    AccountDeleteResponse,
 )
 from .customer import (
     FavoriteResponse,
@@ -49,7 +50,7 @@ __all__ = [
     # Common
     "SuccessResponse", "ErrorResponse", "ErrorDetail", "ValidationErrorResponse",
     # Auth
-    "LoginResponse", "SignupResponse",
+    "LoginResponse", "SignupResponse", "AccountDeleteResponse",
     # Customer
     "FavoriteResponse",
     # Vendor
