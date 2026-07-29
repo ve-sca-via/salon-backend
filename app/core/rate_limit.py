@@ -76,6 +76,7 @@ class RateLimits:
     AUTH_SIGNUP = "3/minute"          # Max 3 signups per minute
     AUTH_PASSWORD_RESET = "3/hour"    # Max 3 password resets per hour
     AUTH_REFRESH = "10/minute"        # Max 10 token refreshes per minute
+    AUTH_ACCOUNT_DELETE = "5/hour"    # Max 5 self-deletion attempts per hour
     
     # Sensitive operations
     PAYMENT_CREATE = "10/minute"      # Max 10 payment creations per minute

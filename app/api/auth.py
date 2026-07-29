@@ -9,6 +9,8 @@ from app.schemas import (
     SignupRequest,
     SignupResponse,
     LogoutAllRequest,
+    AccountDeleteRequest,
+    AccountDeleteResponse,
     RefreshTokenRequest,
     PasswordResetRequest,
     PasswordResetResponse,
@@ -196,6 +198,59 @@ async def logout_all_devices(
         current_token_jti=current_user.jti if hasattr(current_user, 'jti') else None,
         current_token_exp=current_user.exp
     )
+
+
+@router.delete("/me", response_model=AccountDeleteResponse)
+@limiter.limit(RateLimits.AUTH_ACCOUNT_DELETE)
+async def delete_own_account(
+    request: Request,  # Required for rate limiter
+    delete_request: AccountDeleteRequest,
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Permanently delete the signed-in user's own account (Google Play requirement)
+
+    - Requires the literal text "DELETE" plus identity proof: either the password,
+      or an OTP from /auth/me/delete/send-otp (phone-first signups have no password
+      they know)
+    - Erases personal data; booking/payment records are kept anonymised where
+      retention is legally required
+    - Irreversible: the user must sign up again to use Lubist
+    """
+    if delete_request.confirmation.strip().upper() != "DELETE":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Please type "DELETE" to confirm account deletion.'
+        )
+
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.delete_own_account(
+        user_id=current_user.user_id,
+        email=current_user.email,
+        password=delete_request.password,
+        verification_id=delete_request.verification_id,
+        otp=delete_request.otp
+    )
+
+
+@router.post("/me/delete/send-otp", response_model=PhoneVerificationSendOTPResponse)
+@limiter.limit("3 per 5 minutes")
+async def send_account_deletion_otp(
+    request: Request,  # Required for rate limiter
+    current_user: TokenData = Depends(get_current_user),
+    db: Client = Depends(get_db_client),
+    auth_client: Client = Depends(get_auth_client)
+):
+    """
+    Send an account-deletion confirmation OTP to the phone on file
+
+    For users who signed up with a phone number and therefore have no password
+    they know. The number is read from the profile, never taken from the caller.
+    """
+    auth_service = AuthService(db_client=db, auth_client=auth_client)
+    return await auth_service.send_account_deletion_otp(user_id=current_user.user_id)
 
 
 @router.post("/password-reset", response_model=PasswordResetResponse)

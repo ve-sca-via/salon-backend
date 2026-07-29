@@ -26,10 +26,21 @@ class AuthService:
         self.auth_client = auth_client
 
     @staticmethod
-    def format_public_user(profile: dict, email: str | None = None) -> dict:
-        """Build sanitized user payload returned from auth endpoints."""
+    def format_public_user(
+        profile: dict,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> dict:
+        """
+        Build sanitized user payload returned from auth endpoints.
+
+        `email_verified` is None when the caller could not determine it. Clients
+        must treat None as "unknown" and stay silent rather than warn the user —
+        only False means the address is genuinely unconfirmed.
+        """
         phone = profile.get("phone") or ""
         return {
+            "email_verified": email_verified,
             "id": profile.get("id"),
             "email": email or profile.get("email"),
             "full_name": html.escape(profile.get("full_name") or ""),
@@ -103,8 +114,13 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Sanitize user data (XSS protection)
-            user_data = self.format_public_user(profile, email=user.email)
+            # Sanitize user data (XSS protection). The Supabase user object is
+            # already loaded here, so the confirmation flag costs nothing.
+            user_data = self.format_public_user(
+                profile,
+                email=user.email,
+                email_verified=bool(getattr(user, "email_confirmed_at", None)),
+            )
             
             logger.info(f"User authenticated: {user.email} (role: {profile.get('user_role')})")
             
@@ -128,7 +144,19 @@ class AuthService:
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid email or password. Please check your credentials and try again."
                 )
-            
+
+            # Supabase refuses sign_in_with_password until the address is
+            # confirmed. Say so plainly instead of masking it as a generic 500
+            # below, which reads as "wrong password" to the user. Resending the
+            # link needs a token (/resend-verification is authenticated), so the
+            # only self-service route from the login screen is the original email.
+            if "email not confirmed" in error_message:
+                logger.warning(f"Login blocked, email not confirmed: {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Please confirm your email address before logging in. We sent a confirmation link when you signed up — check your inbox and spam folder."
+                )
+
             # Log unexpected errors with full traceback
             logger.error(f"Authentication error: {str(e)}")
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
@@ -267,7 +295,7 @@ class AuthService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Failed to create user account"
                 )
-            
+
             # Wait for auth user creation to propagate (async sleep)
             await asyncio.sleep(0.1)  # Much shorter delay, non-blocking
             
@@ -324,8 +352,13 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Build user response
-            user_data = self.format_public_user(profile_data, email=email)
+            # Build user response. Fresh signups are unconfirmed until the emailed
+            # link is clicked, which is exactly what the client banner keys off.
+            user_data = self.format_public_user(
+                profile_data,
+                email=email,
+                email_verified=bool(getattr(user, "email_confirmed_at", None)),
+            )
             
             logger.info(f"New user registered: {email}")
             
@@ -660,8 +693,12 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
 
-            # Sanitize user data for response
-            user_data = self.format_public_user(profile)
+            # Sanitize user data for response. Phone-OTP users often never confirm
+            # their email, so the flag matters most here.
+            user_data = self.format_public_user(
+                profile,
+                email_verified=await self._is_auth_user_email_confirmed(profile["id"]),
+            )
 
             logger.info(f"User logged in via phone OTP: {profile['email']}")
 
@@ -790,7 +827,13 @@ class AuthService:
             profile = response.data
             # Add 'role' field for frontend backward compatibility
             profile['role'] = profile.get('user_role', 'customer')
-            
+
+            # `profiles` has no email-confirmation column, so this comes from
+            # Supabase's auth.users. It costs one extra call, but /auth/me is the
+            # only endpoint a long-lived session re-checks, so it is where a
+            # "confirm your email" banner has to get its truth from.
+            profile['email_verified'] = await self._is_auth_user_email_confirmed(user_id)
+
             return {
                 "success": True,
                 "user": profile
@@ -1015,6 +1058,323 @@ class AuthService:
                 detail="Failed to logout from all devices"
             )
     
+    # Roles allowed to delete their own account from the apps. Vendors, RMs and
+    # admins hold business records (salons, payouts, approvals) that need a human
+    # to unwind, so they are routed to support instead.
+    SELF_DELETE_ROLES = {"customer", "regular_buyer"}
+
+    async def send_account_deletion_otp(self, user_id: str) -> Dict:
+        """
+        Send a deletion-confirmation OTP to the phone already on the account.
+
+        Deliberately does NOT take a phone number from the caller: the whole point
+        is to prove the requester holds the number we have on file.
+        """
+        from app.utils.phone import mask_phone, split_e164
+        from app.services.otp_service import OTPService
+
+        profile_response = self.db.table("profiles").select(
+            "id, phone, phone_verified, deleted_at"
+        ).eq("id", user_id).maybe_single().execute()
+        profile = getattr(profile_response, "data", None)
+
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found"
+            )
+
+        if profile.get("deleted_at"):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This account has already been deleted."
+            )
+
+        phone = profile.get("phone")
+        if not phone or not profile.get("phone_verified"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No verified phone number on this account. Confirm with your password instead."
+            )
+
+        country_code_clean, clean_phone = split_e164(phone, "91")
+        otp_result = await OTPService.send_otp(phone=clean_phone, country_code=country_code_clean)
+
+        logger.info(f"Account-deletion OTP sent for user {user_id}")
+        return {
+            "success": True,
+            "message": f"OTP sent to {mask_phone(phone)}",
+            "verification_id": otp_result["verification_id"],
+            "expires_in": otp_result["expires_in"],
+            "phone": otp_result["phone"],
+        }
+
+    async def _verify_deletion_identity(
+        self,
+        user_id: str,
+        email: str,
+        password: Optional[str],
+        verification_id: Optional[str],
+        otp: Optional[str],
+    ) -> None:
+        """
+        Re-prove identity before an irreversible delete, by password or by OTP.
+
+        Phone-first signups never choose a password - the client generates a
+        throwaway one the user never sees - so demanding a password there would
+        make deletion impossible for the app's primary signup path.
+        """
+        from app.services.otp_service import OTPService
+
+        if verification_id and otp:
+            profile_response = self.db.table("profiles").select(
+                "phone, phone_verified"
+            ).eq("id", user_id).maybe_single().execute()
+            profile = getattr(profile_response, "data", None) or {}
+
+            if not profile.get("phone") or not profile.get("phone_verified"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No verified phone number on this account."
+                )
+
+            if not await OTPService.verify_otp(verification_id=verification_id, otp_code=otp):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired OTP. Please try again."
+                )
+            return
+
+        if password:
+            try:
+                auth_response = self.auth_client.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+            except Exception as e:
+                logger.warning(f"Account deletion blocked: password check failed for {user_id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect password. Please try again."
+                )
+
+            if not auth_response.user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect password. Please try again."
+                )
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirm deletion with your password or with an OTP sent to your phone."
+        )
+
+    async def delete_own_account(
+        self,
+        user_id: str,
+        email: str,
+        password: Optional[str] = None,
+        verification_id: Optional[str] = None,
+        otp: Optional[str] = None,
+    ) -> Dict:
+        """
+        Permanently delete the caller's own account (Google Play account-deletion
+        requirement).
+
+        Booking and payment rows carry ON DELETE RESTRICT and must be kept for tax
+        and payment-reconciliation purposes, so a customer with history cannot be
+        row-deleted. Instead we:
+
+          1. re-prove identity by password or phone OTP (deletion is irreversible),
+          2. refuse while an upcoming booking is still open - money is involved,
+          3. hard-delete everything purely personal (cart, favourites),
+          4. scrub every identifying field from the profile and mark it deleted,
+          5. rewrite the Supabase auth user so the credentials stop working and the
+             email/phone are freed for reuse.
+
+        What survives is an anonymous booking/payment row with no path back to the
+        person. Accounts with no history at all are hard-deleted outright.
+        """
+        import secrets
+        import uuid
+
+        await self._verify_deletion_identity(user_id, email, password, verification_id, otp)
+
+        profile_response = self.db.table("profiles").select(
+            "id, user_role, email, deleted_at"
+        ).eq("id", user_id).maybe_single().execute()
+        profile = getattr(profile_response, "data", None)
+
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found"
+            )
+
+        if profile.get("deleted_at"):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This account has already been deleted."
+            )
+
+        user_role = profile.get("user_role")
+        if user_role not in self.SELF_DELETE_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Business accounts cannot be deleted from the app because they hold "
+                    "salon and payout records. Email support@lubist.com and we will "
+                    "process your deletion request."
+                )
+            )
+
+        # 2. Block while money is in flight - an upcoming booking is a live commitment
+        #    to a salon, and deleting the payer mid-flight strands both sides.
+        today = datetime.utcnow().date().isoformat()
+        upcoming = self.db.table("bookings").select("id", count="exact") \
+            .eq("customer_id", user_id) \
+            .gte("booking_date", today) \
+            .in_("status", ["pending", "confirmed"]) \
+            .is_("deleted_at", "null") \
+            .execute()
+
+        if upcoming.count and upcoming.count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"You have {upcoming.count} upcoming booking(s). Please cancel or "
+                    "complete them before deleting your account."
+                )
+            )
+
+        # 3. Drop everything that is purely personal and has no retention duty.
+        for table, column in (
+            ("cart_items", "user_id"),
+            ("product_cart_items", "user_id"),
+            ("favorites", "user_id"),
+            ("product_favorites", "user_id"),
+        ):
+            try:
+                self.db.table(table).delete().eq(column, user_id).execute()
+            except Exception as e:
+                # Never abort the deletion over a leftover cart row.
+                logger.warning(f"Account deletion: failed clearing {table} for {user_id}: {e}")
+
+        # Count what we are legally obliged to keep, so the user can be told plainly.
+        retained = {}
+        for label, table in (("bookings", "bookings"), ("payments", "booking_payments")):
+            try:
+                res = self.db.table(table).select("id", count="exact") \
+                    .eq("customer_id", user_id).execute()
+                retained[label] = res.count or 0
+            except Exception as e:
+                logger.warning(f"Account deletion: failed counting {table} for {user_id}: {e}")
+                retained[label] = 0
+
+        has_history = any(count > 0 for count in retained.values())
+
+        # Reviews are authored content: unpublish them rather than leave a named review behind.
+        try:
+            self.db.table("reviews").update({
+                "deleted_at": datetime.utcnow().isoformat()
+            }).eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        except Exception as e:
+            logger.warning(f"Account deletion: failed soft-deleting reviews for {user_id}: {e}")
+
+        now = datetime.utcnow()
+        anon_email = f"deleted-{uuid.uuid4().hex[:16]}@deleted.lubist.com"
+
+        # 4a. No history at all -> nothing to retain, so remove the rows outright.
+        #     Deleting the auth user CASCADEs to profiles.
+        if not has_history:
+            try:
+                self.db.auth.admin.delete_user(user_id)
+                logger.info(f"Account {user_id} hard-deleted (no retained records)")
+                await self._log_account_deletion(user_id, "hard_delete", now, retained)
+                return {
+                    "success": True,
+                    "message": "Your account and all associated data have been permanently deleted.",
+                    "deleted_at": now.isoformat(),
+                    "retained_records": retained,
+                }
+            except Exception as e:
+                # Fall through to anonymisation - the user still gets their deletion.
+                logger.warning(f"Hard delete failed for {user_id}, anonymising instead: {e}")
+
+        # 4b. Scrub every identifying field. age/gender are NOT NULL, so they are
+        #     reset to neutral placeholders rather than nulled.
+        try:
+            self.db.table("profiles").update({
+                "full_name": "Deleted User",
+                "email": anon_email,
+                "phone": None,
+                "avatar_url": None,
+                "address_line1": None,
+                "address_line2": None,
+                "city": None,
+                "state": None,
+                "pincode": None,
+                "age": 18,
+                "gender": "other",
+                "phone_verified": False,
+                "phone_verified_at": None,
+                "phone_verification_method": None,
+                "is_active": False,
+                "deleted_at": now.isoformat(),
+                "deleted_by": user_id,
+                "token_valid_after": now.isoformat(),
+            }).eq("id", user_id).execute()
+        except Exception as e:
+            logger.error(f"Account deletion: failed anonymising profile {user_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not delete your account. Please contact support@lubist.com."
+            )
+
+        # 5. Kill the credentials and free the email/phone for reuse. The auth row
+        #    itself must stay because profiles.id -> auth.users.id CASCADEs.
+        try:
+            self.db.auth.admin.update_user_by_id(user_id, {
+                "email": anon_email,
+                "email_confirm": True,
+                "phone": None,
+                "password": secrets.token_urlsafe(32),
+                "user_metadata": {"deleted": True},
+            })
+        except Exception as e:
+            # The profile is already deactivated, so no login can succeed regardless.
+            logger.error(f"Account deletion: failed scrubbing auth user {user_id}: {e}")
+
+        logger.info(f"Account {user_id} deleted (anonymised, retained={retained})")
+        await self._log_account_deletion(user_id, "anonymised", now, retained)
+
+        return {
+            "success": True,
+            "message": (
+                "Your account has been deleted and your personal details erased. "
+                "Booking and payment records are kept in anonymous form only where "
+                "the law requires it."
+            ),
+            "deleted_at": now.isoformat(),
+            "retained_records": retained,
+        }
+
+    async def _log_account_deletion(
+        self, user_id: str, method: str, when: datetime, retained: Dict
+    ) -> None:
+        """Best-effort audit trail for a self-service deletion (never fails the request)."""
+        try:
+            await ActivityLogService.log(
+                user_id=None if method == "hard_delete" else user_id,
+                action="account_self_deleted",
+                entity_type="auth",
+                entity_id=user_id,
+                details={"method": method, "timestamp": when.isoformat(), "retained": retained},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log account deletion for {user_id}: {e}")
+
     async def initiate_password_reset(self, email: str) -> Dict:
         """
         Initiate password reset process
@@ -1170,8 +1530,14 @@ class AuthService:
             access_token = create_access_token(token_data)
             refresh_token = create_refresh_token(token_data)
             
-            # Sanitize user data
-            user_data = self.format_public_user(profile, email=user_email)
+            # Sanitize user data. Completing a password reset proves control of the
+            # inbox, so Supabase may have confirmed the address as a side effect —
+            # re-read it rather than assuming either way.
+            user_data = self.format_public_user(
+                profile,
+                email=user_email,
+                email_verified=await self._is_auth_user_email_confirmed(user_id),
+            )
             
             logger.info(f"Password reset confirmed for user: {user_id}")
             
@@ -1194,15 +1560,22 @@ class AuthService:
     def _email_verification_redirect_url(self) -> str:
         return f"{settings.FRONTEND_URL.rstrip('/')}/"
 
-    def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
-        """Return True/False when known, or None if auth user could not be loaded."""
+    async def _is_auth_user_email_confirmed(self, user_id: str) -> Optional[bool]:
+        """
+        Return True/False when known, or None if auth user could not be loaded.
+
+        `email_confirmed_at` lives only in Supabase's `auth.users`; there is no
+        mirrored column on `profiles`, so callers that hold a Supabase user object
+        should read it from there instead of paying for this extra round trip.
+        """
         url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users/{user_id}"
         headers = {
             "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
         }
         try:
-            response = httpx.get(url, headers=headers, timeout=15.0)
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=headers)
             if response.status_code != 200:
                 logger.warning(
                     "Could not load auth user %s for verification check: %s %s",
@@ -1294,7 +1667,7 @@ class AuthService:
         Raises:
             HTTPException: If resend fails
         """
-        email_confirmed = self._is_auth_user_email_confirmed(user_id)
+        email_confirmed = await self._is_auth_user_email_confirmed(user_id)
         if email_confirmed is True:
             return {
                 "success": True,

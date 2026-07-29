@@ -28,6 +28,24 @@ class LogoutAllRequest(BaseModel):
     """Request to logout from all devices"""
     password: str  # Require password confirmation for security
 
+class AccountDeleteRequest(BaseModel):
+    """
+    Request to permanently delete the caller's own account.
+
+    Identity must be re-proven, but phone-first signups never choose a password
+    (the client generates a throwaway), so an OTP sent to the number on file is
+    accepted instead. Supply EITHER `password` OR `verification_id` + `otp`.
+    """
+    confirmation: str = Field(
+        ...,
+        description='Must be the literal string "DELETE" to guard against accidental calls',
+    )
+    password: Optional[str] = None
+    verification_id: Optional[str] = Field(
+        None, description="From POST /auth/me/delete/send-otp"
+    )
+    otp: Optional[str] = Field(None, description="6-digit code sent to the registered phone")
+
 class RefreshTokenRequest(BaseModel):
     """Request to refresh access token"""
     refresh_token: str

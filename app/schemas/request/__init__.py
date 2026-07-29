@@ -5,6 +5,7 @@ from .auth import (
     LoginRequest,
     SignupRequest,
     LogoutAllRequest,
+    AccountDeleteRequest,
     RefreshTokenRequest,
 )
 from .customer import (
@@ -50,7 +51,7 @@ from .rm import (
 
 __all__ = [
     # Auth
-    "LoginRequest", "SignupRequest", "LogoutAllRequest", "RefreshTokenRequest",
+    "LoginRequest", "SignupRequest", "LogoutAllRequest", "AccountDeleteRequest", "RefreshTokenRequest",
     # Customer
     "SalonFilters", "ReviewCreate", "ReviewUpdate", "FeedbackReviewCreate", "CartItemCreate", "CartItemUpdate", "FavoriteCreate",
     "ProductFavoriteCreate",
