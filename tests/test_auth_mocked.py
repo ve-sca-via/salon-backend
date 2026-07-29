@@ -604,12 +604,11 @@ def _seed_deletable_customer(mock_auth, **fields):
     return prof
 
 
-def _delete_me(mock_auth, password="correct", confirmation="DELETE"):
-    return mock_auth.client.request(
-        "DELETE",
-        f"{API}/auth/me",
-        json={"password": password, "confirmation": confirmation},
-    )
+def _delete_me(mock_auth, confirmation="DELETE", **proof):
+    """Defaults to password proof; pass verification_id/otp for the OTP path."""
+    body = {"confirmation": confirmation}
+    body.update(proof or {"password": "correct"})
+    return mock_auth.client.request("DELETE", f"{API}/auth/me", json=body)
 
 
 def test_delete_account_hard_deletes_when_no_history(mock_auth):
@@ -704,6 +703,57 @@ def test_delete_account_ignores_past_and_cancelled_bookings(mock_auth):
     ])
 
     assert _delete_me(mock_auth).status_code == 200
+
+
+def test_delete_account_with_otp_instead_of_password(mock_auth):
+    """Phone-first signups never learn their password, so an OTP must be enough."""
+    _seed_deletable_customer(mock_auth, phone="+919876543210", phone_verified=True)
+    mock_auth.gotrue.sign_in_user = None  # password path would fail - unused here
+
+    r = _delete_me(mock_auth, verification_id="vid-test-123", otp="123456")
+    assert r.status_code == 200, r.text
+
+
+def test_delete_account_wrong_otp(mock_auth):
+    _seed_deletable_customer(mock_auth, phone="+919876543210", phone_verified=True)
+    mock_auth.otp_valid = False
+
+    r = _delete_me(mock_auth, verification_id="vid-test-123", otp="000000")
+    assert r.status_code == 401, r.text
+    assert mock_auth.db.table("profiles").rows[0]["full_name"] == "Test User"
+
+
+def test_delete_account_otp_rejected_without_verified_phone(mock_auth):
+    """An OTP cannot stand in for identity on an account with no phone on file."""
+    _seed_deletable_customer(mock_auth, phone=None, phone_verified=False)
+
+    r = _delete_me(mock_auth, verification_id="vid-test-123", otp="123456")
+    assert r.status_code == 400, r.text
+
+
+def test_delete_account_requires_some_proof(mock_auth):
+    _seed_deletable_customer(mock_auth)
+
+    r = mock_auth.client.request("DELETE", f"{API}/auth/me", json={"confirmation": "DELETE"})
+    assert r.status_code == 400, r.text
+    assert "password" in r.json()["message"].lower()
+
+
+def test_delete_otp_sends_to_phone_on_file(mock_auth):
+    """The number comes from the profile - the caller cannot nominate one."""
+    _seed_deletable_customer(mock_auth, phone="+919876543210", phone_verified=True)
+
+    r = mock_auth.client.post(f"{API}/auth/me/delete/send-otp")
+    assert r.status_code == 200, r.text
+    assert r.json()["verification_id"] == "vid-test-123"
+
+
+def test_delete_otp_send_requires_verified_phone(mock_auth):
+    _seed_deletable_customer(mock_auth, phone=None, phone_verified=False)
+
+    r = mock_auth.client.post(f"{API}/auth/me/delete/send-otp")
+    assert r.status_code == 400, r.text
+    assert "password" in r.json()["message"].lower()
 
 
 def test_delete_account_wrong_password(mock_auth):
