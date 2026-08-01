@@ -68,6 +68,11 @@ class _Query:
         self._op = ("select", "*")
         self._single = False
         self._maybe_single = False
+        self._limit = None
+
+    def limit(self, n):
+        self._limit = n
+        return self
 
     def select(self, cols="*", count=None):
         self._op = ("select", cols)
@@ -143,6 +148,8 @@ class _Query:
                 return _Resp(matched[0])
             if self._maybe_single:
                 return _Resp(matched[0] if matched else None)
+            if self._limit is not None:
+                matched = matched[:self._limit]
             return _Resp(matched)
 
         if op == "insert":
@@ -209,6 +216,7 @@ class Spy:
         self.tokens = []        # list of kwargs dicts
         self.geocode_return = None    # tuple (lat, lng) or None
         self.score_success = True     # toggle RMService.update_rm_score outcome
+        self.vendor_email_ok = True   # toggle SMTP delivery of the vendor email
 
 
 # =====================================================================
@@ -298,7 +306,7 @@ def va(app, monkeypatch):
 
     async def fake_vendor_email(**kwargs):
         spy.emails.append(("vendor_approval", kwargs))
-        return True
+        return spy.vendor_email_ok
     async def fake_rm_approved_email(**kwargs):
         spy.emails.append(("rm_approved", kwargs))
         return True
@@ -426,23 +434,25 @@ def test_approve_rm_score_failure_is_nonfatal_warning(va):
     assert any("rm score" in w.lower() for w in warnings)
 
 
-def test_approve_already_processed_500(va):
+def test_approve_already_processed_409(va):
     rm_id = str(uuid.uuid4())
     va.seed_config()
     va.seed_rm(rm_id)
     req = va.seed_request(rm_id, status="approved")
 
     r = va.client.post(f"{VREQS}/{req['id']}/approve", json={})
-    assert r.status_code == 500, r.text
+    # 409, not 500: re-approving is a client-side conflict, and the admin panel
+    # needs to tell it apart from a genuine server failure.
+    assert r.status_code == 409, r.text
     assert "already" in r.json()["message"].lower()
     # no salon should have been created
     assert va.db.table("salons").rows == []
 
 
-def test_approve_missing_request_500(va):
+def test_approve_missing_request_404(va):
     va.seed_config()
     r = va.client.post(f"{VREQS}/{uuid.uuid4()}/approve", json={})
-    assert r.status_code == 500, r.text
+    assert r.status_code == 404, r.text
 
 
 def test_approve_missing_fee_config_500(va):
@@ -516,23 +526,128 @@ def test_reject_requires_reason_422(va):
     assert r_missing.status_code == 422, r_missing.text
 
 
-def test_reject_already_processed_500(va):
+def test_reject_already_processed_409(va):
     rm_id = str(uuid.uuid4())
     va.seed_config()
     va.seed_rm(rm_id)
     req = va.seed_request(rm_id, status="rejected")
 
     r = va.client.post(f"{VREQS}/{req['id']}/reject", json={"admin_notes": "again"})
-    assert r.status_code == 500, r.text
+    assert r.status_code == 409, r.text
 
 
-def test_reject_missing_request_500(va):
+def test_reject_missing_request_404(va):
     va.seed_config()
     r = va.client.post(f"{VREQS}/{uuid.uuid4()}/reject", json={"admin_notes": "x"})
-    assert r.status_code == 500, r.text
+    assert r.status_code == 404, r.text
 
 
 def test_reject_requires_admin(va):
     va.logout()
     r = va.client.post(f"{VREQS}/{uuid.uuid4()}/reject", json={"admin_notes": "x"})
+    assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# Failure isolation: the DB work and the notification work are separate
+# =====================================================================
+def test_approve_rolls_request_back_to_pending_when_salon_creation_fails(va, monkeypatch):
+    # Previously the request was flipped to "approved" before the salon insert, so
+    # a failing insert left the request permanently "approved" with no salon and
+    # every retry answered "already approved". It must be retryable instead.
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = va.seed_request(rm_id, latitude=12.97, longitude=77.59)
+
+    async def boom(self, *a, **k):
+        raise Exception("salons insert failed")
+    monkeypatch.setattr(approval_mod.VendorApprovalService, "_create_salon", boom)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={})
+    assert r.status_code == 500, r.text
+
+    vjr = va.db.table("vendor_join_requests").rows[0]
+    assert vjr["status"] == "pending"
+    assert va.db.table("salons").rows == []
+    # No notifications for an approval that did not happen.
+    assert va.spy.emails == []
+
+
+def test_approve_succeeds_even_when_vendor_email_fails(va):
+    # A dead SMTP host must not turn a completed approval into an HTTP error.
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = va.seed_request(rm_id, latitude=12.97, longitude=77.59)
+    va.spy.vendor_email_ok = False
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={})
+    assert r.status_code == 200, r.text
+    assert va.db.table("vendor_join_requests").rows[0]["status"] == "approved"
+    assert len(va.db.table("salons").rows) == 1
+
+
+# =====================================================================
+# Resend approval email
+# =====================================================================
+def _approve(va, rm_id, **over):
+    req = va.seed_request(rm_id, latitude=12.97, longitude=77.59, **over)
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={})
+    assert r.status_code == 200, r.text
+    va.spy.emails.clear()
+    return req
+
+
+def test_resend_approval_email_resends_only_the_vendor_email(va):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _approve(va, rm_id)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/resend-approval-email")
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["owner_email"] == "owner@example.com"
+
+    kinds = [k for k, _ in va.spy.emails]
+    assert kinds == ["vendor_approval"]   # RM is not notified twice
+
+
+def test_resend_approval_email_forces_send_when_owner_is_the_rm(va):
+    # The approve flow deliberately skips this address; the manual resend must not.
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id, email="same@example.com")
+    req = _approve(va, rm_id, owner_email="same@example.com")
+
+    r = va.client.post(f"{VREQS}/{req['id']}/resend-approval-email")
+    assert r.status_code == 200, r.text
+    assert [k for k, _ in va.spy.emails] == ["vendor_approval"]
+
+
+def test_resend_approval_email_reports_delivery_failure(va):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _approve(va, rm_id)
+    va.spy.vendor_email_ok = False
+
+    r = va.client.post(f"{VREQS}/{req['id']}/resend-approval-email")
+    # Unlike /approve, this one is synchronous and tells the admin it failed.
+    assert r.status_code == 502, r.text
+
+
+def test_resend_approval_email_404_when_not_approved(va):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = va.seed_request(rm_id)   # still pending -> no salon exists
+
+    r = va.client.post(f"{VREQS}/{req['id']}/resend-approval-email")
+    assert r.status_code == 404, r.text
+
+
+def test_resend_approval_email_requires_admin(va):
+    va.logout()
+    r = va.client.post(f"{VREQS}/{uuid.uuid4()}/resend-approval-email")
     assert r.status_code in (401, 403), r.text
