@@ -18,6 +18,24 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================
+# SMTP BEHAVIOUR
+# =====================================================
+# smtplib defaults to socket._GLOBAL_DEFAULT_TIMEOUT (i.e. no timeout), so a
+# silently-dropped connection to the SMTP host hangs the calling request until
+# the OS gives up (minutes). Every SMTP step below is bounded by this instead.
+SMTP_TIMEOUT_SECONDS = 15
+
+# Errors that will never succeed on retry — bad credentials, rejected sender or
+# recipient. Retrying these just burns time (and can get the sender rate-limited).
+PERMANENT_SMTP_ERRORS = (
+    smtplib.SMTPAuthenticationError,
+    smtplib.SMTPRecipientsRefused,
+    smtplib.SMTPSenderRefused,
+    smtplib.SMTPNotSupportedError,
+)
+
+
+# =====================================================
 # JINJA2 TEMPLATE ENVIRONMENT (SINGLETON)
 # =====================================================
 # Created once at module load time and shared across all EmailService instances
@@ -106,55 +124,104 @@ class EmailService:
             msg.attach(html_part)
             
             # Send email with retry logic
+            last_error = "unknown error"
             for attempt in range(max_retries + 1):
-                try:
-                    success = await asyncio.to_thread(self._send_email_sync, msg, to_email, subject)
-                    if success:
-                        # Log activity for admin dashboard
-                        try:
-                            await ActivityLogService.log(
-                                user_id=None,  # System action
-                                action="email_sent",
-                                entity_type=related_entity_type,
-                                entity_id=related_entity_id,
-                                details={
-                                    "email_type": email_type,
-                                    "recipient": to_email,
-                                    "subject": subject
-                                }
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to log email activity: {e}")
-                        
-                        return True
-                    
-                    # If this wasn't the last attempt, wait before retrying
-                    if attempt < max_retries:
-                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"Email send failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.1f}s...")
-                        await asyncio.sleep(delay)
-                        
-                except Exception as e:
-                    logger.error(f"Email send error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
-                    
-                    # If this wasn't the last attempt, wait before retrying
-                    if attempt < max_retries:
-                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"Retrying email send in {delay:.1f}s...")
-                        await asyncio.sleep(delay)
-            
-            # All retries exhausted
-            logger.error(f"Failed to send email to {to_email} after {max_retries + 1} attempts")
+                success, error, permanent = await asyncio.to_thread(
+                    self._send_email_sync, msg, to_email, subject
+                )
+
+                if success:
+                    # Log activity for admin dashboard
+                    try:
+                        await ActivityLogService.log(
+                            user_id=None,  # System action
+                            action="email_sent",
+                            entity_type=related_entity_type,
+                            entity_id=related_entity_id,
+                            details={
+                                "email_type": email_type,
+                                "recipient": to_email,
+                                "subject": subject
+                            }
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to log email activity: {e}")
+
+                    return True
+
+                last_error = error or "unknown error"
+
+                # Bad credentials / rejected address will fail identically on every
+                # retry — give up now so the caller isn't blocked for another ~7s.
+                if permanent:
+                    logger.error(
+                        f"Email to {to_email} ({email_type}) rejected permanently, not retrying: {last_error}"
+                    )
+                    break
+
+                # If this wasn't the last attempt, wait before retrying
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Email send failed (attempt {attempt + 1}/{max_retries + 1}): {last_error}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+
+            # All retries exhausted (or a permanent failure short-circuited them)
+            logger.error(
+                f"Failed to send '{email_type}' email to {to_email}: {last_error}"
+            )
+            await self._log_email_failure(
+                to_email, subject, email_type, last_error, related_entity_type, related_entity_id
+            )
             return False
 
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            logger.error(f"Failed to send email to {to_email}: {type(e).__name__}: {str(e)}", exc_info=True)
+            await self._log_email_failure(
+                to_email, subject, email_type, f"{type(e).__name__}: {e}",
+                related_entity_type, related_entity_id
+            )
             return False
-    
-    def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
+
+    @staticmethod
+    async def _log_email_failure(
+        to_email: str,
+        subject: str,
+        email_type: str,
+        error: str,
+        related_entity_type: Optional[str],
+        related_entity_id: Optional[str]
+    ) -> None:
         """
-        Synchronous email sending (called from thread pool)
-        
+        Record a failed send in activity_logs so silent email loss is visible on the
+        admin dashboard instead of only in server logs.
+        """
+        try:
+            await ActivityLogService.log(
+                user_id=None,  # System action
+                action="email_failed",
+                entity_type=related_entity_type,
+                entity_id=related_entity_id,
+                details={
+                    "email_type": email_type,
+                    "recipient": to_email,
+                    "subject": subject,
+                    "error": error[:500]
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to log email failure activity: {e}")
+
+    def _send_email_sync(self, msg, to_email: str, subject: str) -> tuple:
+        """
+        Synchronous email sending (called from thread pool).
+
+        Returns:
+            (success, error_message, is_permanent) - is_permanent means retrying
+            the same message will fail the same way (auth / rejected address).
+
         ⚠️ TODO: BLOCKING I/O IN ASYNC CONTEXT - Fix when traffic grows
         
         CURRENT ISSUE:
@@ -189,25 +256,43 @@ class EmailService:
         try:
             # Send email
             if settings.SMTP_SSL:
-                server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT)
+                server = smtplib.SMTP_SSL(
+                    settings.SMTP_HOST, settings.SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS
+                )
             else:
-                server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT)
+                server = smtplib.SMTP(
+                    settings.SMTP_HOST, settings.SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS
+                )
                 if settings.SMTP_TLS:
                     server.starttls()
-            
+
             # Only login if credentials are provided (Mailpit doesn't need auth)
             if settings.SMTP_USER and settings.SMTP_PASSWORD:
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            
+
             server.send_message(msg)
-            
+
             logger.info(f"Email sent successfully to {to_email}: {subject}")
-            return True
-            
+            return True, None, False
+
+        except PERMANENT_SMTP_ERRORS as e:
+            # Log the SMTP host/port/user in use — the usual cause is a rotated or
+            # revoked app password, and the message alone doesn't say which account.
+            logger.error(
+                f"Permanent SMTP failure sending to {to_email} via "
+                f"{settings.SMTP_HOST}:{settings.SMTP_PORT} as '{settings.SMTP_USER}': "
+                f"{type(e).__name__}: {e}"
+            )
+            return False, f"{type(e).__name__}: {e}", True
+
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            return False
-            
+            logger.error(
+                f"Failed to send email to {to_email} via "
+                f"{settings.SMTP_HOST}:{settings.SMTP_PORT}: {type(e).__name__}: {e}"
+            )
+            return False, f"{type(e).__name__}: {e}", False
+
+
         finally:
             # Always close connection to prevent memory leaks
             if server:

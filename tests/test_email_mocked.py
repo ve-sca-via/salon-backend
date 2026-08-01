@@ -40,7 +40,9 @@ class SentBox:
     def __init__(self):
         self.messages = []      # [{"to", "subject", "msg"}]
         self.activities = []    # ActivityLogService.log kwargs
-        self.fail = False       # _send_email_sync returns False (delivery fails)
+        self.attempts = 0       # transport calls that reported failure
+        self.fail = False       # _send_email_sync reports failure (delivery fails)
+        self.permanent = False  # ...and reports it as non-retryable (auth/rejected)
         self.raise_exc = False  # _send_email_sync raises (transport error)
         self.service = None
 
@@ -57,12 +59,14 @@ def mail(monkeypatch):
     box = SentBox()
 
     def _fake_send_sync(self, msg, to_email, subject):
+        # Mirrors the real transport contract: (success, error, is_permanent)
         if box.raise_exc:
             raise RuntimeError("smtp boom")
         if box.fail:
-            return False
+            box.attempts += 1
+            return False, "SMTPException: refused", box.permanent
         box.messages.append({"to": to_email, "subject": subject, "msg": msg})
-        return True
+        return True, None, False
 
     monkeypatch.setattr(EmailService, "_send_email_sync", _fake_send_sync)
 
@@ -242,7 +246,7 @@ def test_review_request_happy(mail):
 # =====================================================================
 # Error cases
 # =====================================================================
-def test_delivery_failure_returns_false_and_logs_no_activity(mail):
+def test_delivery_failure_returns_false_and_logs_email_failed(mail):
     mail.fail = True
     ok = run(mail.service.send_vendor_approval_email(
         to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
@@ -250,7 +254,26 @@ def test_delivery_failure_returns_false_and_logs_no_activity(mail):
     ))
     assert ok is False
     assert mail.messages == []        # nothing captured as "sent"
-    assert mail.activities == []      # success-only activity log never fired
+    # Silent loss is the bug being fixed: a failed send must leave a trail.
+    assert mail.activities[-1]["action"] == "email_failed"
+    assert mail.activities[-1]["details"]["email_type"] == "vendor_approval"
+    assert mail.activities[-1]["entity_id"] == "salon-1"
+    assert "refused" in mail.activities[-1]["details"]["error"]
+    assert mail.attempts == 4         # 1 initial + 3 retries
+
+
+def test_permanent_failure_is_not_retried(mail):
+    # Bad credentials / rejected address fail identically every time — retrying
+    # only keeps the caller's request open longer.
+    mail.fail = True
+    mail.permanent = True
+    ok = run(mail.service.send_vendor_approval_email(
+        to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
+        registration_token="tok", registration_fee=1.0, salon_id="salon-1",
+    ))
+    assert ok is False
+    assert mail.attempts == 1
+    assert mail.activities[-1]["action"] == "email_failed"
 
 
 def test_transport_exception_returns_false(mail):
@@ -262,7 +285,7 @@ def test_transport_exception_returns_false(mail):
         booking_id="bk-1",
     ))
     assert ok is False
-    assert mail.activities == []
+    assert mail.activities[-1]["action"] == "email_failed"
 
 
 def test_template_render_error_is_caught(mail, monkeypatch):

@@ -19,7 +19,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Set up Python 3.13.4 (matches Render's Python version exactly)
+      # 2. Set up Python 3.13.4
+      # NOTE: runtime.txt pins python-3.11.9 — these two disagree. Align them
+      # with whatever the DigitalOcean production runtime actually uses.
       - name: Set up Python 3.13.4
         uses: actions/setup-python@v5
         with:
