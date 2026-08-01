@@ -6,9 +6,9 @@ as a side effect by booking/vendor/career/payment flows. So these tests drive
 ``EmailService`` directly:
 
     EmailService.send_*  ->  real Jinja2 template render  ->  _send_email (retry)
-                          ->  _send_email_sync (SMTP, FAKED)  ->  ActivityLog (FAKED)
+                          ->  _deliver (Resend API, FAKED)  ->  ActivityLog (FAKED)
 
-Only the SMTP transport (``_send_email_sync``), the retry ``asyncio.sleep`` and
+Only the Resend transport (``_deliver``), the retry ``asyncio.sleep`` and
 ``ActivityLogService.log`` are stubbed, so the template rendering and the
 subject/recipient/From wiring of every sender are exercised for real. Nothing
 leaves the process.
@@ -38,37 +38,33 @@ from app.core.config import settings
 class SentBox:
     """Captures everything a sender would otherwise push to the outside world."""
     def __init__(self):
-        self.messages = []      # [{"to", "subject", "msg"}]
+        self.messages = []      # [{"to", "subject", "payload"}]
         self.activities = []    # ActivityLogService.log kwargs
         self.attempts = 0       # transport calls that reported failure
-        self.fail = False       # _send_email_sync reports failure (delivery fails)
-        self.permanent = False  # ...and reports it as non-retryable (auth/rejected)
-        self.raise_exc = False  # _send_email_sync raises (transport error)
+        self.fail = False       # _deliver reports failure (delivery fails)
+        self.permanent = False  # ...and reports it as non-retryable (bad key/domain)
+        self.raise_exc = False  # _deliver raises (transport error)
         self.service = None
 
     def last_html(self):
-        msg = self.messages[-1]["msg"]
-        for part in msg.walk():
-            if part.get_content_type() == "text/html":
-                return part.get_payload(decode=True).decode()
-        return ""
+        return self.messages[-1]["payload"].get("html", "")
 
 
 @pytest.fixture()
 def mail(monkeypatch):
     box = SentBox()
 
-    def _fake_send_sync(self, msg, to_email, subject):
+    async def _fake_deliver(self, payload, to_email, subject):
         # Mirrors the real transport contract: (success, error, is_permanent)
         if box.raise_exc:
-            raise RuntimeError("smtp boom")
+            raise RuntimeError("resend boom")
         if box.fail:
             box.attempts += 1
-            return False, "SMTPException: refused", box.permanent
-        box.messages.append({"to": to_email, "subject": subject, "msg": msg})
+            return False, "HTTP 500: upstream error", box.permanent
+        box.messages.append({"to": to_email, "subject": subject, "payload": payload})
         return True, None, False
 
-    monkeypatch.setattr(EmailService, "_send_email_sync", _fake_send_sync)
+    monkeypatch.setattr(EmailService, "_deliver", _fake_deliver)
 
     # Don't actually wait between retries.
     async def _no_sleep(*a, **k):
@@ -111,7 +107,8 @@ def test_vendor_approval_happy(mail):
     sent = mail.messages[0]
     assert sent["to"] == "owner@example.com"
     assert "Glow Salon" in sent["subject"]
-    assert sent["msg"]["From"] == EXPECTED_FROM
+    assert sent["payload"]["from"] == EXPECTED_FROM
+    assert sent["payload"]["to"] == ["owner@example.com"]
     # Registration link (built from VENDOR_PORTAL_URL + token) made it into the body.
     assert "tok123" in mail.last_html()
     # Activity logged for the admin dashboard.
@@ -258,7 +255,7 @@ def test_delivery_failure_returns_false_and_logs_email_failed(mail):
     assert mail.activities[-1]["action"] == "email_failed"
     assert mail.activities[-1]["details"]["email_type"] == "vendor_approval"
     assert mail.activities[-1]["entity_id"] == "salon-1"
-    assert "refused" in mail.activities[-1]["details"]["error"]
+    assert "HTTP 500" in mail.activities[-1]["details"]["error"]
     assert mail.attempts == 4         # 1 initial + 3 retries
 
 

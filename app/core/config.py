@@ -112,18 +112,20 @@ class Settings(BaseSettings):
     # =====================================================
     # EMAIL CONFIGURATION
     # =====================================================
+    # Sender identity. EMAIL_FROM must sit on a domain verified in Resend,
+    # otherwise every send is rejected with a 422.
     EMAIL_FROM: str
     EMAIL_FROM_NAME: str
+    # Where admin-facing notifications (career applications, new vendor join
+    # requests, partner leads) are delivered.
     ADMIN_EMAIL: str
-    
-    # SMTP Settings
-    SMTP_HOST: str
-    SMTP_PORT: int
-    SMTP_USER: str
-    SMTP_PASSWORD: str
-    SMTP_TLS: bool
-    SMTP_SSL: bool
-    
+
+    # Resend (https://resend.com) is the only transport. Optional so the app
+    # still boots without it — sends then no-op with a warning instead of
+    # crashing at import, which keeps local dev usable without a real key.
+    RESEND_API_KEY: str = ""
+
+
     # =====================================================
     # FRONTEND URLS
     # =====================================================

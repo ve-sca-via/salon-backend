@@ -84,6 +84,9 @@ def log_startup_info():
         supabase_host = "(redacted)"
     
     logger.info(f"Supabase configured: {bool(settings.SUPABASE_URL)} (host={supabase_host})")
-    logger.info(f"Email SMTP: {settings.SMTP_HOST}:{settings.SMTP_PORT}")
+    logger.info(
+        f"Email (Resend): key={'configured' if settings.RESEND_API_KEY else 'MISSING - sends disabled'}, "
+        f"from={settings.EMAIL_FROM}, admin={settings.ADMIN_EMAIL}"
+    )
     logger.info("Auth endpoints have stricter limits (5 login, 3 signup, 3 password reset)")
     logger.info("=" * 60)

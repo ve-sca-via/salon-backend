@@ -82,8 +82,8 @@ async def approve_vendor_request(
     - Updates RM score
     - Queues the vendor registration email and RM notification
 
-    Emails are sent *after* the response so that a slow or broken SMTP host can no
-    longer hold the request open past the admin panel's timeout (which made a
+    Emails are sent *after* the response so that a slow or failing email provider
+    can no longer hold the request open past the admin panel's timeout (which made a
     successful approval look like a failure). Delivery failures are recorded as
     `email_failed` activity and can be retried via `/resend-approval-email`.
     """
@@ -151,7 +151,7 @@ async def resend_approval_email(
     """
     Re-send the registration-link email for an already approved vendor request.
 
-    Unlike `/approve`, this waits for the SMTP result and reports the real error,
+    Unlike `/approve`, this waits for the Resend result and reports the real error,
     so it doubles as the way to diagnose "the vendor never got the email".
     """
     salon_response = db.table("salons").select("id, business_name, email").eq(
@@ -184,7 +184,7 @@ async def resend_approval_email(
             detail=(
                 "Could not send the approval email: "
                 + ("; ".join(result["errors"]) if result["errors"]
-                   else "the mail server rejected or dropped the message. Check the server logs for the SMTP error.")
+                   else "Resend rejected or dropped the message. Check the server logs and the Resend dashboard.")
             )
         )
 

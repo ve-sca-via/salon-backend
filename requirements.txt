@@ -12,11 +12,12 @@ psycopg2-binary==2.9.9
 geopy==2.4.0
 
 # Email
-resend==0.7.0
-emails==0.6
+# Resend is called over its plain HTTP API via httpx (below) rather than the
+# `resend` SDK: the SDK is sync-only and would put blocking I/O back into the
+# request path. jinja2 renders the HTML templates.
 jinja2==3.1.2
 
-# HTTP client
+# HTTP client (also the Resend transport)
 httpx==0.24.1
 
 # Environment variables
