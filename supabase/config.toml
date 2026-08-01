@@ -189,15 +189,27 @@ otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
+# Supabase Auth sends its own emails (signup confirmation, password reset, magic
+# link) — these do NOT go through the backend's EmailService, so RESEND_API_KEY in
+# the API env has no effect on them. Auth mail must be pointed at Resend's SMTP
+# relay separately.
+#
+# STAGING/PRODUCTION are configured in the Supabase Dashboard, not this file:
+#   Project Settings -> Authentication -> SMTP Settings -> Enable custom SMTP
+#     Host: smtp.resend.com   Port: 465   Username: resend
+#     Password: <your Resend API key>
+#     Sender email: must be on the domain verified in Resend
+#   Then raise Rate Limits -> "Emails per hour" (default 2/hour on built-in SMTP).
+#
+# Local dev keeps using Mailpit (inbucket, port 54324) — leave this commented.
 # [auth.email.smtp]
 # enabled = true
-# host = "smtp.sendgrid.net"
-# port = 587
-# user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
-# sender_name = "Admin"
+# host = "smtp.resend.com"
+# port = 465
+# user = "resend"
+# pass = "env(RESEND_API_KEY)"
+# admin_email = "noreply@lubist.in"
+# sender_name = "Lubist"
 
 # Customize email templates for branding
 [auth.email.template.confirmation]

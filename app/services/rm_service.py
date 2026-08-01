@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
 from app.services.activity_log_service import ActivityLogService
+from app.services.email import email_service
 from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
@@ -428,8 +429,8 @@ class RMService:
         """
         try:
             # Verify RM exists and is active (check profiles table for is_active)
-            rm_response = self.db.table("rm_profiles").select("id, profiles(is_active)").eq("id", rm_id).execute()
-            
+            rm_response = self.db.table("rm_profiles").select("id, profiles(is_active, full_name)").eq("id", rm_id).execute()
+
             if not rm_response.data or len(rm_response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -482,9 +483,28 @@ class RMService:
                 )
             except Exception as log_error:
                 logger.error(f"Failed to log activity: {log_error}")
-            
+
+            # Alert admin that a request is waiting for approval. Drafts aren't
+            # submitted yet, so they don't notify. Best-effort: a failed email
+            # must never fail the submission itself.
+            if not is_draft:
+                try:
+                    rm_name = (rm_response.data[0].get("profiles") or {}).get("full_name") or "An RM"
+                    await email_service.send_new_vendor_request_notification_to_admin(
+                        business_name=request_data.business_name,
+                        business_type=str(request_data.business_type),
+                        owner_name=request_data.owner_name,
+                        owner_email=request_data.owner_email,
+                        owner_phone=request_data.owner_phone,
+                        city=request_data.city,
+                        rm_name=rm_name,
+                        request_id=response.data[0]["id"],
+                    )
+                except Exception as email_error:
+                    logger.error(f"Failed to notify admin of vendor request: {email_error}")
+
             return response.data[0]
-        
+
         except HTTPException:
             raise
         except Exception as e:
