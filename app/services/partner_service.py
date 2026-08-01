@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 
 from app.schemas.request.partner import PartnerRequestStatusUpdate
 from app.services.activity_log_service import ActivityLogger
+from app.services.email import email_service
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,21 @@ class PartnerService:
                 )
             except Exception as e:
                 logger.warning(f"Failed to log partner request activity: {str(e)}")
+
+            # Alert admin so a lead doesn't sit unnoticed in the panel.
+            # Best-effort: the submitter still gets a success response either way.
+            try:
+                await email_service.send_new_partner_request_notification_to_admin(
+                    owner_name=data["owner_name"],
+                    shop_name=data["shop_name"],
+                    shop_type=data["shop_type"],
+                    email=data["email"],
+                    phone=data["phone"],
+                    location=data["location"],
+                    request_id=request_id,
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin of partner request: {str(e)}")
 
             return {
                 "id": request_id,

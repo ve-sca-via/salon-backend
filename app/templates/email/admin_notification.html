@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body {
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            color: #555555;
+            margin: 0;
+            padding: 0;
+            background-color: #F5F8FE;
+        }
+        .container {
+            max-width: 700px;
+            margin: 40px auto;
+            background: #FFFFFF;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: #000000;
+            padding: 30px;
+            text-align: center;
+            color: #FFFFFF;
+        }
+        .header h1 {
+            font-family: 'Marcellus', serif;
+            margin: 0;
+            font-size: 24px;
+            font-weight: normal;
+        }
+        .alert-badge {
+            display: inline-block;
+            background: #F89C02;
+            color: #FFFFFF;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .content h2 {
+            font-family: 'Marcellus', serif;
+            color: #000000;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .details {
+            background: linear-gradient(180deg, #F5F8FE 0%, #CEE0F6 100%);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 24px 0;
+        }
+        .info-row {
+            padding: 10px 0;
+            border-bottom: 1px solid #E6E6E6;
+        }
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        .info-label {
+            font-weight: 600;
+            color: #000000;
+            display: inline-block;
+            min-width: 180px;
+        }
+        .info-value {
+            color: #555555;
+        }
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #F89C02 0%, #FFB84D 100%);
+            color: #FFFFFF !important;
+            text-decoration: none;
+            padding: 14px 32px;
+            border-radius: 6px;
+            margin: 24px 0;
+            font-weight: 600;
+            text-align: center;
+        }
+        .footer {
+            background: #F5F8FE;
+            padding: 24px 30px;
+            text-align: center;
+            font-size: 13px;
+            color: #B0B0B0;
+        }
+        .urgent {
+            background: #FFF3CD;
+            border-left: 4px solid #F89C02;
+            padding: 16px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="alert-badge">{{ badge }}</div>
+            <h1>{{ title }}</h1>
+        </div>
+
+        <div class="content">
+            <h2>{{ heading }}</h2>
+
+            <p>{{ intro }}</p>
+
+            <div class="details">
+                {% for label, value in rows %}
+                <div class="info-row">
+                    <span class="info-label">{{ label }}</span>
+                    <span class="info-value">{{ value }}</span>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% if action_note %}
+            <div class="urgent">
+                <strong>&#9888; Action Required:</strong> {{ action_note }}
+            </div>
+            {% endif %}
+
+            {% if cta_url %}
+            <center>
+                <a href="{{ cta_url }}" class="cta-button">{{ cta_label }} &rarr;</a>
+            </center>
+            {% endif %}
+
+            <p style="margin-top: 32px; font-size: 14px; color: #B0B0B0;">
+                This is an automated notification from Lubist.
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>&copy; {{ current_year }} Lubist - Admin Notification</p>
+        </div>
+    </div>
+</body>
+</html>

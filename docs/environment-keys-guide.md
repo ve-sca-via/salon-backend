@@ -50,18 +50,25 @@ Source of truth for loading env vars: `app/core/config.py` (Pydantic `Settings`)
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token lifetime in minutes. | `app/core/auth.py` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token lifetime in days. | `app/core/auth.py` |
 
-## 5) Email / SMTP
+## 5) Email (Resend)
 
 | Key | Meaning | Used in |
 |---|---|---|
-| `EMAIL_FROM` | Sender email address used in outgoing emails. | `app/services/email.py` |
+| `RESEND_API_KEY` | Resend API key. Blank disables sending (app still boots, logs a warning). | `app/services/email.py` |
+| `EMAIL_FROM` | Sender address. **Must be on a domain verified in Resend**, or every send fails with HTTP 422. | `app/services/email.py` |
 | `EMAIL_FROM_NAME` | Sender display name. | `app/services/email.py` |
-| `SMTP_HOST` | SMTP server host. | `app/services/email.py`, `main.py` (health/logging) |
-| `SMTP_PORT` | SMTP server port. | `app/services/email.py`, `main.py` (health/logging) |
-| `SMTP_USER` | SMTP username. | `app/services/email.py` |
-| `SMTP_PASSWORD` | SMTP password/app password. | `app/services/email.py` |
-| `SMTP_TLS` | Enable STARTTLS mode. | `app/services/email.py` |
-| `SMTP_SSL` | Use SSL SMTP mode. | `app/services/email.py` |
+| `ADMIN_EMAIL` | Inbox for admin notifications (career applications, new vendor join requests, partner leads). | `app/services/email.py` |
+
+> The `SMTP_*` keys are **removed**. Leaving them set in a deployment is harmless
+> (extra env vars are ignored), but they no longer do anything.
+
+**Supabase Auth emails are a separate channel.** Signup confirmation, password
+reset and magic-link mails are sent by Supabase, not by this backend, so
+`RESEND_API_KEY` does not affect them. Point them at Resend in the Supabase
+Dashboard → Project Settings → Authentication → SMTP Settings:
+`smtp.resend.com` : `465`, user `resend`, password = the same Resend API key.
+Do this per project (staging and production separately), and raise the
+"Emails per hour" rate limit — the built-in Supabase SMTP caps at 2/hour.
 
 ## 6) Frontend URLs
 
@@ -107,4 +114,4 @@ Source of truth for loading env vars: `app/core/config.py` (Pydantic `Settings`)
 
 - **All keys are REQUIRED.** No defaults are provided—the application will not start without every key explicitly set in `.env`.
 - All keys are loaded from environment through `Settings` in `app/core/config.py`.
-- Keep secrets (`JWT_SECRET_KEY`, SMTP password, Supabase keys, Cloudinary secret, Razorpay keys, MessageCentral credentials) out of git and only in real `.env`/deployment secret manager.
+- Keep secrets (`JWT_SECRET_KEY`, `RESEND_API_KEY`, Supabase keys, Cloudinary secret, Razorpay keys, MessageCentral credentials) out of git and only in real `.env`/deployment secret manager.

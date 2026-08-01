@@ -6,9 +6,9 @@ as a side effect by booking/vendor/career/payment flows. So these tests drive
 ``EmailService`` directly:
 
     EmailService.send_*  ->  real Jinja2 template render  ->  _send_email (retry)
-                          ->  _send_email_sync (SMTP, FAKED)  ->  ActivityLog (FAKED)
+                          ->  _deliver (Resend API, FAKED)  ->  ActivityLog (FAKED)
 
-Only the SMTP transport (``_send_email_sync``), the retry ``asyncio.sleep`` and
+Only the Resend transport (``_deliver``), the retry ``asyncio.sleep`` and
 ``ActivityLogService.log`` are stubbed, so the template rendering and the
 subject/recipient/From wiring of every sender are exercised for real. Nothing
 leaves the process.
@@ -38,33 +38,33 @@ from app.core.config import settings
 class SentBox:
     """Captures everything a sender would otherwise push to the outside world."""
     def __init__(self):
-        self.messages = []      # [{"to", "subject", "msg"}]
+        self.messages = []      # [{"to", "subject", "payload"}]
         self.activities = []    # ActivityLogService.log kwargs
-        self.fail = False       # _send_email_sync returns False (delivery fails)
-        self.raise_exc = False  # _send_email_sync raises (transport error)
+        self.attempts = 0       # transport calls that reported failure
+        self.fail = False       # _deliver reports failure (delivery fails)
+        self.permanent = False  # ...and reports it as non-retryable (bad key/domain)
+        self.raise_exc = False  # _deliver raises (transport error)
         self.service = None
 
     def last_html(self):
-        msg = self.messages[-1]["msg"]
-        for part in msg.walk():
-            if part.get_content_type() == "text/html":
-                return part.get_payload(decode=True).decode()
-        return ""
+        return self.messages[-1]["payload"].get("html", "")
 
 
 @pytest.fixture()
 def mail(monkeypatch):
     box = SentBox()
 
-    def _fake_send_sync(self, msg, to_email, subject):
+    async def _fake_deliver(self, payload, to_email, subject):
+        # Mirrors the real transport contract: (success, error, is_permanent)
         if box.raise_exc:
-            raise RuntimeError("smtp boom")
+            raise RuntimeError("resend boom")
         if box.fail:
-            return False
-        box.messages.append({"to": to_email, "subject": subject, "msg": msg})
-        return True
+            box.attempts += 1
+            return False, "HTTP 500: upstream error", box.permanent
+        box.messages.append({"to": to_email, "subject": subject, "payload": payload})
+        return True, None, False
 
-    monkeypatch.setattr(EmailService, "_send_email_sync", _fake_send_sync)
+    monkeypatch.setattr(EmailService, "_deliver", _fake_deliver)
 
     # Don't actually wait between retries.
     async def _no_sleep(*a, **k):
@@ -107,7 +107,8 @@ def test_vendor_approval_happy(mail):
     sent = mail.messages[0]
     assert sent["to"] == "owner@example.com"
     assert "Glow Salon" in sent["subject"]
-    assert sent["msg"]["From"] == EXPECTED_FROM
+    assert sent["payload"]["from"] == EXPECTED_FROM
+    assert sent["payload"]["to"] == ["owner@example.com"]
     # Registration link (built from VENDOR_PORTAL_URL + token) made it into the body.
     assert "tok123" in mail.last_html()
     # Activity logged for the admin dashboard.
@@ -242,7 +243,7 @@ def test_review_request_happy(mail):
 # =====================================================================
 # Error cases
 # =====================================================================
-def test_delivery_failure_returns_false_and_logs_no_activity(mail):
+def test_delivery_failure_returns_false_and_logs_email_failed(mail):
     mail.fail = True
     ok = run(mail.service.send_vendor_approval_email(
         to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
@@ -250,7 +251,26 @@ def test_delivery_failure_returns_false_and_logs_no_activity(mail):
     ))
     assert ok is False
     assert mail.messages == []        # nothing captured as "sent"
-    assert mail.activities == []      # success-only activity log never fired
+    # Silent loss is the bug being fixed: a failed send must leave a trail.
+    assert mail.activities[-1]["action"] == "email_failed"
+    assert mail.activities[-1]["details"]["email_type"] == "vendor_approval"
+    assert mail.activities[-1]["entity_id"] == "salon-1"
+    assert "HTTP 500" in mail.activities[-1]["details"]["error"]
+    assert mail.attempts == 4         # 1 initial + 3 retries
+
+
+def test_permanent_failure_is_not_retried(mail):
+    # Bad credentials / rejected address fail identically every time — retrying
+    # only keeps the caller's request open longer.
+    mail.fail = True
+    mail.permanent = True
+    ok = run(mail.service.send_vendor_approval_email(
+        to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
+        registration_token="tok", registration_fee=1.0, salon_id="salon-1",
+    ))
+    assert ok is False
+    assert mail.attempts == 1
+    assert mail.activities[-1]["action"] == "email_failed"
 
 
 def test_transport_exception_returns_false(mail):
@@ -262,7 +282,7 @@ def test_transport_exception_returns_false(mail):
         booking_id="bk-1",
     ))
     assert ok is False
-    assert mail.activities == []
+    assert mail.activities[-1]["action"] == "email_failed"
 
 
 def test_template_render_error_is_caught(mail, monkeypatch):

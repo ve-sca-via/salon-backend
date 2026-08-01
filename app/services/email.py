@@ -1,12 +1,10 @@
 """
 Email Service
-Handles sending emails using SMTP with HTML templates
+Handles sending emails through the Resend HTTP API with HTML templates.
 """
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from urllib.parse import urlsplit
+import httpx
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.services.activity_log_service import ActivityLogService
@@ -15,6 +13,20 @@ import asyncio
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================
+# RESEND TRANSPORT
+# =====================================================
+RESEND_API_URL = "https://api.resend.com/emails"
+
+# Bound every send so a stalled connection can't hang the calling request.
+RESEND_TIMEOUT_SECONDS = 15
+
+# Statuses that will never succeed on retry: bad API key (401/403), or a payload
+# Resend refuses outright (422 — almost always an unverified `from` domain, 400 —
+# malformed body). Retrying these just burns time and request quota.
+PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 422})
 
 
 # =====================================================
@@ -73,7 +85,7 @@ class EmailService:
         related_entity_id: Optional[str] = None
     ) -> bool:
         """
-        Send email via SMTP with retry logic (async)
+        Send email via the Resend API with retry logic (async)
 
         Args:
             to_email: Recipient email address
@@ -90,132 +102,165 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
-            # Create message
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>"
-            msg['To'] = to_email
-            
-            # Add text body if provided
+            payload = {
+                "from": f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+            }
             if text_body:
-                text_part = MIMEText(text_body, 'plain')
-                msg.attach(text_part)
-            
-            # Add HTML body
-            html_part = MIMEText(html_body, 'html')
-            msg.attach(html_part)
-            
+                payload["text"] = text_body
+
             # Send email with retry logic
+            last_error = "unknown error"
             for attempt in range(max_retries + 1):
-                try:
-                    success = await asyncio.to_thread(self._send_email_sync, msg, to_email, subject)
-                    if success:
-                        # Log activity for admin dashboard
-                        try:
-                            await ActivityLogService.log(
-                                user_id=None,  # System action
-                                action="email_sent",
-                                entity_type=related_entity_type,
-                                entity_id=related_entity_id,
-                                details={
-                                    "email_type": email_type,
-                                    "recipient": to_email,
-                                    "subject": subject
-                                }
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to log email activity: {e}")
-                        
-                        return True
-                    
-                    # If this wasn't the last attempt, wait before retrying
-                    if attempt < max_retries:
-                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"Email send failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.1f}s...")
-                        await asyncio.sleep(delay)
-                        
-                except Exception as e:
-                    logger.error(f"Email send error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
-                    
-                    # If this wasn't the last attempt, wait before retrying
-                    if attempt < max_retries:
-                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"Retrying email send in {delay:.1f}s...")
-                        await asyncio.sleep(delay)
-            
-            # All retries exhausted
-            logger.error(f"Failed to send email to {to_email} after {max_retries + 1} attempts")
+                success, error, permanent = await self._deliver(payload, to_email, subject)
+
+                if success:
+                    # Log activity for admin dashboard
+                    try:
+                        await ActivityLogService.log(
+                            user_id=None,  # System action
+                            action="email_sent",
+                            entity_type=related_entity_type,
+                            entity_id=related_entity_id,
+                            details={
+                                "email_type": email_type,
+                                "recipient": to_email,
+                                "subject": subject
+                            }
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to log email activity: {e}")
+
+                    return True
+
+                last_error = error or "unknown error"
+
+                # Bad credentials / rejected address will fail identically on every
+                # retry — give up now so the caller isn't blocked for another ~7s.
+                if permanent:
+                    logger.error(
+                        f"Email to {to_email} ({email_type}) rejected permanently, not retrying: {last_error}"
+                    )
+                    break
+
+                # If this wasn't the last attempt, wait before retrying
+                if attempt < max_retries:
+                    delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Email send failed (attempt {attempt + 1}/{max_retries + 1}): {last_error}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+
+            # All retries exhausted (or a permanent failure short-circuited them)
+            logger.error(
+                f"Failed to send '{email_type}' email to {to_email}: {last_error}"
+            )
+            await self._log_email_failure(
+                to_email, subject, email_type, last_error, related_entity_type, related_entity_id
+            )
             return False
 
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            logger.error(f"Failed to send email to {to_email}: {type(e).__name__}: {str(e)}", exc_info=True)
+            await self._log_email_failure(
+                to_email, subject, email_type, f"{type(e).__name__}: {e}",
+                related_entity_type, related_entity_id
+            )
             return False
-    
-    def _send_email_sync(self, msg, to_email: str, subject: str) -> bool:
+
+    @staticmethod
+    async def _log_email_failure(
+        to_email: str,
+        subject: str,
+        email_type: str,
+        error: str,
+        related_entity_type: Optional[str],
+        related_entity_id: Optional[str]
+    ) -> None:
         """
-        Synchronous email sending (called from thread pool)
-        
-        ⚠️ TODO: BLOCKING I/O IN ASYNC CONTEXT - Fix when traffic grows
-        
-        CURRENT ISSUE:
-        - Using smtplib (synchronous) with asyncio.to_thread() causes blocking I/O
-        - Each email blocks a thread pool worker for 1-5 seconds
-        - Default thread pool = 32 threads max
-        - 100 concurrent emails = 68 emails queued and waiting
-        
-        WHY IT'S OK FOR NOW:
-        - Low traffic (<10 emails/minute) works fine with current approach
-        - Thread pool sufficient for current load
-        
-        WHEN TO FIX:
-        - Traffic exceeds 50+ emails/minute
-        - Noticeable email delivery delays
-        - Thread pool exhaustion warnings in logs
-        
-        HOW TO FIX:
-        1. Migrate to aiosmtplib for true async email:
-           async def _send_email_async(self, msg, to_email):
-               async with aiosmtplib.SMTP(hostname=settings.SMTP_HOST, port=settings.SMTP_PORT) as smtp:
-                   await smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                   await smtp.send_message(msg)
-        
-        2. Or implement Celery/Redis task queue for production scalability
-        
-        RESOURCES:
-        - aiosmtplib docs: https://aiosmtplib.readthedocs.io/
-        - Current blocking location: Lines 186-192 (SMTP connection & send)
+        Record a failed send in activity_logs so silent email loss is visible on the
+        admin dashboard instead of only in server logs.
         """
-        server = None
         try:
-            # Send email
-            if settings.SMTP_SSL:
-                server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT)
-            else:
-                server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT)
-                if settings.SMTP_TLS:
-                    server.starttls()
-            
-            # Only login if credentials are provided (Mailpit doesn't need auth)
-            if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            
-            server.send_message(msg)
-            
-            logger.info(f"Email sent successfully to {to_email}: {subject}")
-            return True
-            
+            await ActivityLogService.log(
+                user_id=None,  # System action
+                action="email_failed",
+                entity_type=related_entity_type,
+                entity_id=related_entity_id,
+                details={
+                    "email_type": email_type,
+                    "recipient": to_email,
+                    "subject": subject,
+                    "error": error[:500]
+                }
+            )
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            return False
-            
-        finally:
-            # Always close connection to prevent memory leaks
-            if server:
+            logger.error(f"Failed to log email failure activity: {e}")
+
+    async def _deliver(self, payload: dict, to_email: str, subject: str) -> tuple:
+        """
+        Hand a single message to the Resend API.
+
+        Returns:
+            (success, error_message, is_permanent) - is_permanent means retrying
+            the same message will fail the same way (bad API key / unverified
+            sender domain), so the caller should stop rather than back off.
+        """
+        if not settings.RESEND_API_KEY:
+            # No key configured (typical for local dev). Don't pretend it was
+            # delivered — say so loudly and surface the recipient/subject so the
+            # flow can still be followed from the logs.
+            logger.warning(
+                f"RESEND_API_KEY is not set — email NOT sent to {to_email}: {subject}"
+            )
+            return False, "RESEND_API_KEY is not configured", True
+
+        try:
+            async with httpx.AsyncClient(timeout=RESEND_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    RESEND_API_URL,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.is_success:
+                # Resend returns the message id; log it so a delivery can be
+                # traced in the Resend dashboard from our logs alone.
                 try:
-                    server.quit()
-                except Exception as e:
-                    logger.warning(f"Error closing SMTP connection: {str(e)}")
-    
+                    message_id = response.json().get("id", "unknown")
+                except Exception:
+                    message_id = "unknown"
+                logger.info(
+                    f"Email sent successfully to {to_email}: {subject} (resend_id={message_id})"
+                )
+                return True, None, False
+
+            # Resend puts a human-readable cause in the body — keep it, it's the
+            # difference between "bad key" and "domain not verified".
+            error = f"HTTP {response.status_code}: {response.text[:300]}"
+            permanent = response.status_code in PERMANENT_STATUS_CODES
+
+            log = logger.error if permanent else logger.warning
+            log(
+                f"Resend rejected email to {to_email} "
+                f"(from '{payload.get('from')}'): {error}"
+            )
+            return False, error, permanent
+
+        except Exception as e:
+            # Network/timeout — worth retrying.
+            logger.error(
+                f"Failed to reach Resend while sending to {to_email}: {type(e).__name__}: {e}"
+            )
+            return False, f"{type(e).__name__}: {e}", False
+
+
     async def send_vendor_approval_email(
         self,
         to_email: str,
@@ -692,7 +737,132 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send career application admin notification: {str(e)}")
             return False
-    
+
+    async def _send_admin_notification(
+        self,
+        *,
+        badge: str,
+        title: str,
+        heading: str,
+        intro: str,
+        rows: list,
+        action_note: str,
+        cta_url: str,
+        cta_label: str,
+        subject: str,
+        email_type: str,
+        related_entity_type: str,
+        related_entity_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Render and send an admin alert via the shared admin_notification template.
+
+        Every admin-facing notification goes to settings.ADMIN_EMAIL — the single
+        inbox the admin panel operators watch.
+        """
+        try:
+            from datetime import datetime
+
+            template = self.env.get_template('admin_notification.html')
+            html_body = template.render(
+                badge=badge,
+                title=title,
+                heading=heading,
+                intro=intro,
+                rows=rows,
+                action_note=action_note,
+                cta_url=cta_url,
+                cta_label=cta_label,
+                current_year=datetime.now().year,
+            )
+
+            return await self._send_email(
+                settings.ADMIN_EMAIL,
+                subject,
+                html_body,
+                email_type=email_type,
+                related_entity_type=related_entity_type,
+                related_entity_id=related_entity_id,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to send admin '{email_type}' notification: {str(e)}")
+            return False
+
+    async def send_new_vendor_request_notification_to_admin(
+        self,
+        business_name: str,
+        business_type: str,
+        owner_name: str,
+        owner_email: str,
+        owner_phone: str,
+        city: str,
+        rm_name: str,
+        request_id: str,
+    ) -> bool:
+        """Alert admin that an RM submitted a new salon for approval."""
+        return await self._send_admin_notification(
+            badge="New Request",
+            title="New Vendor Join Request",
+            heading=f"{business_name} is awaiting approval",
+            intro=(
+                f"{rm_name} has submitted a new business for approval. "
+                f"It is now pending review in the admin panel."
+            ),
+            rows=[
+                ("Business Name", business_name),
+                ("Business Type", business_type),
+                ("Owner Name", owner_name),
+                ("Owner Email", owner_email),
+                ("Owner Phone", owner_phone),
+                ("City", city),
+                ("Submitted By (RM)", rm_name),
+            ],
+            action_note="Review this request and approve or reject it in the admin panel.",
+            cta_url=f"{settings.ADMIN_PANEL_URL}/pending-salons",
+            cta_label="Review Request",
+            subject=f"New Vendor Request - {business_name} ({city})",
+            email_type="vendor_request_admin",
+            related_entity_type="vendor_request",
+            related_entity_id=request_id,
+        )
+
+    async def send_new_partner_request_notification_to_admin(
+        self,
+        owner_name: str,
+        shop_name: str,
+        shop_type: str,
+        email: str,
+        phone: str,
+        location: str,
+        request_id: str,
+    ) -> bool:
+        """Alert admin that someone submitted the public 'Partner with us' form."""
+        return await self._send_admin_notification(
+            badge="New Lead",
+            title="New Partner Request",
+            heading=f"{shop_name} wants to partner with Lubist",
+            intro=(
+                "A new partner enquiry has been submitted through the public "
+                "'Partner with us' form."
+            ),
+            rows=[
+                ("Owner Name", owner_name),
+                ("Shop Name", shop_name),
+                ("Shop Type", shop_type),
+                ("Email", email),
+                ("Phone", phone),
+                ("Location", location),
+            ],
+            action_note="Follow up with this lead and update its status in the admin panel.",
+            cta_url=f"{settings.ADMIN_PANEL_URL}/partner-requests",
+            cta_label="View Lead",
+            subject=f"New Partner Request - {shop_name} ({location})",
+            email_type="partner_request_admin",
+            related_entity_type="partner_request",
+            related_entity_id=request_id,
+        )
+
     async def send_booking_confirmation_to_customer(
         self,
         customer_email: str,

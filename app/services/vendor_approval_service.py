@@ -22,12 +22,23 @@ class ApprovalResult:
     salon_id: Optional[str] = None
     salon_name: Optional[str] = None
     rm_score_awarded: Optional[int] = None
+    rm_new_score: Optional[int] = None
     error: Optional[str] = None
+    # Machine-readable reason so the API can map to 404/409 instead of a blanket 500
+    error_code: Optional[str] = None
     warnings: List[str] = None
-    
+
     def __post_init__(self):
         if self.warnings is None:
             self.warnings = []
+
+
+class RequestNotFoundError(ValueError):
+    """Vendor join request does not exist"""
+
+
+class RequestAlreadyReviewedError(ValueError):
+    """Vendor join request has already been approved or rejected"""
 
 
 class VendorApprovalService:
@@ -45,7 +56,7 @@ class VendorApprovalService:
         """Raise ValueError if the vendor request is not in 'pending' state."""
         current_status = request_data.get("status")
         if current_status != "pending":
-            raise ValueError(f"Request already {current_status}")
+            raise RequestAlreadyReviewedError(f"Request already {current_status}")
 
     async def approve_vendor_request(
         self,
@@ -54,80 +65,158 @@ class VendorApprovalService:
         admin_id: Optional[str] = None
     ) -> ApprovalResult:
         """
-        Approve vendor join request - creates salon, updates RM score, sends email.
-        
+        Approve vendor join request - claims the request, creates the salon and
+        updates the RM score.
+
+        Emails are NOT sent here: notification delivery is slow and unreliable
+        compared to the database work, and used to keep the admin's HTTP request
+        open long enough to time out (leaving the UI showing a failure for an
+        approval that had actually succeeded). Callers should schedule
+        ``send_approval_notifications`` as a background task afterwards.
+
         Args:
             request_id: Vendor join request ID
             admin_notes: Optional notes from admin
             admin_id: ID of the admin who approved the request
-            
+
         Returns:
             ApprovalResult with success status and salon details
         """
         logger.info(f"Starting approval for request: {request_id}")
-        
+
         # Step 1: Get and validate request
         try:
             request_data = await self._get_vendor_request(request_id)
-        except ValueError as e:
-            return ApprovalResult(success=False, error=str(e))
-        
+        except RequestNotFoundError as e:
+            return ApprovalResult(success=False, error=str(e), error_code="not_found")
+        except RequestAlreadyReviewedError as e:
+            return ApprovalResult(success=False, error=str(e), error_code="already_reviewed")
+
         # Step 2: Get system config (RM score, registration fee)
         config = await self._get_approval_config()
-        
+
         warnings = []
-        
-        # Step 3: Update request status
+
+        # Step 3: Claim the request (atomic pending -> approved). Doing this first
+        # means a double-clicked Approve button can't create two salons; the second
+        # call finds no pending row and stops here.
         try:
-            await self._update_request_status(request_id, admin_notes, admin_id)
+            claimed = await self._claim_request(request_id, admin_notes, admin_id)
         except Exception as e:
             return ApprovalResult(success=False, error=f"Failed to update request: {str(e)}")
-        
+
+        if not claimed:
+            return ApprovalResult(
+                success=False,
+                error="Request has already been reviewed",
+                error_code="already_reviewed"
+            )
+
         # Step 4: Geocode address if needed
         coordinates = await self._geocode_salon_address(request_data)
         if coordinates['latitude'] == 0.0:
             warnings.append("Geocoding failed - coordinates set to 0.0")
-        
-        # Step 5: Create salon
+
+        # Step 5: Create salon. If this fails the request must go back to pending,
+        # otherwise it is stuck as "approved" with no salon and no way to retry.
         try:
             salon_id = await self._create_salon(request_id, request_data, coordinates, config)
         except Exception as e:
             logger.error(f"Failed to create salon: {str(e)}")
+            await self._release_request(request_id)
             return ApprovalResult(success=False, error=str(e))
-        
+
         # Services are no longer created at approval time — vendors add their own
         # services (category / subcategory / sub-subcategory) after onboarding.
 
-        # Step 7: Update RM score and get new total
+        # Step 6: Update RM score and get new total
         rm_new_score = None
         try:
             rm_new_score = await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)
         except Exception as e:
             warnings.append(f"Failed to update RM score: {str(e)}")
-        
-        # Step 8: Get RM details for email notifications
+
+        logger.info(f"Vendor request {request_id} approved. Salon: {salon_id}")
+
+        return ApprovalResult(
+            success=True,
+            salon_id=salon_id,
+            salon_name=request_data.business_name,
+            rm_score_awarded=config['rm_score'],
+            rm_new_score=rm_new_score,
+            warnings=warnings if warnings else None
+        )
+
+    async def send_approval_notifications(
+        self,
+        request_id: str,
+        salon_id: str,
+        rm_new_score: Optional[int] = None,
+        vendor_only: bool = False,
+        force_vendor_email: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Send the vendor registration email and the RM notification for an already
+        approved request.
+
+        Re-reads the request so it is safe to run detached from the approval call
+        (background task) and safe to re-run from the admin "resend" action.
+
+        Args:
+            request_id: Vendor join request ID
+            salon_id: Salon created for this request
+            rm_new_score: RM total after approval (falls back to their current score)
+            vendor_only: Skip the RM notification (used by the admin resend action)
+            force_vendor_email: Send to the owner even when they are also the RM
+
+        Returns:
+            Dict with per-recipient delivery status and any errors.
+        """
+        result: Dict[str, Any] = {
+            "vendor_email_sent": False,
+            "rm_email_sent": False,
+            "errors": []
+        }
+
+        try:
+            request_data = await self._get_vendor_request(request_id, require_pending=False)
+            config = await self._get_approval_config()
+        except Exception as e:
+            logger.error(f"Cannot send approval notifications for {request_id}: {e}")
+            result["errors"].append(str(e))
+            return result
+
+        # RM details are needed both for the RM email and for the "owner is the RM"
+        # check below, but a missing RM profile must not block the vendor email.
         rm_email = None
         rm_name = None
         try:
             rm_details = await self._get_rm_details(request_data.rm_id)
             rm_email = rm_details.get("email")
             rm_name = rm_details.get("name", "RM")
+            if rm_new_score is None:
+                rm_new_score = rm_details.get("performance_score")
         except Exception as e:
-            warnings.append(f"Failed to get RM details: {str(e)}")
-        
-        # Step 9: Send approval email to vendor (skip if vendor email same as RM)
+            result["errors"].append(f"Failed to get RM details: {str(e)}")
+
         try:
-            await self._send_approval_email(request_id, salon_id, request_data, config, rm_email)
+            result["vendor_email_sent"] = await self._send_approval_email(
+                request_id, salon_id, request_data, config,
+                rm_email=None if force_vendor_email else rm_email
+            )
         except Exception as e:
-            warnings.append(f"Failed to send vendor email: {str(e)}")
-        
-        # Step 10: Send notification email to RM
+            logger.error(f"Failed to send vendor approval email for {request_id}: {e}", exc_info=True)
+            result["errors"].append(f"Failed to send vendor email: {str(e)}")
+
+        if vendor_only:
+            return result
+
         try:
             if rm_email and rm_name:
-                await self._send_rm_notification_email(
+                result["rm_email_sent"] = await self._send_rm_notification_email(
                     rm_email,
                     rm_name,
-                    request_data.business_name, 
+                    request_data.business_name,
                     request_data.owner_name,
                     request_data.owner_email,
                     config['rm_score'],
@@ -136,30 +225,28 @@ class VendorApprovalService:
                     salon_id
                 )
             else:
-                warnings.append("Could not send RM notification - RM details not found")
+                result["errors"].append("Could not send RM notification - RM details not found")
         except Exception as e:
-            warnings.append(f"Failed to send RM notification: {str(e)}")
-        
-        logger.info(f"Vendor request {request_id} approved. Salon: {salon_id}")
-        
-        return ApprovalResult(
-            success=True,
-            salon_id=salon_id,
-            salon_name=request_data.business_name,
-            rm_score_awarded=config['rm_score'],
-            warnings=warnings if warnings else None
-        )
-    
-    async def _get_vendor_request(self, request_id: str) -> VendorJoinRequestResponse:
-        """Get and validate vendor request and return a typed response model"""
-        response = self.db.table("vendor_join_requests").select("*").eq("id", request_id).single().execute()
+            logger.error(f"Failed to send RM notification for {request_id}: {e}", exc_info=True)
+            result["errors"].append(f"Failed to send RM notification: {str(e)}")
 
-        if not response.data:
-            raise ValueError(f"Request {request_id} not found")
+        return result
+
+    async def _get_vendor_request(
+        self,
+        request_id: str,
+        require_pending: bool = True
+    ) -> VendorJoinRequestResponse:
+        """Get vendor request and return a typed response model"""
+        response = self.db.table("vendor_join_requests").select("*").eq("id", request_id).maybe_single().execute()
+
+        if not response or not response.data:
+            raise RequestNotFoundError(f"Request {request_id} not found")
 
         request_data = response.data
 
-        self._ensure_request_pending(request_data)
+        if require_pending:
+            self._ensure_request_pending(request_data)
 
         # Convert to response model for typed access, allow extra DB fields
         try:
@@ -169,7 +256,7 @@ class VendorApprovalService:
             model = VendorJoinRequestResponse.parse_obj(request_data)
 
         return model
-    
+
     async def _get_approval_config(self) -> Dict[str, Any]:
         """Get RM score, penalty, and registration fee from system config"""
         # Get RM score for approval (with fallback)
@@ -213,19 +300,53 @@ class VendorApprovalService:
             "registration_fee": registration_fee
         }
     
-    async def _update_request_status(self, request_id: str, admin_notes: Optional[str], admin_id: Optional[str] = None) -> None:
-        """Update vendor request status to approved"""
+    async def _claim_request(
+        self,
+        request_id: str,
+        admin_notes: Optional[str],
+        admin_id: Optional[str] = None
+    ) -> bool:
+        """
+        Flip the request from 'pending' to 'approved', but only if it is still
+        pending. The extra ``status = pending`` filter makes this a compare-and-swap:
+        two concurrent approvals (double-clicked button, retried request) race on
+        the database, and only one of them gets rows back.
+
+        Returns:
+            True if this call claimed the request, False if someone else already did.
+        """
         update_data = {
             "status": "approved",
             "admin_notes": admin_notes,
             "reviewed_at": datetime.utcnow().isoformat()
         }
-        
+
         if admin_id:
             update_data["reviewed_by"] = admin_id
-            
-        self.db.table("vendor_join_requests").update(update_data).eq("id", request_id).execute()
-    
+
+        response = self.db.table("vendor_join_requests").update(update_data).eq(
+            "id", request_id
+        ).eq("status", "pending").execute()
+
+        return bool(response.data)
+
+    async def _release_request(self, request_id: str) -> None:
+        """
+        Put a claimed request back to 'pending' after a failed approval, so the
+        admin can simply press Approve again instead of being told it was
+        'already approved' for a salon that was never created.
+        """
+        try:
+            self.db.table("vendor_join_requests").update({
+                "status": "pending",
+                "reviewed_at": None,
+                "reviewed_by": None
+            }).eq("id", request_id).eq("status", "approved").execute()
+            logger.info(f"Rolled request {request_id} back to pending after failed approval")
+        except Exception as e:
+            logger.error(f"Failed to roll back request {request_id} to pending: {e}")
+
+
     async def _geocode_salon_address(self, request_data: VendorJoinRequestResponse) -> Dict[str, float]:
         """
         Geocode salon address using geocoding service.
@@ -405,13 +526,20 @@ class VendorApprovalService:
         request_data: VendorJoinRequestResponse,
         config: Dict[str, Any],
         rm_email: Optional[str] = None
-    ) -> None:
+    ) -> bool:
         """Send approval email to vendor with registration link"""
-        # Skip if owner email is same as RM email (testing scenario)
+        if not request_data.owner_email:
+            logger.error(f"Request {request_id} has no owner email - cannot send approval email")
+            return False
+
+        # Skip if owner email is same as RM email (testing scenario). NOTE: the RM
+        # notification does not carry the registration link, so an RM who submits a
+        # salon under their own email gets no registration link at all - use the
+        # resend-approval-email admin action for that case.
         if rm_email and request_data.owner_email.lower() == rm_email.lower():
             logger.info(f"Skipping vendor email - owner is the RM ({request_data.owner_email})")
-            return
-        
+            return True
+
         # Generate registration token
         registration_token = create_registration_token(
             request_id=request_id,
@@ -435,8 +563,14 @@ class VendorApprovalService:
         if email_sent:
             logger.info(f"Approval email sent to {request_data.owner_email}")
         else:
-            logger.warning(f"Failed to send approval email to {request_data.owner_email}")
-    
+            logger.error(
+                f"Failed to send approval email to {request_data.owner_email} "
+                f"(request {request_id}, salon {salon_id}) - vendor has no registration link"
+            )
+
+        return email_sent
+
+
     async def _send_rm_notification_email(
         self,
         rm_email: str,
@@ -448,7 +582,7 @@ class VendorApprovalService:
         new_total_score: Optional[int],
         registration_fee: float,
         salon_id: Optional[str] = None
-    ) -> None:
+    ) -> bool:
         """Send notification email to RM about salon approval"""
         try:
             # Send RM notification email
@@ -468,28 +602,33 @@ class VendorApprovalService:
                 logger.info(f"RM notification sent to {rm_email}")
             else:
                 logger.warning(f"Failed to send RM notification to {rm_email}")
-                
+
+            return email_sent
+
         except Exception as e:
             logger.error(f"Error sending RM notification: {str(e)}")
             raise
     
-    async def _get_rm_details(self, rm_id: str) -> Dict[str, str]:
-        """Get RM email and name from database"""
+    async def _get_rm_details(self, rm_id: str) -> Dict[str, Any]:
+        """Get RM email, name and current score from database"""
         from fastapi import HTTPException, status
-        
+
         rm_response = self.db.table("rm_profiles").select(
-            "profiles(email, full_name)"
+            "performance_score, profiles(email, full_name)"
         ).eq("id", rm_id).execute()
-        
+
         if not rm_response.data or len(rm_response.data) == 0 or not rm_response.data[0].get("profiles"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"RM profile not found for {rm_id}"
             )
-        
+
+        row = rm_response.data[0]
+
         return {
-            "email": rm_response.data[0]["profiles"]["email"],
-            "name": rm_response.data[0]["profiles"]["full_name"] or "RM"
+            "email": row["profiles"]["email"],
+            "name": row["profiles"]["full_name"] or "RM",
+            "performance_score": row.get("performance_score")
         }
     
     async def _update_rm_score(
@@ -536,11 +675,11 @@ class VendorApprovalService:
             Dict with success status and message
         """
         # Get request
-        request_response = self.db.table("vendor_join_requests").select("*").eq("id", request_id).single().execute()
-        
-        if not request_response.data:
-            raise ValueError("Request not found")
-        
+        request_response = self.db.table("vendor_join_requests").select("*").eq("id", request_id).maybe_single().execute()
+
+        if not request_response or not request_response.data:
+            raise RequestNotFoundError(f"Request {request_id} not found")
+
         request_data = request_response.data
 
         self._ensure_request_pending(request_data)

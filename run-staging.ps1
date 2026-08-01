@@ -22,9 +22,9 @@ if (-not (Test-Path ".env.staging")) {
     Write-Host "   - Get credentials from: https://supabase.com/dashboard" -ForegroundColor Gray
     Write-Host "   - Use your STAGING project (not production!)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "3. Configure real SMTP for email testing" -ForegroundColor White
-    Write-Host "   - Use Gmail or another email provider" -ForegroundColor Gray
-    Write-Host "   - Emails will be sent via SMTP (no EMAIL_ENABLED flag needed)" -ForegroundColor Gray
+    Write-Host "3. Set RESEND_API_KEY for email testing" -ForegroundColor White
+    Write-Host "   - Get a key at: https://resend.com/api-keys" -ForegroundColor Gray
+    Write-Host "   - EMAIL_FROM must be on a domain verified in Resend" -ForegroundColor Gray
     Write-Host ""
 }
 
@@ -45,7 +45,7 @@ if (Test-Path $venvPath) {
 
 # Display environment info
 Write-Host "Environment: STAGING" -ForegroundColor Magenta
-Write-Host "Emails: Sent via SMTP (real emails)" -ForegroundColor Yellow
+Write-Host "Emails: Sent via Resend (real emails)" -ForegroundColor Yellow
 Write-Host "Payments: TEST MODE (Razorpay test keys)" -ForegroundColor Yellow
 Write-Host "Database: STAGING Supabase (online)" -ForegroundColor Yellow
 Write-Host ""

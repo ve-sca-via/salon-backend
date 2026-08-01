@@ -13,10 +13,10 @@ Final request flow (outer -> inner):
       -> LoggingMiddleware          (per-request timing logs)
       -> application
 
-Note: we deliberately do NOT use HTTPSRedirectMiddleware. Platforms like
-Railway and Render terminate TLS at the edge and forward HTTP internally;
-that middleware would cause a redirect loop. Configure HTTPS enforcement
-at the platform edge instead.
+Note: we deliberately do NOT use HTTPSRedirectMiddleware. Our platforms
+(DigitalOcean in production, Railway in staging) terminate TLS at the edge and
+forward HTTP internally; that middleware would cause a redirect loop. Configure
+HTTPS enforcement at the platform edge instead.
 """
 import logging
 from datetime import datetime
@@ -115,7 +115,7 @@ def setup_middleware(app):
     else:
         logger.info("Development mode: TrustedHostMiddleware disabled")
 
-    # Trust X-Forwarded-* headers from the platform edge (Railway/Render/etc).
+    # Trust X-Forwarded-* headers from the platform edge (DigitalOcean/Railway).
     # This makes request.url.scheme and request.client.host reflect the real
     # client, regardless of how uvicorn was started. Works for both prod and dev.
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
