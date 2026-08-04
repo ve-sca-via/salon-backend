@@ -146,9 +146,41 @@ def phone_lookup_variants(phone: Optional[str], country_code: str = "91") -> lis
     return variants
 
 
+# Columns needed to rank several profiles that share one number. They are added
+# to whatever the caller asked for so the ranking never runs on missing fields.
+_RANK_COLUMNS = ("id", "phone_verified", "deleted_at", "user_role")
+
+
+def _select_with_rank_columns(select: str) -> str:
+    if select.strip() == "*":
+        return select
+
+    columns = [c.strip() for c in select.split(",") if c.strip()]
+    for column in _RANK_COLUMNS:
+        if column not in columns:
+            columns.append(column)
+    return ", ".join(columns)
+
+
+def _match_rank(profile: dict) -> tuple:
+    """Lower sorts first: live before deleted, verified before unverified,
+    customer before other roles."""
+    return (
+        1 if profile.get("deleted_at") else 0,
+        0 if profile.get("phone_verified") else 1,
+        0 if profile.get("user_role") == "customer" else 1,
+    )
+
+
 def find_profile_by_phone(db, phone: Optional[str], country_code: str = "91", select: str = "*"):
     """
     Find a profile row by phone, trying canonical E.164 and legacy stored formats.
+
+    The phone uniqueness index is partial (verified, non-deleted rows only), so
+    one number can legitimately sit on several profiles - a verified customer
+    plus, say, an unverified row or a vendor contact. Postgres returns those in
+    no guaranteed order, so picking the first match made a verified customer
+    randomly look unverified. Rank the candidates instead and return the best.
 
     Returns:
         Tuple of (profile dict or None, canonical E.164 phone or None)
@@ -157,12 +189,23 @@ def find_profile_by_phone(db, phone: Optional[str], country_code: str = "91", se
     if not canonical:
         return None, None
 
-    for variant in phone_lookup_variants(phone, country_code):
-        response = db.table("profiles").select(select).eq("phone", variant).execute()
-        if response.data:
-            return response.data[0], canonical
+    query_select = _select_with_rank_columns(select)
+    candidates: dict = {}
 
-    return None, canonical
+    for variant in phone_lookup_variants(phone, country_code):
+        response = db.table("profiles").select(query_select).eq("phone", variant).execute()
+        for row in response.data or []:
+            candidates.setdefault(row.get("id"), row)
+
+        # A live, verified customer is the best possible match - stop early so
+        # the common case still costs a single query.
+        if any(_match_rank(row) == (0, 0, 0) for row in candidates.values()):
+            break
+
+    if not candidates:
+        return None, canonical
+
+    return min(candidates.values(), key=_match_rank), canonical
 
 
 def reconcile_profile_phone(db, profile_id: str, stored_phone: Optional[str], country_code: str = "91") -> Optional[str]:
