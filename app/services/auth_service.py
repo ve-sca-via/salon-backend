@@ -552,12 +552,10 @@ class AuthService:
 
             _, clean_phone = split_e164(canonical_phone, country_code)
 
-            # Check if phone is verified
-            if not profile.get("phone_verified", False):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Phone number not verified. Please verify your phone first."
-                )
+            # An unverified number is NOT rejected here. The number is already on
+            # this account, and receiving the OTP proves the caller holds it - so
+            # the OTP itself is the verification (promoted in verify_phone_login_otp).
+            # Blocking here only dead-ended users whose account was made with email.
 
             # CRITICAL: Only allow customers to login via phone
             if profile.get("user_role") != "customer":
@@ -659,12 +657,6 @@ class AuthService:
                     detail="User not found. Please contact support."
                 )
 
-            if not profile.get("phone_verified", False):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Phone number not verified. Please verify your phone first."
-                )
-
             reconcile_profile_phone(self.db, profile["id"], profile.get("phone"), country_code)
             profile["phone"] = canonical_phone
 
@@ -682,6 +674,28 @@ class AuthService:
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Account is inactive. Please contact support."
                 )
+
+            # A correct OTP on a number already held by this account IS the
+            # verification, so promote it instead of turning the user away.
+            # Accounts created with email keep an unverified number until now.
+            if not profile.get("phone_verified", False):
+                try:
+                    self.db.table("profiles").update({
+                        "phone_verified": True,
+                        "phone_verified_at": datetime.utcnow().isoformat(),
+                        "phone_verification_method": "otp",
+                    }).eq("id", profile["id"]).execute()
+                    profile["phone_verified"] = True
+                    logger.info(f"Phone verified via login OTP for user: {profile['id']}")
+                except Exception as e:
+                    # The partial unique index means this can only fail when a
+                    # DIFFERENT live account already owns the number as verified.
+                    # Issuing tokens anyway would hand over the wrong account.
+                    logger.error(f"Failed promoting phone to verified for {profile['id']}: {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="This number is already verified on another account. Please contact support@lubist.com."
+                    )
 
             # Generate JWT tokens
             token_data = {
@@ -864,8 +878,10 @@ class AuthService:
         """
         try:
             # First verify the user exists
-            existing = self.db.table("profiles").select("id").eq("id", user_id).execute()
-            
+            existing = self.db.table("profiles").select(
+                "id, phone, phone_verified"
+            ).eq("id", user_id).execute()
+
             if not existing.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -886,6 +902,18 @@ class AuthService:
                         detail="Please enter a valid 10-digit phone number."
                     )
                 update_data["phone"] = normalized
+
+                # Moving to a different number drops the verified flag - it was
+                # earned by an OTP sent to the OLD number. Carrying it over would
+                # let anyone point a verified phone at a number they don't own,
+                # and OTP login for that number would then land on this account.
+                # Re-saving the SAME number must not reset anything, otherwise a
+                # plain name edit would lock the user out of phone login.
+                current_phone = normalize_phone(existing.data[0].get("phone")) or existing.data[0].get("phone")
+                if existing.data[0].get("phone_verified") and current_phone != normalized:
+                    update_data["phone_verified"] = False
+                    update_data["phone_verified_at"] = None
+                    update_data["phone_verification_method"] = None
             if "age" in profile_data and profile_data["age"] is not None:
                 update_data["age"] = profile_data["age"]
             if "gender" in profile_data and profile_data["gender"] is not None:

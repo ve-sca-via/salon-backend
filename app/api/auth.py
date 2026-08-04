@@ -364,7 +364,9 @@ async def send_phone_login_otp(
     """
     Send OTP to phone number for login (CUSTOMERS ONLY)
 
-    - Validates that phone exists and is verified in database
+    - Validates that phone exists on an account in the database
+    - An unverified number still gets an OTP; a correct code verifies it at the
+      verify-otp step, since receiving the SMS proves the caller holds the number
     - Validates user is a customer (other roles must use email login)
     - Sends 6-digit OTP via MessageCentral SMS
     - Returns verification_id for OTP verification step

@@ -551,6 +551,31 @@ def test_me_put_rejected_for_non_customer(mock_auth):
     assert r.status_code == 403, r.text
 
 
+def test_me_put_changing_phone_drops_verified_flag(mock_auth):
+    """The flag was earned by an OTP to the OLD number. Carrying it to a new one
+    would point that number's OTP login at this account."""
+    prof = mock_auth.seed_profile(phone="+919876543210", phone_verified=True)
+    mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
+    r = mock_auth.client.put(f"{API}/auth/me", json={"phone": "9123456780"})
+    assert r.status_code == 200, r.text
+    row = next(x for x in mock_auth.db.table("profiles").rows if x["id"] == prof["id"])
+    assert row["phone"] == "+919123456780"
+    assert row["phone_verified"] is False
+
+
+def test_me_put_resaving_same_phone_keeps_verified_flag(mock_auth):
+    """A plain name edit resends the unchanged phone - that must not lock the
+    user out of phone login."""
+    prof = mock_auth.seed_profile(phone="+919876543210", phone_verified=True)
+    mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
+    r = mock_auth.client.put(
+        f"{API}/auth/me", json={"full_name": "New Name", "phone": "9876543210"}
+    )
+    assert r.status_code == 200, r.text
+    row = next(x for x in mock_auth.db.table("profiles").rows if x["id"] == prof["id"])
+    assert row["phone_verified"] is True
+
+
 def test_me_put_invalid_phone(mock_auth):
     prof = mock_auth.seed_profile()
     mock_auth.login_as(prof["id"], email=prof["email"], role="customer")
@@ -953,12 +978,40 @@ def test_login_phone_send_otp_not_registered(mock_auth):
     assert r.status_code == 404, r.text
 
 
-def test_login_phone_send_otp_not_verified(mock_auth):
+def test_login_phone_send_otp_unverified_number_still_sends(mock_auth):
+    """The number is already on the account, so the OTP itself does the verifying.
+    Rejecting here dead-ended everyone whose account was created with email."""
     mock_auth.seed_profile(phone="+919876543210", phone_verified=False, user_role="customer")
     r = mock_auth.client.post(
         f"{API}/auth/login/phone/send-otp", json={"phone": "9876543210", "country_code": "91"}
     )
+    assert r.status_code == 200, r.text
+    assert r.json()["verification_id"] == "vid-test-123"
+
+
+def test_login_phone_send_otp_picks_verified_row_over_unverified(mock_auth):
+    """Phone uniqueness is a partial index, so one number can sit on several
+    profiles. Row order is arbitrary - the verified customer must still win."""
+    mock_auth.seed_profile(phone="+919876543210", phone_verified=False, user_role="vendor")
+    mock_auth.seed_profile(
+        phone="+919876543210", phone_verified=True, user_role="customer", full_name="Real Customer"
+    )
+    r = mock_auth.client.post(
+        f"{API}/auth/login/phone/send-otp", json={"phone": "9876543210", "country_code": "91"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["customer_name"] == "Real Customer"
+
+
+def test_login_phone_send_otp_inactive_blocked(mock_auth):
+    mock_auth.seed_profile(
+        phone="+919876543210", phone_verified=True, user_role="customer", is_active=False
+    )
+    r = mock_auth.client.post(
+        f"{API}/auth/login/phone/send-otp", json={"phone": "9876543210", "country_code": "91"}
+    )
     assert r.status_code == 403, r.text
+    assert "inactive" in r.json()["message"].lower()
 
 
 def test_login_phone_send_otp_non_customer_blocked(mock_auth):
@@ -982,6 +1035,23 @@ def test_login_phone_verify_otp_happy(mock_auth):
     body = r.json()
     assert body["access_token"] and body["refresh_token"]
     assert body["user"]["email"] == prof["email"]
+
+
+def test_login_phone_verify_otp_promotes_unverified_number(mock_auth):
+    """A correct OTP proves the caller holds the number, so the flag is earned."""
+    prof = mock_auth.seed_profile(
+        phone="+919876543210", phone_verified=False, user_role="customer"
+    )
+    mock_auth.otp_valid = True
+    r = mock_auth.client.post(
+        f"{API}/auth/login/phone/verify-otp",
+        json={"phone": "9876543210", "otp": "123456", "verification_id": "vid-test-123"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["access_token"]
+    row = next(x for x in mock_auth.db.table("profiles").rows if x["id"] == prof["id"])
+    assert row["phone_verified"] is True
+    assert row["phone_verification_method"] == "otp"
 
 
 def test_login_phone_verify_otp_invalid(mock_auth):
