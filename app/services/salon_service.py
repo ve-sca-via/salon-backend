@@ -63,6 +63,29 @@ class SalonService:
             if salon.get("city"):
                 salon["city"] = normalize_city_name(salon["city"])
 
+    @staticmethod
+    def flatten_business_type(salons: List[Dict[str, Any]]) -> None:
+        """
+        Move the joined `vendor_join_requests(business_type)` embed onto the
+        salon row itself, so every listing exposes a flat `business_type`.
+
+        business_type is the kind of establishment (spa / barber_shop /
+        unisex_salon / …) and lives on the vendor's join request — the salons
+        table has no such column. Do NOT substitute `salons.salon_type`: that is
+        the account kind ('salon' vs 'regular_buyer'), a different field that
+        would label every spa and barber shop as "salon".
+
+        The embed comes back as a dict (salons.join_request_id is a to-one FK);
+        a list is tolerated in case postgrest reports the relationship the other
+        way round.
+        """
+        for salon in salons:
+            vjr = salon.pop("vendor_join_requests", None)
+            if isinstance(vjr, list):
+                vjr = vjr[0] if vjr else None
+            if isinstance(vjr, dict):
+                salon["business_type"] = vjr.get("business_type")
+
     async def _attach_discount_flags(self, salons: List[Dict[str, Any]]) -> None:
         """
         Enrich salons with `has_discounted_services` and `max_discount_percentage`.
@@ -166,11 +189,7 @@ class SalonService:
         Shared post-processing for public salon lists: flatten the joined
         business_type, normalize city casing, and attach discount flags.
         """
-        for salon in salons:
-            vjr = salon.pop("vendor_join_requests", None)
-            if vjr and isinstance(vjr, dict):
-                salon["business_type"] = vjr.get("business_type")
-
+        self.flatten_business_type(salons)
         self._normalize_salon_cities(salons)
         await self._attach_discount_flags(salons)
         await self._attach_vendor_coupons(salons)
@@ -211,9 +230,7 @@ class SalonService:
                 )
 
             salon = response.data[0]
-            vjr = salon.pop("vendor_join_requests", None)
-            if vjr and isinstance(vjr, dict):
-                salon["business_type"] = vjr.get("business_type")
+            self.flatten_business_type([salon])
             return salon
             
         except HTTPException:
@@ -332,18 +349,32 @@ class SalonService:
         
         salons = response.data or []
         
-        # Exclude regular_buyer salons — they can only buy products, not offer services
-        # Note: The RPC function doesn't return salon_type, so we do a secondary lookup
+        # The RPC function returns neither salon_type nor the joined business_type,
+        # so one secondary lookup covers both: excluding regular_buyer salons (they
+        # can only buy products, not offer services) and giving the nearby cards the
+        # same business_type badge as every other listing.
         if salons:
             salon_ids = [s["id"] for s in salons if s.get("id")]
             if salon_ids:
-                type_response = self.db.table("salons").select("id, salon_type").in_("id", salon_ids).execute()
+                type_response = (
+                    self.db.table("salons")
+                    .select("id, salon_type, vendor_join_requests(business_type)")
+                    .in_("id", salon_ids)
+                    .execute()
+                )
+                type_rows = type_response.data or []
+                self.flatten_business_type(type_rows)
+
                 regular_buyer_ids = {
-                    row["id"] for row in (type_response.data or [])
+                    row["id"] for row in type_rows
                     if row.get("salon_type") == "regular_buyer"
                 }
+                business_types = {row["id"]: row.get("business_type") for row in type_rows}
+
                 salons = [s for s in salons if s["id"] not in regular_buyer_ids]
-        
+                for salon in salons:
+                    salon["business_type"] = business_types.get(salon["id"])
+
         # Apply additional filters if provided
         if params.filters:
             if params.filters.is_active is not None:
@@ -529,8 +560,9 @@ class SalonService:
             q = self._apply_city_filter(q, city)
             if state:
                 q = q.eq("state", state)
-            if service_type:
-                q = q.eq("business_type", service_type)
+            # business_type is NOT a salons column (it lives on the joined
+            # vendor_join_request), so it can't be filtered here — it's applied
+            # in Python after the embed is flattened, below.
             return q.order("created_at", desc=True).limit(limit)
 
         term = (query_text or "").strip()
@@ -556,6 +588,9 @@ class SalonService:
             salons = base_query().execute().data or []
 
         await self._finalize_public_salons(salons)
+
+        if service_type:
+            salons = [s for s in salons if s.get("business_type") == service_type]
 
         logger.info(f"Search returned {len(salons)} salons (query='{query_text}', city={city})")
 
