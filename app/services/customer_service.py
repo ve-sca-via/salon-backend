@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
+from app.services.salon_service import SalonService
 
 logger = logging.getLogger(__name__)
 
@@ -889,16 +890,20 @@ class CustomerService:
             # Get salon details
             salon_ids = [fav["salon_id"] for fav in favorites_response.data]
             
+            # business_type (spa / barber_shop / …) lives on the vendor's join
+            # request, not the salons table, so join + flatten it the same way the
+            # public listings do — the saved-salon cards show it as a badge.
             salons_response = self.db.table("salons")\
-                .select("*")\
+                .select("*, vendor_join_requests(business_type)")\
                 .in_("id", salon_ids)\
                 .eq("is_active", True)\
                 .eq("is_verified", True)\
                 .eq("registration_fee_paid", True)\
                 .execute()
-            
+
             favorites = salons_response.data or []
-            
+            SalonService.flatten_business_type(favorites)
+
             logger.info(f"Retrieved {len(favorites)} favorites for customer {customer_id}")
             
             return {
