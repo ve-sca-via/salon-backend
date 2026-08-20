@@ -225,6 +225,9 @@ class Handle:
             "phone": "9876543210",
             "user_role": role,
             "is_active": True,
+            # NOT NULL DEFAULT false in the schema, so every real row has it.
+            # The admin users list filters staff out with .eq("is_internal", False).
+            "is_internal": False,
             "created_at": datetime.utcnow().isoformat(),
         }
         row.update(fields)
@@ -483,6 +486,48 @@ def test_list_is_active_filter(us):
     body = r.json()
     assert body["total"] == 1
     assert all(u["is_active"] is False for u in body["data"])
+
+
+def test_list_hides_internal_staff_from_client_admins(us):
+    """
+    Internal staff accounts are ordinary admins apart from is_internal, so
+    without this filter they show up in the client's user list and invite
+    questions about who published content the client did not publish.
+    """
+    us.seed_profile(role="customer", email="client-user@example.com")
+    us.seed_profile(role="admin", email="dev@agency.example", is_internal=True)
+    us.login_admin()
+
+    r = us.client.get(f"{USERS}/")
+    assert r.status_code == 200, r.text
+    emails = [u["email"] for u in r.json()["data"]]
+
+    assert "client-user@example.com" in emails
+    assert "dev@agency.example" not in emails
+
+
+def test_search_cannot_surface_an_internal_account(us):
+    """
+    The search branch runs its own id lookup that bypasses the main query, so
+    it needs the filter independently or search becomes a way around the hide.
+    """
+    us.seed_profile(role="admin", email="dev@agency.example", is_internal=True)
+    us.login_admin()
+
+    r = us.client.get(f"{USERS}/", params={"search": "dev@agency"})
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] == 0
+
+
+def test_internal_staff_can_see_internal_accounts(us):
+    """Staff still need a working user list, including their own accounts."""
+    us.seed_profile(role="admin", email="dev@agency.example", is_internal=True)
+    td = us.login_admin()
+    td.is_internal = True
+
+    r = us.client.get(f"{USERS}/")
+    assert r.status_code == 200, r.text
+    assert "dev@agency.example" in [u["email"] for u in r.json()["data"]]
 
 
 def test_list_search_by_email(us):

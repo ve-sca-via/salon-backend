@@ -309,11 +309,22 @@ class UserService:
         search: Optional[str] = None,
         role: Optional[str] = None,
         is_active: Optional[bool] = None,
+        include_internal: bool = False,
     ) -> Dict[str, Any]:
-        """List users with pagination and filters (admin)."""
+        """
+        List users with pagination and filters (admin).
+
+        include_internal is False for client admins, so internal staff accounts
+        do not appear in their user list. Those accounts show as ordinary
+        admins otherwise, which invites questions about who published content
+        the client did not publish themselves.
+        """
         try:
             offset = (page - 1) * limit
             query = self.db.table("profiles").select("*", count="exact")
+
+            if not include_internal:
+                query = query.eq("is_internal", False)
 
             # Search: per-column .ilike() (or_() is unreliable in supabase-py URL encoding)
             if search and search.strip():
@@ -321,7 +332,12 @@ class UserService:
                 matching_ids = set()
                 for column in ("email", "full_name", "phone"):
                     try:
-                        id_rows = self.db.table("profiles").select("id").ilike(column, pattern).execute()
+                        id_query = self.db.table("profiles").select("id").ilike(column, pattern)
+                        if not include_internal:
+                            # This lookup bypasses the query above, so it needs
+                            # its own filter or search would surface staff.
+                            id_query = id_query.eq("is_internal", False)
+                        id_rows = id_query.execute()
                         for row in id_rows.data or []:
                             matching_ids.add(row["id"])
                     except Exception as col_err:

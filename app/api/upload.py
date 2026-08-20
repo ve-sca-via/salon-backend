@@ -7,7 +7,7 @@ import uuid
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status, Query
 
-from app.core.auth import get_current_user, TokenData
+from app.core.auth import get_current_user, TokenData, RequireFeature
 from app.core.config import settings
 from app.core.database import get_storage_client
 from app.services.cloudinary_service import CloudinaryService
@@ -232,6 +232,65 @@ async def upload_cloudinary_banner_image(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload banner image to Cloudinary"
+        )
+
+
+@router.post("/cloudinary-blog-image", response_model=ImageUploadResponse)
+async def upload_cloudinary_blog_image(
+    file: UploadFile = File(...),
+    current_user: TokenData = Depends(RequireFeature("blog"))
+):
+    """
+    Upload a blog cover or in-article image to Cloudinary.
+
+    Gated on admin role + the 'blog' feature entitlement, matching the blog
+    create/update endpoints. Without this the upload route would stay reachable
+    while the feature is hidden, which both leaks the feature's existence and
+    lets any authenticated caller push files into the Cloudinary blog folder.
+
+    Mirrors the banner image upload — same CloudinaryService path, so blog
+    images are delivered identically to banner and product images.
+
+    Args:
+        file: Image file to upload
+        current_user: Authenticated user from JWT
+
+    Returns:
+        JSON with the Cloudinary URL to persist on the blog post row
+    """
+    # Validate image
+    validate_image(file)
+
+    # Read file content to check size
+    file_content = await file.read()
+    if len(file_content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {MAX_FILE_SIZE / 1024 / 1024}MB"
+        )
+
+    # Reset file pointer since CloudinaryService calls read() again
+    await file.seek(0)
+
+    try:
+        cloudinary_service = CloudinaryService()
+        secure_url = await cloudinary_service.upload_file(file, folder="blog")
+
+        logger.info(f"Blog image uploaded to Cloudinary by user {current_user.user_id}: {secure_url}")
+
+        return {
+            "success": True,
+            "url": secure_url,
+            "path": secure_url,  # Cloudinary URL acts as path for frontend referencing
+            "filename": file.filename
+        }
+    except HTTPException:
+        raise
+    except Exception as upload_error:
+        logger.error(f"Cloudinary blog upload failed: {str(upload_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload blog image to Cloudinary"
         )
 
 

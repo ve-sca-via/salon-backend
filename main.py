@@ -14,7 +14,7 @@ from app.core.handlers import register_exception_handlers
 from app.core.tasks import lifespan
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
 from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, partner, upload, products, product_orders
-from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, upload, products, product_orders, banners
+from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, upload, products, product_orders, banners, blog, features
 from app.api.health import router as health_router
 
 # Setup logging
@@ -67,6 +67,8 @@ app.include_router(upload.router, prefix=settings.API_PREFIX)  # File upload end
 app.include_router(products.router, prefix=settings.API_PREFIX)  # Product catalog endpoints
 app.include_router(product_orders.router, prefix=settings.API_PREFIX)  # Product order endpoints
 app.include_router(banners.router, prefix=settings.API_PREFIX)  # Home carousel banner endpoints
+app.include_router(blog.router, prefix=settings.API_PREFIX)  # SEO blog endpoints
+app.include_router(features.router, prefix=settings.API_PREFIX)  # Feature entitlement flags
 
 # Include health check and status endpoints
 app.include_router(health_router)
