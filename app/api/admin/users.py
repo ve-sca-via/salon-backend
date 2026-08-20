@@ -38,7 +38,9 @@ async def get_all_users(
         limit=limit,
         search=search,
         role=role,  # Service layer expects 'role' parameter but uses 'user_role' column
-        is_active=is_active
+        is_active=is_active,
+        # Internal staff accounts are visible only to other internal staff.
+        include_internal=current_user.is_internal
     )
 
     return result

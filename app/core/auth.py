@@ -10,6 +10,7 @@ from typing import Optional, List
 from pydantic import BaseModel
 from app.core.config import settings
 from app.core.database import get_db_client
+from app.core.features import is_feature_visible_to
 import logging
 import uuid
 
@@ -28,6 +29,10 @@ class TokenData(BaseModel):
     user_id: str
     email: str
     user_role: str
+    # Internal staff (developer/agency). Read from the profiles row on every
+    # request, NOT from a JWT claim, so flipping it takes effect immediately
+    # instead of waiting for existing tokens to expire.
+    is_internal: bool = False
     jti: Optional[str] = None  # JWT ID for revocation (optional for backward compatibility)
     exp: Optional[datetime] = None
 
@@ -508,7 +513,7 @@ async def get_current_user(
     # Verify user exists and is active
     try:
         user_response = db.table("profiles").select(
-            "id, email, user_role, is_active"
+            "id, email, user_role, is_active, is_internal"
         ).eq("id", token_data.sub).maybe_single().execute()
 
         if not getattr(user_response, "data", None):
@@ -532,6 +537,7 @@ async def get_current_user(
             user_id=user["id"],
             email=user["email"],
             user_role=user["user_role"],
+            is_internal=bool(user.get("is_internal", False)),
             jti=token_data.jti,
             exp=datetime.utcfromtimestamp(token_data.exp) if token_data.exp else None
         )
@@ -562,7 +568,7 @@ async def get_optional_user(
         token_data = verify_token(token, db)
 
         user_response = db.table("profiles").select(
-            "id, email, user_role, is_active"
+            "id, email, user_role, is_active, is_internal"
         ).eq("id", token_data.sub).maybe_single().execute()
 
         if not getattr(user_response, "data", None):
@@ -576,6 +582,7 @@ async def get_optional_user(
             user_id=user["id"],
             email=user["email"],
             user_role=user["user_role"],
+            is_internal=bool(user.get("is_internal", False)),
             jti=token_data.jti,
             exp=datetime.utcfromtimestamp(token_data.exp) if token_data.exp else None
         )
@@ -716,6 +723,81 @@ async def require_customer(current_user: TokenData = Depends(get_current_user)) 
             detail="Customer access required"
         )
     return current_user
+
+
+# =====================================================
+# FEATURE ENTITLEMENT GATES
+# =====================================================
+
+async def require_internal(current_user: TokenData = Depends(get_current_user)) -> TokenData:
+    """
+    Dependency to require an internal staff account.
+
+    Guards things the client must never see at all — chiefly the feature-flag
+    management endpoints themselves. Those cannot be gated by a feature flag
+    without handing the client a screen that lists every unsold feature.
+
+    404s rather than 403s: a 403 confirms the endpoint exists.
+    """
+    if not current_user.is_internal:
+        logger.warning(
+            f"Non-internal user {current_user.user_id} attempted to reach an internal-only endpoint"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not Found"
+        )
+    return current_user
+
+
+class RequireFeature:
+    """
+    Dependency factory gating a route behind a feature entitlement.
+
+    Composes on top of a role dependency rather than replacing it: the caller
+    must still hold the required role AND the feature must be available to them.
+
+    Usage:
+        @router.post("", dependencies=[Depends(RequireFeature("blog"))])
+
+        # Or to also receive the user:
+        current_user: TokenData = Depends(RequireFeature("blog"))
+
+        # Non-admin roles:
+        Depends(RequireFeature("analytics", role_dependency=require_vendor))
+
+    Returns 404, NOT 403. A 403 tells the client "this feature exists and you
+    are not entitled to it", which is exactly the disclosure the gate is meant
+    to avoid. A 404 is indistinguishable from the feature not being deployed.
+    """
+
+    def __init__(self, feature_key: str, role_dependency=require_admin):
+        self.feature_key = feature_key
+        # Applied by direct call below rather than via Depends(), because
+        # default arguments are bound at class-definition time and cannot see
+        # per-instance state. Every role dependency in this module takes a
+        # TokenData and returns it, so calling one directly is equivalent.
+        self.role_dependency = role_dependency
+
+    async def __call__(
+        self,
+        current_user: TokenData = Depends(get_current_user),
+        db=Depends(get_db_client),
+    ) -> TokenData:
+        # Role check first: an unauthorised caller should get the normal 403,
+        # not a feature-shaped 404 that leaks which features are gated.
+        current_user = await self.role_dependency(current_user)
+
+        if not is_feature_visible_to(db, self.feature_key, current_user.is_internal):
+            logger.info(
+                f"User {current_user.user_id} blocked from feature "
+                f"'{self.feature_key}' (internal={current_user.is_internal})"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not Found"
+            )
+        return current_user
 
 
 # =====================================================
