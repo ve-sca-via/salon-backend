@@ -43,6 +43,12 @@ pytz==2023.3
 
 rich==13.7.0  # Rich terminal output for logging
 
+# HTML sanitisation (blog article bodies)
+# Rust-backed ammonia binding; the maintained successor to the deprecated
+# `bleach`. Blog HTML is server-rendered into the public page, so the body is
+# cleaned against an allowlist on every write.
+nh3==0.2.20
+
 # Cloudinary Storage
 cloudinary==1.41.0
 
