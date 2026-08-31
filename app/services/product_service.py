@@ -139,7 +139,7 @@ class ProductService:
 
             # Ordering and pagination
             query = query.order("created_at", desc=True)
-            query = query.range(offset, offset + limit - 1)
+            query = query.range(offset, offset + limit)
 
             response = query.execute()
             products = response.data or []

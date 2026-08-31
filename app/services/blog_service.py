@@ -231,7 +231,7 @@ class BlogService:
                         f"focus_keyword.ilike.*{cleaned}*)",
                     )
 
-            query = query.range(offset, offset + limit - 1)
+            query = query.range(offset, offset + limit)
 
             response = query.execute()
             posts = response.data or []
