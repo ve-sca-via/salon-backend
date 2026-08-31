@@ -498,7 +498,7 @@ class VendorService:
             
             response = query.order("booking_date", desc=True).order(
                 "created_at", desc=True
-            ).range(offset, offset + limit - 1).execute()
+            ).range(offset, offset + limit).execute()
             
             bookings = response.data or []
             logger.info(f"Query returned {len(bookings)} bookings from bookings_with_payments view")

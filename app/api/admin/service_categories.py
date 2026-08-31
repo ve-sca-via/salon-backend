@@ -39,7 +39,7 @@ async def get_all_service_categories(
         # Order by display_order and then by name
         query = query.order("display_order", desc=False).order("name", desc=False)
         
-        response = query.range(offset, offset + limit - 1).execute()
+        response = query.range(offset, offset + limit).execute()
         
         return {"data": response.data, "total": len(response.data)}
     except Exception as e:

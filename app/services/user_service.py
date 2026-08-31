@@ -351,7 +351,7 @@ class UserService:
             if is_active is not None:
                 query = query.eq("is_active", is_active)
 
-            response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+            response = query.order("created_at", desc=True).range(offset, offset + limit).execute()
 
             logger.info(
                 f"Admin users query - Page: {page}, Total: {response.count}, "
