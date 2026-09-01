@@ -95,7 +95,7 @@ class _Query:
                 matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
             if self._range is not None:
                 s, e = self._range
-                matched = matched[s:e + 1]
+                matched = matched[s:e]
             if self._maybe:
                 return _Resp(matched[0] if matched else None)
             return _Resp(matched)

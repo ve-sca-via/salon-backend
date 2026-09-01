@@ -127,7 +127,7 @@ class _Query:
                 matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
             if self._range is not None:
                 s, e = self._range
-                matched = matched[s:e + 1]
+                matched = matched[s:e]
             count = total if self._count == "exact" else None
             return _Resp(matched, count=count)
 
