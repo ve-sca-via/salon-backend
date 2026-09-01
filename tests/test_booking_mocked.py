@@ -133,7 +133,7 @@ class _Query:
                 )
             if self._range is not None:
                 s, e = self._range
-                matched = matched[s:e + 1]
+                matched = matched[s:e]
             if self._single:
                 if len(matched) != 1:
                     raise Exception("PGRST116: results contain 0 or multiple rows")
