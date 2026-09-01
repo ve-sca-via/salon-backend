@@ -226,7 +226,7 @@ class AdminService:
                 query = query.eq("status", status_filter)
 
             response = query.order("created_at", desc=True).range(
-                offset, offset + limit - 1
+                offset, offset + limit
             ).execute()
             requests = response.data or []
 

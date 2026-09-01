@@ -82,7 +82,7 @@ class BookingService:
             # Execute query with pagination - order and limit
             response = query.order("booking_date", desc=True).order(
                 "created_at", desc=True
-            ).range(offset, offset + limit - 1).execute()
+            ).range(offset, offset + limit).execute()
             
             bookings = response.data or []
             

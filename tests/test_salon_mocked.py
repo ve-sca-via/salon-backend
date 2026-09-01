@@ -154,7 +154,7 @@ class _Query:
                 )
             if self._range is not None:
                 s, e = self._range
-                matched = matched[s:e + 1]
+                matched = matched[s:e]
             if self._limit is not None:
                 matched = matched[:self._limit]
             if self._single:

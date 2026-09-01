@@ -278,8 +278,8 @@ class SalonService:
             # or use RPC function. For now, search in business_name only
             query = query.ilike("business_name", f"%{params.search_term}%")
         
-        # Pagination
-        query = query.range(params.offset, params.offset + params.limit - 1)
+        # Pagination (postgrest's .range(start, end) treats `end` as exclusive)
+        query = query.range(params.offset, params.offset + params.limit)
         
         # Default ordering
         query = query.order("created_at", desc=True)
@@ -514,11 +514,11 @@ class SalonService:
         query = self._public_salons_query()
         query = self._apply_city_filter(query, city)
 
-        # Pagination and ordering
+        # Pagination and ordering (postgrest's .range(start, end) treats `end` as exclusive)
         query = (
             query
             .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
+            .range(offset, offset + limit)
         )
 
         response = query.execute()

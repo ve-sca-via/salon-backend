@@ -382,7 +382,7 @@ class CareerService:
 
             result = (
                 query.order("created_at", desc=True)
-                .range(skip, skip + limit - 1)
+                .range(skip, skip + limit)
                 .execute()
             )
 

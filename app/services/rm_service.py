@@ -151,7 +151,7 @@ class RMService:
             query = query.order(order_by, desc=False)
         
         # Apply pagination
-        query = query.range(offset, offset + limit - 1)
+        query = query.range(offset, offset + limit)
         
         response = query.execute()
         
@@ -277,7 +277,7 @@ class RMService:
         if status:
             query = query.eq("status", status)
         
-        query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
+        query = query.order("created_at", desc=True).range(offset, offset + limit)
         
         response = query.execute()
         

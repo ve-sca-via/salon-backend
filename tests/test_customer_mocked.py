@@ -121,7 +121,7 @@ class _Query:
             for c, desc in reversed(self._order):
                 matched.sort(key=lambda r: (r.get(c) is None, r.get(c)), reverse=desc)
             if self._range is not None:
-                s, e = self._range; matched = matched[s:e + 1]
+                s, e = self._range; matched = matched[s:e]
             if self._limit is not None:
                 matched = matched[:self._limit]
             data = [self._embed(r) if "(" in self._cols else dict(r) for r in matched]
