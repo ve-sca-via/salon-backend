@@ -1,9 +1,8 @@
 """
-Upload API - Handle file uploads to Supabase Storage
+Upload API - Handle file uploads to Cloudinary (and legacy Supabase Storage reads)
 Provides secure, authenticated file upload endpoints
 """
 import os
-import uuid
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, status, Query
 
@@ -58,69 +57,59 @@ async def upload_salon_image(
     current_user: TokenData = Depends(get_current_user)
 ):
     """
-    Upload a salon image to Supabase Storage.
+    Upload a salon image to Cloudinary.
     Requires authentication.
-    
+
+    Stored on Cloudinary rather than Supabase Storage to avoid the recurring
+    storage RLS / service-role failures the Supabase 'salon-images' bucket
+    suffered in production (the same reason agreement documents were moved
+    off Supabase Storage below).
+
     Args:
         file: Image file to upload
         folder: Destination folder (covers/logos/gallery)
         current_user: Authenticated user from JWT
-        
+
     Returns:
         JSON with public URL of uploaded image
     """
-    storage_client = get_storage_client()
-    
     # Validate folder name
     if folder not in ['covers', 'logos', 'gallery']:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid folder. Must be: covers, logos, or gallery"
         )
-    
+
     # Validate image
     validate_image(file)
-    
-    # Read file content
+
+    # Read file content to check size
     file_content = await file.read()
-    
-    # Check file size
     if len(file_content) > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"File too large. Maximum size: {MAX_FILE_SIZE / 1024 / 1024}MB"
         )
-    
-    # Generate unique filename
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    unique_filename = f"{uuid.uuid4()}{file_ext}"
-    storage_path = f"{folder}/{unique_filename}"
-    
+
+    # Reset file pointer since CloudinaryService calls read() again
+    await file.seek(0)
+
     try:
-        # Upload to Supabase Storage
-        storage_client.storage.from_('salon-images').upload(
-            path=storage_path,
-            file=file_content,
-            file_options={
-                "content-type": file.content_type,
-                "cache-control": "3600",
-                "upsert": "false"
-            }
-        )
-        
-        # Get public URL
-        public_url = storage_client.storage.from_('salon-images').get_public_url(storage_path)
-        
-        logger.info(f"Image uploaded by user {current_user.user_id}: {storage_path}")
-        
+        cloudinary_service = CloudinaryService()
+        secure_url = await cloudinary_service.upload_file(file, folder=f"salon-images/{folder}")
+
+        logger.info(f"Salon image uploaded to Cloudinary by user {current_user.user_id}: {secure_url}")
+
         return {
             "success": True,
-            "url": public_url,
-            "path": storage_path,
-            "filename": unique_filename
+            "url": secure_url,
+            "path": secure_url,
+            "filename": file.filename
         }
+    except HTTPException:
+        raise
     except Exception as upload_error:
-        logger.error(f"Storage upload failed: {str(upload_error)}")
+        logger.error(f"Cloudinary salon image upload failed: {str(upload_error)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload image"

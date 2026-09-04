@@ -5,7 +5,7 @@ All vendor response models should be defined here for consistency
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
-from ..domain.common import BusinessType, RequestStatus
+from ..domain.common import BusinessType, RequestStatus, OutletType
 from .coupon import AvailableCouponResponse
 
 
@@ -46,7 +46,7 @@ class VendorJoinRequestResponse(BaseModel):
     pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    outlet: Optional[str] = None
+    outlet: Optional[OutletType] = None
     is_gst: Optional[bool] = False
     gst_number: Optional[str] = Field(None, max_length=50)
     pan_number: Optional[str] = Field(None, max_length=10)
@@ -101,10 +101,10 @@ class SalonResponse(BaseModel):
     address: str
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., max_length=6)
+    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    outlet: Optional[str] = None
+    outlet: Optional[OutletType] = None
     is_gst: Optional[bool] = False
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)
