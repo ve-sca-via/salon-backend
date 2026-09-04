@@ -654,6 +654,56 @@ def test_create_rejects_overlong_meta_fields(bg):
     }).status_code == 422
 
 
+def test_create_stores_faqs(bg):
+    bg.login_admin()
+    r = bg.client.post(BLOG, json={
+        "title": "With FAQs", "content": "<p>x</p>",
+        "faqs": [
+            {"question": "How long does a spa take?", "answer": "About an hour."},
+            {"question": "Is it safe for color-treated hair?", "answer": "Yes."},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["post"]["faqs"] == [
+        {"question": "How long does a spa take?", "answer": "About an hour."},
+        {"question": "Is it safe for color-treated hair?", "answer": "Yes."},
+    ]
+
+
+def test_create_strips_markup_from_faq_text(bg):
+    bg.login_admin()
+    r = bg.client.post(BLOG, json={
+        "title": "Injected FAQ", "content": "<p>x</p>",
+        "faqs": [{"question": "<script>alert(1)</script>Safe?", "answer": "<b>Yes</b>."}],
+    })
+    faqs = r.json()["post"]["faqs"]
+    assert faqs == [{"question": "Safe?", "answer": "Yes."}]
+
+
+def test_create_rejects_a_faq_missing_an_answer(bg):
+    bg.login_admin()
+    r = bg.client.post(BLOG, json={
+        "title": "Half FAQ", "content": "<p>x</p>",
+        "faqs": [{"question": "Question with no answer", "answer": "   "}],
+    })
+    assert r.status_code == 422
+
+
+def test_create_rejects_more_than_the_faq_limit(bg):
+    bg.login_admin()
+    r = bg.client.post(BLOG, json={
+        "title": "Too many", "content": "<p>x</p>",
+        "faqs": [{"question": f"Q{i}", "answer": f"A{i}"} for i in range(21)],
+    })
+    assert r.status_code == 422
+
+
+def test_create_without_faqs_defaults_to_empty_list(bg):
+    bg.login_admin()
+    r = bg.client.post(BLOG, json={"title": "No FAQs", "content": "<p>x</p>"})
+    assert r.json()["post"]["faqs"] == []
+
+
 # =====================================================================
 # PUT /blog/{id}  (update)
 # =====================================================================
@@ -694,6 +744,24 @@ def test_update_recomputes_reading_time(bg):
 
     r = bg.client.put(f"{BLOG}/{row['id']}", json={"content": "<p>" + "w " * 800 + "</p>"})
     assert r.json()["post"]["reading_minutes"] == 4
+
+
+def test_update_resanitises_edited_faqs(bg):
+    bg.login_admin()
+    row = bg.seed_post(slug="p", faqs=[])
+
+    r = bg.client.put(f"{BLOG}/{row['id']}", json={
+        "faqs": [{"question": "<script>x</script>Safe?", "answer": "Yes."}],
+    })
+    assert r.json()["post"]["faqs"] == [{"question": "Safe?", "answer": "Yes."}]
+
+
+def test_update_can_clear_all_faqs(bg):
+    bg.login_admin()
+    row = bg.seed_post(slug="p", faqs=[{"question": "Q", "answer": "A"}])
+
+    r = bg.client.put(f"{BLOG}/{row['id']}", json={"faqs": []})
+    assert r.json()["post"]["faqs"] == []
 
 
 def test_update_deduplicates_a_colliding_new_slug(bg):

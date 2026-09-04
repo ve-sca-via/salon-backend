@@ -153,6 +153,25 @@ def _reading_minutes(html: Optional[str]) -> int:
     return max(1, round(words / WORDS_PER_MINUTE)) if words else 1
 
 
+def _sanitize_faqs(faqs: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """
+    Strip any markup out of FAQ question/answer text and drop incomplete rows.
+
+    FAQs are plain text, not editor HTML — nh3.clean() with an empty tag set
+    unwraps everything and leaves the text, which is what a stray "<script>"
+    or copy-pasted tag should become here rather than being rejected outright.
+    """
+    if not faqs:
+        return []
+    cleaned = []
+    for item in faqs:
+        question = nh3.clean(str(item.get("question") or ""), tags=set()).strip()
+        answer = nh3.clean(str(item.get("answer") or ""), tags=set()).strip()
+        if question and answer:
+            cleaned.append({"question": question, "answer": answer})
+    return cleaned
+
+
 def _sanitize_search(term: str) -> str:
     """
     Strip characters that break PostgREST's `or=` filter grammar.
@@ -406,6 +425,7 @@ class BlogService:
 
             payload["content"] = _sanitize_html(payload.get("content"))
             payload["reading_minutes"] = _reading_minutes(payload["content"])
+            payload["faqs"] = _sanitize_faqs(payload.get("faqs"))
 
             if not payload.get("excerpt"):
                 payload["excerpt"] = self._auto_excerpt(payload["content"])
@@ -464,6 +484,9 @@ class BlogService:
             if "content" in payload:
                 payload["content"] = _sanitize_html(payload["content"])
                 payload["reading_minutes"] = _reading_minutes(payload["content"])
+
+            if "faqs" in payload:
+                payload["faqs"] = _sanitize_faqs(payload["faqs"])
 
             new_status = payload.get("status", existing.get("status"))
             if "status" in payload or "published_at" in payload:
