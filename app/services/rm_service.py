@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
 from app.services.activity_log_service import ActivityLogService
+from app.services.cloudinary_service import CloudinaryService
 from app.services.email import email_service
 from app.utils.location_text import normalize_city_name
 
@@ -816,14 +817,11 @@ class RMService:
                 if documents.get("business_registration"):
                     images_to_delete.append(documents["business_registration"])
             
-            # Delete images from storage
+            # Delete images from Cloudinary (salon images no longer live in Supabase Storage)
             if images_to_delete:
-                for image_path in images_to_delete:
-                    if "salon-images/" in image_path:
-                        file_path = image_path.split("salon-images/")[-1]
-                        self.db.storage.from_("salon-images").remove([file_path])
-                
-                logger.info(f"Deleted {len(images_to_delete)} images from storage")
+                cloudinary_service = CloudinaryService()
+                deleted = sum(1 for url in images_to_delete if cloudinary_service.delete_file(url))
+                logger.info(f"Deleted {deleted}/{len(images_to_delete)} images from Cloudinary")
         
         except Exception as e:
             logger.warning(f"Failed to delete some images: {str(e)}")

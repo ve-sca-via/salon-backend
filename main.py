@@ -13,8 +13,7 @@ from app.core.middleware import setup_middleware
 from app.core.handlers import register_exception_handlers
 from app.core.tasks import lifespan
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
-from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, partner, upload, products, product_orders
-from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, upload, products, product_orders, banners, blog, features
+from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, partner, upload, products, product_orders, banners, blog, features
 from app.api.health import router as health_router
 
 # Setup logging

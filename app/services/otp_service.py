@@ -183,6 +183,28 @@ class OTPService:
             )
 
     @classmethod
+    async def _call_with_token_refresh(cls, make_request, action: str) -> httpx.Response:
+        """
+        Call MessageCentral via `make_request(auth_token)`, refreshing the cached
+        auth token and retrying once if it's rejected (401/403). Self-heals a
+        stale cached token without a process restart.
+        """
+        response = None
+        for attempt in range(2):
+            auth_token = await cls._get_auth_token()
+            response = await make_request(auth_token)
+
+            if response.status_code in (401, 403) and attempt == 0:
+                logger.warning(
+                    "MessageCentral rejected auth token on %s (status %s); "
+                    "refreshing token and retrying once.", action, response.status_code
+                )
+                cls.clear_token_cache()
+                continue
+            break
+        return response
+
+    @classmethod
     async def send_otp(
         cls,
         phone: str,
@@ -232,25 +254,12 @@ class OTPService:
                 "otpLength": settings.MESSAGECENTRAL_OTP_LENGTH
             }
 
-            # A stale cached auth token surfaces as an auth rejection. Clear it and
-            # retry once with a fresh token before failing (self-heals without a
-            # process restart).
-            response = None
-            for attempt in range(2):
-                auth_token = await cls._get_auth_token()
+            async def _make_request(auth_token: str) -> httpx.Response:
                 headers = {"authToken": auth_token}
-
                 async with httpx.AsyncClient(timeout=cls.HTTP_TIMEOUT) as client:
-                    response = await client.post(url, params=params, headers=headers)
+                    return await client.post(url, params=params, headers=headers)
 
-                if response.status_code in (401, 403) and attempt == 0:
-                    logger.warning(
-                        "MessageCentral rejected auth token on send (status %s); "
-                        "refreshing token and retrying once.", response.status_code
-                    )
-                    cls.clear_token_cache()
-                    continue
-                break
+            response = await cls._call_with_token_refresh(_make_request, "send")
 
             if response.status_code != 200:
                 logger.error(f"MessageCentral send OTP failed: {response.status_code} - {response.text}")
@@ -359,24 +368,12 @@ class OTPService:
                 "flowType": "SMS"
             }
 
-            # Self-heal a stale cached auth token: on an auth rejection, refresh
-            # the token and retry once before giving up.
-            response = None
-            for attempt in range(2):
-                auth_token = await cls._get_auth_token()
+            async def _make_request(auth_token: str) -> httpx.Response:
                 headers = {"authToken": auth_token, "accept": "*/*"}
-
                 async with httpx.AsyncClient(timeout=cls.HTTP_TIMEOUT) as client:
-                    response = await client.get(url, params=params, headers=headers)
+                    return await client.get(url, params=params, headers=headers)
 
-                if response.status_code in (401, 403) and attempt == 0:
-                    logger.warning(
-                        "MessageCentral rejected auth token on verify (status %s); "
-                        "refreshing token and retrying once.", response.status_code
-                    )
-                    cls.clear_token_cache()
-                    continue
-                break
+            response = await cls._call_with_token_refresh(_make_request, "verify")
 
             if response.status_code != 200:
                 logger.warning(f"MessageCentral verify OTP failed: {response.status_code} - {response.text}")

@@ -4,7 +4,7 @@ Handles system-wide configuration management
 """
 from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List
-from app.core.auth import require_admin, TokenData, cleanup_expired_tokens
+from app.core.auth import require_admin, TokenData
 from app.core.database import get_db_client
 from app.schemas import (
     SystemConfigResponse,
@@ -155,20 +155,3 @@ async def delete_config(
     except Exception as e:
         logger.error(f"Failed to delete config: {str(e)}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-@router.post("/cleanup/expired-tokens")
-async def cleanup_expired_tokens_endpoint(
-    current_user: TokenData = Depends(require_admin),
-    db = Depends(get_db_client)
-):
-    """Clean up expired tokens from blacklist (admin only)"""
-    cleaned_count = cleanup_expired_tokens(db)
-    
-    logger.info(f"Admin {current_user.user_id} cleaned up {cleaned_count} expired tokens")
-    
-    return {
-        "success": True,
-        "message": f"Cleaned up {cleaned_count} expired tokens from blacklist",
-        "tokens_removed": cleaned_count
-    }

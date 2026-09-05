@@ -1291,7 +1291,7 @@ class AuthService:
 
         # Count what we are legally obliged to keep, so the user can be told plainly.
         retained = {}
-        for label, table in (("bookings", "bookings"), ("payments", "booking_payments")):
+        for label, table in (("bookings", "bookings"), ("payments", "payments")):
             try:
                 res = self.db.table(table).select("id", count="exact") \
                     .eq("customer_id", user_id).execute()
@@ -1711,6 +1711,17 @@ class AuthService:
             "message": "Verification email sent successfully. Please check your inbox.",
         }
 
+    def _ensure_phone_available(self, phone: str, country_code: str, exclude_user_id: str, error_detail: str) -> None:
+        """Raise 400 if `phone` is already verified on a different user's profile."""
+        from app.utils.phone import find_profile_by_phone
+
+        existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
+        if existing_phone and existing_phone.get("phone_verified") and existing_phone["id"] != exclude_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_detail
+            )
+
     async def send_phone_verification_otp(self, user_id: str, phone: str, country_code: str = "91") -> Dict:
         """
         Send OTP to verify phone number (for authenticated users updating their phone)
@@ -1747,14 +1758,10 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
-            if existing_phone and existing_phone.get("phone_verified"):
-                # Check if it's not the same user
-                if existing_phone["id"] != user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="This phone number is already registered"
-                    )
+            self._ensure_phone_available(
+                phone, country_code, exclude_user_id=user_id,
+                error_detail="This phone number is already registered"
+            )
 
             # Extract country code and local phone number from normalized E.164.
             country_code_clean, clean_phone = split_e164(normalized_phone, country_code)
@@ -1849,15 +1856,10 @@ class AuthService:
                 )
 
             # Check if phone is already registered by another verified user
-            from app.utils.phone import find_profile_by_phone
-            existing_phone, _ = find_profile_by_phone(self.db, phone, country_code)
-            if existing_phone and existing_phone.get("phone_verified"):
-                # Check if it's not the same user
-                if existing_phone["id"] != user_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="This phone number is already registered by another user"
-                    )
+            self._ensure_phone_available(
+                phone, country_code, exclude_user_id=user_id,
+                error_detail="This phone number is already registered by another user"
+            )
 
             # Update user profile with verified phone
             now = datetime.utcnow()
