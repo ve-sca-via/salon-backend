@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.schemas import BookingCreate
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
-from app.services.pricing_service import PricingService, LineItem
+from app.services.pricing_service import PricingService, LineItem, effective_service_price
 
 logger = logging.getLogger(__name__)
 
@@ -228,10 +228,7 @@ class BookingService:
                     raise NotFoundError("Service", service_id)
 
                 # Effective price (discounted when available) — amount due at salon
-                unit_price = service_details.get("discounted_price")
-                if unit_price is None:
-                    unit_price = service_details.get("price", 0.0)
-                unit_price = float(unit_price)
+                unit_price = effective_service_price(service_details)
 
                 original_unit_price = float(service_details.get("price", 0.0))
                 line_total = unit_price * quantity

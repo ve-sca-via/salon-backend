@@ -35,6 +35,14 @@ class LineItem:
         self.quantity = int(quantity)
 
 
+def effective_service_price(service_details: Dict[str, Any]) -> float:
+    """Effective price for a service: discounted_price when present, else base price."""
+    discounted_price = service_details.get("discounted_price")
+    if discounted_price is not None:
+        return float(discounted_price)
+    return float(service_details.get("price", 0.0))
+
+
 def _discount(base: float, discount_type: str, value: float, cap: Optional[float]) -> float:
     """Compute a discount on `base`, never exceeding the base, honoring an optional cap."""
     if base <= 0:

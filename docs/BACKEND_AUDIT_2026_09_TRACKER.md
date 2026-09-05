@@ -5,8 +5,8 @@ cross-reference across all 3 frontends + service-layer duplication review + newe
 debt review). Builds on `CLEANUP_AUDIT_TRACKER.md` (auth/bookings/payments/storage, done
 ~2026-06) and `PAYMENT_MODULE_CLEANUP.md` (payment module, done ~2026-06).
 
-**Status:** P0 and P1 fully fixed & tested on `dev` 2026-09-05. P2/P3 still pending
-(deliberately deferred — both are marked low-urgency in this doc).
+**Status:** P0, P1, and P2 fully fixed & tested on `dev` 2026-09-05. P3 still pending
+(deliberately deferred — marked low-urgency in this doc).
 
 Legend: `[x]` done & validated · `[~]` in progress · `[ ]` todo · `[?]` needs a decision first
 
@@ -75,15 +75,17 @@ Legend: `[x]` done & validated · `[~]` in progress · `[ ]` todo · `[?]` needs
 
 ## P2 — Duplicate logic to consolidate (no urgency, do when convenient)
 
-- [ ] `app/services/otp_service.py:239-253` and `:365-379` — send and verify each
-  hand-roll an identical "refresh stale token, retry once on 401/403" block. Extract
-  `_call_with_token_refresh()`.
-- [ ] `app/services/auth_service.py:1741-1757` and `:1843-1860` — "phone already
-  registered" guard copy-pasted across send-OTP and verify-OTP paths. Extract
-  `_ensure_phone_available()`.
-- [ ] `app/services/booking_service.py:230-234` reimplements the discounted-price
-  fallback that `customer_service._get_effective_service_price` already provides.
-  Centralize (e.g. move next to `PricingService`) before a 3rd copy appears.
+- [x] `app/services/otp_service.py:239-253` and `:365-379` — send and verify each
+  hand-rolled an identical "refresh stale token, retry once on 401/403" block.
+  Fixed 2026-09-05: extracted `OTPService._call_with_token_refresh()`.
+- [x] `app/services/auth_service.py:1741-1757` and `:1843-1860` — "phone already
+  registered" guard copy-pasted across send-OTP and verify-OTP paths.
+  Fixed 2026-09-05: extracted `AuthService._ensure_phone_available()`.
+- [x] `app/services/booking_service.py:230-234` reimplemented the discounted-price
+  fallback that `customer_service._get_effective_service_price` already provided.
+  Fixed 2026-09-05: moved to a module-level `effective_service_price()` in
+  `pricing_service.py`; `booking_service.py` and `customer_service.py` both call
+  it now, and the dead private method on `CustomerService` was removed.
 
 ---
 
