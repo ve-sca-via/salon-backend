@@ -5,8 +5,7 @@ cross-reference across all 3 frontends + service-layer duplication review + newe
 debt review). Builds on `CLEANUP_AUDIT_TRACKER.md` (auth/bookings/payments/storage, done
 ~2026-06) and `PAYMENT_MODULE_CLEANUP.md` (payment module, done ~2026-06).
 
-**Status:** P0, P1, and P2 fully fixed & tested on `dev` 2026-09-05. P3 still pending
-(deliberately deferred — marked low-urgency in this doc).
+**Status:** P0, P1, P2, and P3 fully fixed & tested on `dev` (P0-P2 2026-09-05, P3 2026-09-06).
 
 Legend: `[x]` done & validated · `[~]` in progress · `[ ]` todo · `[?]` needs a decision first
 
@@ -91,9 +90,18 @@ Legend: `[x]` done & validated · `[~]` in progress · `[ ]` todo · `[?]` needs
 
 ## P3 — Backlog items surfaced during the audit (not urgent, just noted)
 
-- [ ] `app/services/payment_service.py:581` — `# TODO: Send payment receipt and
-  welcome emails` — pre-existing, still open; post-payment emails may not currently
-  fire. Worth its own ticket.
+- [x] `app/services/payment_service.py:581` — `# TODO: Send payment receipt and
+  welcome emails`. Fixed 2026-09-06: added `EmailService.send_vendor_registration_receipt_email`
+  (new `vendor_registration_receipt.html` template — payment receipt + vendor-dashboard
+  welcome, combined into one email) and `EmailService._vendor_login_url()` (extracted
+  from `send_payment_reminder_email`, which had the only prior copy of the
+  VENDOR_PORTAL_URL-to-login-page normalization). `verify_vendor_registration_payment`
+  now sends it to the vendor join request's `owner_email` right after salon activation;
+  skips gracefully (logs a warning, doesn't fail the request) if no owner email is on
+  file. Regression tests added: `tests/test_email_mocked.py::test_vendor_registration_receipt_happy`,
+  `tests/test_payment_mocked.py::test_registration_verify_happy_activates_salon` (asserts
+  the email fires with correct fields), `::test_registration_verify_missing_owner_email_skips_receipt_email`,
+  `::test_registration_verify_already_success_does_not_resend_email`.
 
 ---
 

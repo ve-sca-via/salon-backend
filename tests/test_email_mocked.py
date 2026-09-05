@@ -178,6 +178,24 @@ def test_payment_reminder_happy(mail):
     assert mail.activities[-1]["details"]["email_type"] == "payment_reminder"
 
 
+def test_vendor_registration_receipt_happy(mail):
+    ok = run(mail.service.send_vendor_registration_receipt_email(
+        to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
+        amount=1500.0, razorpay_payment_id="pay_reg_1", salon_id="salon-1",
+    ))
+    assert ok is True
+    sent = mail.messages[0]
+    assert sent["to"] == "owner@example.com"
+    assert "Glow Salon" in sent["subject"]
+    html = mail.last_html()
+    assert "pay_reg_1" in html and "1500.00" in html
+    # Same VENDOR_PORTAL_URL normalisation as the payment reminder email.
+    assert "/vendor-login" in html
+    assert mail.activities[-1]["details"]["email_type"] == "vendor_registration_receipt"
+    assert mail.activities[-1]["entity_type"] == "salon"
+    assert mail.activities[-1]["entity_id"] == "salon-1"
+
+
 def test_career_application_confirmation_happy(mail):
     ok = run(mail.service.send_career_application_confirmation(
         to_email="applicant@example.com", applicant_name="Jane",

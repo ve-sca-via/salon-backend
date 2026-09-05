@@ -532,6 +532,20 @@ class EmailService:
             logger.error(f"Failed to send vendor booking cancellation notification: {str(e)}")
             return False
     
+    def _vendor_login_url(self) -> str:
+        """Normalize VENDOR_PORTAL_URL (whatever path it points to) to the vendor login page."""
+        vendor_portal_url = settings.VENDOR_PORTAL_URL.strip()
+        parsed = urlsplit(vendor_portal_url if vendor_portal_url.startswith(('http://', 'https://')) else f"https://{vendor_portal_url}")
+        portal_path = parsed.path.rstrip('/')
+
+        if portal_path.endswith('/vendor-login'):
+            return vendor_portal_url.rstrip('/')
+        elif portal_path.endswith('/vendor') or portal_path == '':
+            base = parsed.netloc if not vendor_portal_url.startswith(('http://', 'https://')) else f"{parsed.scheme}://{parsed.netloc}"
+            return f"{base}/vendor-login"
+        else:
+            return f"{vendor_portal_url.rstrip('/')}/vendor-login"
+
     async def send_payment_reminder_email(
         self,
         to_email: str,
@@ -542,30 +556,19 @@ class EmailService:
         """
         Send payment reminder email to vendor with pending registration fee
         Vendor already has account, just needs to login and pay from dashboard
-        
+
         Args:
             to_email: Vendor email
             salon_name: Salon name
             registration_fee: Amount to pay for registration
             salon_id: Salon ID for logging
-            
+
         Returns:
             bool: Success status
         """
         try:
-            # Vendor login URL (normalize VENDOR_PORTAL_URL to the correct login path)
-            vendor_portal_url = settings.VENDOR_PORTAL_URL.strip()
-            parsed = urlsplit(vendor_portal_url if vendor_portal_url.startswith(('http://', 'https://')) else f"https://{vendor_portal_url}")
-            portal_path = parsed.path.rstrip('/')
+            vendor_login_url = self._vendor_login_url()
 
-            if portal_path.endswith('/vendor-login'):
-                vendor_login_url = vendor_portal_url.rstrip('/')
-            elif portal_path.endswith('/vendor') or portal_path == '':
-                base = parsed.netloc if not vendor_portal_url.startswith(('http://', 'https://')) else f"{parsed.scheme}://{parsed.netloc}"
-                vendor_login_url = f"{base}/vendor-login"
-            else:
-                vendor_login_url = f"{vendor_portal_url.rstrip('/')}/vendor-login"
-            
             # Log reminder
             logger.info("=" * 100)
             logger.info("PAYMENT REMINDER EMAIL")
@@ -596,7 +599,57 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send payment reminder email: {str(e)}")
             return False
-    
+
+    async def send_vendor_registration_receipt_email(
+        self,
+        to_email: str,
+        owner_name: str,
+        salon_name: str,
+        amount: float,
+        razorpay_payment_id: str,
+        salon_id: Optional[str] = None
+    ) -> bool:
+        """
+        Send payment receipt + welcome email once a vendor's registration fee
+        payment is verified and their salon is activated.
+
+        Args:
+            to_email: Vendor email
+            owner_name: Salon owner name
+            salon_name: Salon name
+            amount: Registration fee amount paid
+            razorpay_payment_id: Razorpay payment ID (receipt reference)
+            salon_id: Salon ID for logging
+
+        Returns:
+            bool: Success status
+        """
+        try:
+            html_body = self._render(
+                'vendor_registration_receipt.html',
+                owner_name=owner_name,
+                salon_name=salon_name,
+                amount=amount,
+                razorpay_payment_id=razorpay_payment_id,
+                vendor_login_url=self._vendor_login_url(),
+                support_email=settings.EMAIL_FROM,
+            )
+
+            subject = f"Payment Receipt & Welcome to {settings.EMAIL_FROM_NAME} - {salon_name} is now live!"
+
+            return await self._send_email(
+                to_email,
+                subject,
+                html_body,
+                email_type="vendor_registration_receipt",
+                related_entity_type="salon",
+                related_entity_id=salon_id
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to send vendor registration receipt email: {str(e)}")
+            return False
+
     async def send_career_application_confirmation(
         self,
         to_email: str,
