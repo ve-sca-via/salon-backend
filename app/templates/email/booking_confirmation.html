@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Confirmed</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #4CAF50;
+        }
+        .header h1 {
+            color: #4CAF50;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .details-box {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .payment-box {
+            background-color: #fff3cd;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .coupon-badge {
+            background: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            color: #2e7d32;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin: 16px 0;
+            font-weight: bold;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">✅</div>
+            <h1>Booking Confirmed!</h1>
+        </div>
+
+        <div class="content">
+            <p>Hi {{ customer_name }},</p>
+            <p>Your booking at <strong>{{ salon_name }}</strong> has been confirmed.</p>
+
+            {% if coupon_code and total_savings > 0 %}
+            <div class="coupon-badge">
+                🎉 Coupon <strong>{{ coupon_code }}</strong> applied — you saved ₹{{ "%.2f"|format(total_savings) }}!
+            </div>
+            {% endif %}
+
+            <div class="details-box">
+                <h3 style="margin-top: 0;">Booking Details:</h3>
+                <p><strong>Booking Number:</strong> {{ booking_number }}</p>
+                <p><strong>Date:</strong> {{ booking_date }}</p>
+                <p><strong>Time:</strong> {{ booking_time }}</p>
+                <p><strong>Services:</strong><br>
+                {% for service in services %}
+                    {% if service.quantity and service.quantity > 1 %}
+                        • {{ service.name }} (x{{ service.quantity }}) — ₹{{ "%.2f"|format(service.price) }} each<br>
+                    {% else %}
+                        • {{ service.name }} — ₹{{ "%.2f"|format(service.price) }}<br>
+                    {% endif %}
+                {% else %}
+                    • Service<br>
+                {% endfor %}
+                </p>
+            </div>
+
+            <div class="payment-box">
+                <h3 style="margin-top: 0;">Payment Details:</h3>
+                {% if coupon_code and total_savings > 0 %}
+                    <p style="margin:4px 0;color:#666;">Service Total: <span style="text-decoration:line-through;">₹{{ "%.2f"|format(pre_discount_service) }}</span></p>
+                    {% if discount_amount and discount_amount > 0 %}
+                    <p style="margin:4px 0;color:#2e7d32;">Service Discount: −₹{{ "%.2f"|format(discount_amount) }}</p>
+                    {% endif %}
+                    {% if convenience_fee_discount and convenience_fee_discount > 0 %}
+                    <p style="margin:4px 0;color:#666;">Convenience Fee: <span style="text-decoration:line-through;">₹{{ "%.2f"|format(fee_before) }}</span></p>
+                    <p style="margin:4px 0;color:#2e7d32;">Fee Discount: −₹{{ "%.2f"|format(convenience_fee_discount) }}</p>
+                    {% endif %}
+                {% endif %}
+                <p><strong>Convenience Fee (Paid Online):</strong> ₹{{ "%.2f"|format(convenience_fee) }}</p>
+                <p><strong>Service Amount (Pay at Salon):</strong> ₹{{ "%.2f"|format(service_price) }}</p>
+                <p><strong>Total Amount:</strong> ₹{{ "%.2f"|format(total_amount) }}</p>
+            </div>
+
+            <p style="color: #666; font-size: 14px;">
+                Please arrive 5 minutes before your appointment time.
+                Remember to pay the service amount (₹{{ "%.2f"|format(service_price) }}) at the salon after your service.
+            </p>
+
+            <p>See you soon!<br><strong>Lubist Team</strong></p>
+        </div>
+
+        <div class="footer">
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Lubist. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

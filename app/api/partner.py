@@ -76,16 +76,6 @@ async def get_partner_requests(
     )
 
 
-@router.get("/requests/{request_id}")
-async def get_partner_request(
-    request_id: str,
-    admin: TokenData = Depends(require_admin),
-    partner_service: PartnerService = Depends(get_partner_service),
-):
-    """Get a specific partner request by ID (Admin only)."""
-    return partner_service.get_request_by_id(request_id)
-
-
 @router.patch("/requests/{request_id}", response_model=PartnerRequestUpdateResponse)
 async def update_partner_request(
     request_id: str,

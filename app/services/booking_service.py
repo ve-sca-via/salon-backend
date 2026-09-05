@@ -467,6 +467,7 @@ class BookingService:
                     discount_amount=pricing.get("discount_amount", 0) or 0,
                     convenience_fee_discount=pricing.get("convenience_fee_discount", 0) or 0,
                     coupon_code=pricing.get("coupon_code"),
+                    booking_id=booking_id,
                 )
                 logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
                 

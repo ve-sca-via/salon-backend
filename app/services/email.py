@@ -44,24 +44,25 @@ _jinja2_env = Environment(
 logger.info("Initialized shared Jinja2 template environment (singleton)")
 
 
-def _format_booking_services_html(services: list) -> str:
-    """Format booking services as HTML lines for confirmation emails."""
-    lines = []
+def _normalize_booking_services(services: list) -> list:
+    """
+    Normalize booking services into plain {name, price, quantity} dicts for
+    template rendering - names go through Jinja2's autoescaping this way,
+    instead of being interpolated into raw HTML via f-strings.
+    """
+    normalized = []
     for service in services:
         if not isinstance(service, dict):
-            lines.append(f"• {service}")
+            normalized.append({"name": str(service), "price": 0.0, "quantity": 1})
             continue
 
-        name = service.get("name") or service.get("service_name", "Service")
-        price = float(service.get("price") or service.get("unit_price") or 0)
-        quantity = int(service.get("quantity") or 1)
+        normalized.append({
+            "name": service.get("name") or service.get("service_name", "Service"),
+            "price": float(service.get("price") or service.get("unit_price") or 0),
+            "quantity": int(service.get("quantity") or 1),
+        })
 
-        if quantity > 1:
-            lines.append(f"• {name} (x{quantity}) — ₹{price:.2f} each")
-        else:
-            lines.append(f"• {name} — ₹{price:.2f}")
-
-    return "<br>".join(lines) if lines else "• Service"
+    return normalized
 
 
 class EmailService:
@@ -71,6 +72,12 @@ class EmailService:
         # Use shared Jinja2 template environment (singleton)
         # This prevents creating new environments on every instantiation
         self.env = _jinja2_env
+
+    def _render(self, template_name: str, **context) -> str:
+        """Render a template, injecting current_year once so no call site hardcodes it."""
+        from datetime import datetime
+        template = self.env.get_template(template_name)
+        return template.render(current_year=datetime.now().year, **context)
 
     async def _send_email(
         self,
@@ -285,10 +292,8 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('vendor_approval.html')
-            
             registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
-            
+
             # Log registration URL for easy access (in all environments)
             logger.info("=" * 100)
             logger.info("VENDOR APPROVAL EMAIL")
@@ -298,14 +303,14 @@ class EmailService:
             logger.info("REGISTRATION URL:")
             logger.info(f"   {registration_url}")
             logger.info("=" * 100)
-            
-            html_body = template.render(
+
+            html_body = self._render(
+                'vendor_approval.html',
                 owner_name=owner_name,
                 salon_name=salon_name,
                 registration_url=registration_url,
                 registration_fee=registration_fee,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Congratulations! {salon_name} has been approved"
@@ -353,9 +358,8 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('rm_salon_approved.html')
-            
-            html_body = template.render(
+            html_body = self._render(
+                'rm_salon_approved.html',
                 rm_name=rm_name,
                 salon_name=salon_name,
                 owner_name=owner_name,
@@ -364,7 +368,6 @@ class EmailService:
                 new_total_score=new_total_score,
                 registration_fee=registration_fee,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Salon Approved: {salon_name} - You've earned {points_awarded} points!"
@@ -406,15 +409,13 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('vendor_rejection.html')
-            
-            html_body = template.render(
+            html_body = self._render(
+                'vendor_rejection.html',
                 rm_name=rm_name,
                 salon_name=salon_name,
                 owner_name=owner_name,
                 rejection_reason=rejection_reason,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Salon Submission Update: {salon_name}"
@@ -460,9 +461,8 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('booking_cancellation.html')
-            
-            html_body = template.render(
+            html_body = self._render(
+                'booking_cancellation.html',
                 customer_name=customer_name,
                 salon_name=salon_name,
                 service_name=service_name,
@@ -470,7 +470,6 @@ class EmailService:
                 booking_time=booking_time,
                 cancellation_reason=cancellation_reason,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Booking Cancelled: {salon_name}"
@@ -503,45 +502,18 @@ class EmailService:
     ) -> bool:
         """Notify vendor/salon that a customer cancelled a booking."""
         try:
-            reason_block = ""
-            if cancellation_reason:
-                reason_block = f"""
-                    <p><strong>Cancellation Reason:</strong> {cancellation_reason}</p>
-                """
-
-            html_body = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <h2 style="color: #ff6b6b;">Booking Cancelled</h2>
-                    <p>Hi {salon_name} Team,</p>
-                    <p>A customer has cancelled their booking. The appointment slot is now available again.</p>
-
-                    <div style="background: #fff5f5; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ff6b6b;">
-                        <h3 style="margin-top: 0;">Cancelled Booking Details</h3>
-                        <p><strong>Booking Number:</strong> {booking_number}</p>
-                        <p><strong>Customer:</strong> {customer_name}</p>
-                        <p><strong>Phone:</strong> {customer_phone}</p>
-                        <p><strong>Date:</strong> {booking_date}</p>
-                        <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
-                        {reason_block}
-                    </div>
-
-                    <p style="text-align: center; margin-top: 30px;">
-                        <a href="{settings.VENDOR_PORTAL_URL}/bookings"
-                           style="background: #2196F3; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                            View in Dashboard
-                        </a>
-                    </p>
-
-                    <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                        This is an automated notification from Lubist.
-                    </p>
-                </div>
-            </body>
-            </html>
-            """
+            html_body = self._render(
+                'booking_cancellation_vendor.html',
+                salon_name=salon_name,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                booking_number=booking_number,
+                booking_date=booking_date,
+                booking_time=booking_time,
+                services=_normalize_booking_services(services),
+                cancellation_reason=cancellation_reason,
+                vendor_portal_url=settings.VENDOR_PORTAL_URL,
+            )
 
             subject = f"Booking Cancelled - {customer_name} ({booking_number})"
 
@@ -581,8 +553,6 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('payment_reminder.html')
-            
             # Vendor login URL (normalize VENDOR_PORTAL_URL to the correct login path)
             vendor_portal_url = settings.VENDOR_PORTAL_URL.strip()
             parsed = urlsplit(vendor_portal_url if vendor_portal_url.startswith(('http://', 'https://')) else f"https://{vendor_portal_url}")
@@ -604,12 +574,12 @@ class EmailService:
             logger.info(f"Amount: Rs. {registration_fee}")
             logger.info("=" * 100)
             
-            html_body = template.render(
+            html_body = self._render(
+                'payment_reminder.html',
                 salon_name=salon_name,
                 vendor_login_url=vendor_login_url,
                 registration_fee=registration_fee,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Payment Reminder - Complete registration for {salon_name}"
@@ -647,18 +617,16 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('career_application_confirmation.html')
-            
             from datetime import datetime
             current_date = datetime.now().strftime("%B %d, %Y")
-            
-            html_body = template.render(
+
+            html_body = self._render(
+                'career_application_confirmation.html',
                 applicant_name=applicant_name,
                 position=position,
                 application_number=application_number,
                 current_date=current_date,
                 support_email=settings.EMAIL_FROM,
-                current_year=2025
             )
             
             subject = f"Application Received - {position}"
@@ -700,15 +668,14 @@ class EmailService:
             bool: Success status
         """
         try:
-            template = self.env.get_template('new_career_application_admin.html')
-            
             from datetime import datetime
             current_date = datetime.now().strftime("%B %d, %Y at %I:%M %p")
-            
+
             # Admin email from settings
             admin_email = settings.ADMIN_EMAIL
-            
-            html_body = template.render(
+
+            html_body = self._render(
+                'new_career_application_admin.html',
                 applicant_name=applicant_name,
                 position=position,
                 email=email,
@@ -717,7 +684,6 @@ class EmailService:
                 application_id=application_id,
                 current_date=current_date,
                 admin_panel_url=settings.ADMIN_PANEL_URL,
-                current_year=2025,
                 has_educational_certificates=True,
                 has_experience_letter=experience_years > 0,
                 has_salary_slip=experience_years > 0
@@ -761,10 +727,8 @@ class EmailService:
         inbox the admin panel operators watch.
         """
         try:
-            from datetime import datetime
-
-            template = self.env.get_template('admin_notification.html')
-            html_body = template.render(
+            html_body = self._render(
+                'admin_notification.html',
                 badge=badge,
                 title=title,
                 heading=heading,
@@ -773,7 +737,6 @@ class EmailService:
                 action_note=action_note,
                 cta_url=cta_url,
                 cta_label=cta_label,
-                current_year=datetime.now().year,
             )
 
             return await self._send_email(
@@ -878,7 +841,8 @@ class EmailService:
         subtotal_service_price: Optional[float] = None,
         discount_amount: float = 0,
         convenience_fee_discount: float = 0,
-        coupon_code: Optional[str] = None
+        coupon_code: Optional[str] = None,
+        booking_id: Optional[str] = None
     ) -> bool:
         """
         Send booking confirmation email to customer
@@ -898,87 +862,52 @@ class EmailService:
             discount_amount: Coupon discount applied to the service price
             convenience_fee_discount: Coupon discount applied to the convenience fee
             coupon_code: Applied coupon code, if any
+            booking_id: Booking UUID, for activity-log tracing on failed sends
 
         Returns:
             bool: Success status
         """
         try:
-            # Build the discount lines only when a coupon was actually applied.
             total_savings = (discount_amount or 0) + (convenience_fee_discount or 0)
-            discount_rows = ""
-            if coupon_code and total_savings > 0:
-                pre_discount_service = (
-                    subtotal_service_price
-                    if subtotal_service_price is not None
-                    else service_price + (discount_amount or 0)
-                )
-                fee_before = convenience_fee + (convenience_fee_discount or 0)
-                discount_rows = f"""
-                        <p style="margin:4px 0;color:#666;">Service Total: <span style="text-decoration:line-through;">₹{pre_discount_service:.2f}</span></p>"""
-                if discount_amount and discount_amount > 0:
-                    discount_rows += f"""
-                        <p style="margin:4px 0;color:#2e7d32;">Service Discount: −₹{discount_amount:.2f}</p>"""
-                if convenience_fee_discount and convenience_fee_discount > 0:
-                    discount_rows += f"""
-                        <p style="margin:4px 0;color:#666;">Convenience Fee: <span style="text-decoration:line-through;">₹{fee_before:.2f}</span></p>
-                        <p style="margin:4px 0;color:#2e7d32;">Fee Discount: −₹{convenience_fee_discount:.2f}</p>"""
+            pre_discount_service = (
+                subtotal_service_price
+                if subtotal_service_price is not None
+                else service_price + (discount_amount or 0)
+            )
+            fee_before = convenience_fee + (convenience_fee_discount or 0)
 
-            coupon_badge = ""
-            if coupon_code and total_savings > 0:
-                coupon_badge = f"""
-                    <div style="background:#e8f5e9;border:1px solid #a5d6a7;color:#2e7d32;padding:10px 14px;border-radius:6px;margin:16px 0;font-weight:bold;">
-                        🎉 Coupon <strong>{coupon_code}</strong> applied — you saved ₹{total_savings:.2f}!
-                    </div>"""
+            html_body = self._render(
+                'booking_confirmation.html',
+                customer_name=customer_name,
+                salon_name=salon_name,
+                booking_number=booking_number,
+                booking_date=booking_date,
+                booking_time=booking_time,
+                services=_normalize_booking_services(services),
+                total_amount=total_amount,
+                convenience_fee=convenience_fee,
+                service_price=service_price,
+                pre_discount_service=pre_discount_service,
+                discount_amount=discount_amount,
+                fee_before=fee_before,
+                convenience_fee_discount=convenience_fee_discount,
+                coupon_code=coupon_code,
+                total_savings=total_savings,
+            )
 
-            # Simple HTML email (template can be created later)
-            html_body = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <h2 style="color: #4CAF50;">✅ Booking Confirmed!</h2>
-                    <p>Hi {customer_name},</p>
-                    <p>Your booking at <strong>{salon_name}</strong> has been confirmed.</p>
-                    {coupon_badge}
-                    <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3>Booking Details:</h3>
-                        <p><strong>Booking Number:</strong> {booking_number}</p>
-                        <p><strong>Date:</strong> {booking_date}</p>
-                        <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
-                    </div>
-
-                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3>Payment Details:</h3>
-                        {discount_rows}
-                        <p><strong>Convenience Fee (Paid Online):</strong> ₹{convenience_fee:.2f}</p>
-                        <p><strong>Service Amount (Pay at Salon):</strong> ₹{service_price:.2f}</p>
-                        <p><strong>Total Amount:</strong> ₹{total_amount:.2f}</p>
-                    </div>
-
-                    <p style="color: #666; font-size: 14px;">
-                        Please arrive 5 minutes before your appointment time.
-                        Remember to pay the service amount (₹{service_price:.2f}) at the salon after your service.
-                    </p>
-
-                    <p>See you soon!<br><strong>Lubist Team</strong></p>
-                </div>
-            </body>
-            </html>
-            """
-            
             subject = f"Booking Confirmed - {salon_name} ({booking_number})"
-            
+
             result = await self._send_email(
-                customer_email, 
-                subject, 
+                customer_email,
+                subject,
                 html_body,
                 email_type="booking_confirmation_customer",
                 related_entity_type="booking",
-                related_entity_id=None  # Would need booking_id passed in
+                related_entity_id=booking_id
             )
             logger.info(f"Booking confirmation email sent to {customer_email} for booking {booking_number}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to send customer booking confirmation: {str(e)}")
             return False
@@ -1015,58 +944,24 @@ class EmailService:
             bool: Success status
         """
         try:
-            # Simple HTML email (template can be created later)
-            html_body = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-                    <h2 style="color: #2196F3;"> New Booking Received!</h2>
-                    <p>Hi {salon_name} Team,</p>
-                    <p>You have received a new booking. Please check your dashboard for details.</p>
-                    
-                    <div style="background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <h3>Booking Details:</h3>
-                        <p><strong>Booking Number:</strong> {booking_number}</p>
-                        <p><strong>Customer:</strong> {customer_name}</p>
-                        <p><strong>Phone:</strong> {customer_phone}</p>
-                        <p><strong>Date:</strong> {booking_date}</p>
-                        <p><strong>Time:</strong> {booking_time}</p>
-                        <p><strong>Services:</strong><br>{_format_booking_services_html(services)}</p>
-                    </div>
+            html_body = self._render(
+                'new_booking_vendor.html',
+                salon_name=salon_name,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                booking_number=booking_number,
+                booking_date=booking_date,
+                booking_time=booking_time,
+                services=_normalize_booking_services(services),
+                service_price=service_price,
+                vendor_portal_url=settings.VENDOR_PORTAL_URL,
+            )
 
-                    <div style="background: #e8f5e9; padding: 15px; border-radius: 5px; margin: 20px 0; border: 1px solid #c8e6c9;">
-                        <h3 style="margin-top: 0; color: #2e7d32;">Amount to Collect at Salon</h3>
-                        <p style="margin-bottom: 0; font-size: 18px; font-weight: bold; color: #2e7d32;">
-                            ₹{service_price:.2f}
-                        </p>
-                    </div>
-                    
-                    <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                        <p><strong>⚠️ Action Required:</strong></p>
-                        <p>Please confirm this booking from your vendor dashboard.</p>
-                        <p>Collect <strong>₹{service_price:.2f}</strong> from the customer at the salon after service.</p>
-                    </div>
-                    
-                    <p style="text-align: center; margin-top: 30px;">
-                        <a href="{settings.VENDOR_PORTAL_URL}/bookings" 
-                           style="background: #2196F3; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                            View in Dashboard
-                        </a>
-                    </p>
-                    
-                    <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                        This is an automated notification from Lubist.
-                    </p>
-                </div>
-            </body>
-            </html>
-            """
-            
             subject = f"New Booking - {customer_name} ({booking_number})"
-            
+
             result = await self._send_email(
-                vendor_email, 
-                subject, 
+                vendor_email,
+                subject,
                 html_body,
                 email_type="booking_notification_vendor",
                 related_entity_type="booking",
@@ -1074,7 +969,7 @@ class EmailService:
             )
             logger.info(f"New booking notification email sent to vendor {vendor_email} for booking {booking_number}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to send vendor booking notification: {str(e)}")
             return False

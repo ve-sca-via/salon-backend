@@ -503,12 +503,6 @@ class VendorService:
             bookings = response.data or []
             logger.info(f"Query returned {len(bookings)} bookings from bookings_with_payments view")
             
-            # DEBUG: Log first booking to verify customer data
-            if bookings:
-                first_booking = bookings[0]
-                logger.debug(f"First booking customer_name: {first_booking.get('customer_name')}")
-                logger.debug(f"First booking customer_phone: {first_booking.get('customer_phone')}")
-            
             # Enrich booking data with service names
             enriched_bookings = []
             for booking in bookings:

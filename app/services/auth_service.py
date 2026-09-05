@@ -1291,7 +1291,7 @@ class AuthService:
 
         # Count what we are legally obliged to keep, so the user can be told plainly.
         retained = {}
-        for label, table in (("bookings", "bookings"), ("payments", "booking_payments")):
+        for label, table in (("bookings", "bookings"), ("payments", "payments")):
             try:
                 res = self.db.table(table).select("id", count="exact") \
                     .eq("customer_id", user_id).execute()

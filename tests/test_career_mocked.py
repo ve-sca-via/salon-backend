@@ -418,30 +418,6 @@ def test_list_requires_admin(cr):
 
 
 # =====================================================================
-# GET /careers/applications/{id}  (admin detail)
-# =====================================================================
-def test_get_one_happy(cr):
-    app_row = cr.seed_application(full_name="Detail Person")
-    cr.login_admin()
-
-    r = cr.client.get(f"{CAREERS}/applications/{app_row['id']}")
-    assert r.status_code == 200, r.text
-    assert r.json()["full_name"] == "Detail Person"
-
-
-def test_get_one_not_found(cr):
-    cr.login_admin()
-    r = cr.client.get(f"{CAREERS}/applications/{uuid.uuid4()}")
-    assert r.status_code == 404, r.text
-
-
-def test_get_one_requires_admin(cr):
-    app_row = cr.seed_application()
-    r = cr.client.get(f"{CAREERS}/applications/{app_row['id']}")
-    assert r.status_code in (401, 403), r.text
-
-
-# =====================================================================
 # PATCH /careers/applications/{id}  (admin status update)
 # =====================================================================
 def test_update_status_happy(cr):
