@@ -22,6 +22,7 @@ import logging
 from app.services.payment import RazorpayService, resolve_razorpay_credentials
 from app.services.config_service import ConfigService
 from app.services.pricing_service import PricingService, LineItem
+from app.services.email import email_service
 
 logger = logging.getLogger(__name__)
 
@@ -540,12 +541,17 @@ class PaymentService:
             
             # Get vendor join request to find salon
             salon_data = None
+            owner_name = None
+            owner_email = None
             if vendor_request_id:
                 vendor_request = self.db.table("vendor_join_requests").select(
                     "id, owner_name, owner_email"
                 ).eq("id", vendor_request_id).single().execute()
-                
+
                 if vendor_request.data:
+                    owner_name = vendor_request.data.get("owner_name")
+                    owner_email = vendor_request.data.get("owner_email")
+
                     # Find salon created from this request
                     salon_response = self.db.table("salons").select(
                         "id, business_name, vendor_id"
@@ -578,8 +584,22 @@ class PaymentService:
                     "vendor_request_id": vendor_request_id
                 }
             
-            # TODO: Send payment receipt and welcome emails
-            
+            if owner_email:
+                email_sent = await email_service.send_vendor_registration_receipt_email(
+                    to_email=owner_email,
+                    owner_name=owner_name or "there",
+                    salon_name=salon_data["business_name"],
+                    amount=float(payment_data.get("amount") or 0),
+                    razorpay_payment_id=razorpay_payment_id,
+                    salon_id=salon_id
+                )
+                if email_sent:
+                    logger.info(f"Registration receipt email sent to {owner_email}")
+                else:
+                    logger.warning(f"Failed to send registration receipt email to {owner_email}")
+            else:
+                logger.warning(f"No owner_email on file for vendor_request_id={vendor_request_id}; skipping registration receipt email")
+
             return {
                 "success": True,
                 "message": "Payment verified successfully! Your salon is now active.",

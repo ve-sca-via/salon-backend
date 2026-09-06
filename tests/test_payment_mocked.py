@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.database import get_db_client
 from app.core.auth import get_current_user, get_current_user_id, TokenData
 from app.services.payment_service import PaymentService
+from app.services.email import email_service
 
 API = settings.API_PREFIX
 PAYMENTS = f"{API}/payments"
@@ -183,6 +184,7 @@ class Handle:
         self.db = db
         self.app = app
         self.client = TestClient(app)
+        self.sent_emails = []
 
     # ---- seeding helpers ----
     def seed_config(self, key, value, config_type="number"):
@@ -263,6 +265,12 @@ def pm(app, monkeypatch):
         self._razorpay_initialized = True
 
     monkeypatch.setattr(PaymentService, "_initialize_razorpay", _fake_init)
+
+    # Stub the registration receipt email: no real Resend/network call from tests.
+    async def _fake_send_receipt(**kwargs):
+        handle.sent_emails.append(kwargs)
+        return True
+    monkeypatch.setattr(email_service, "send_vendor_registration_receipt_email", _fake_send_receipt)
 
     yield handle
 
@@ -396,6 +404,39 @@ def test_registration_verify_happy_activates_salon(pm):
     salon = pm.db.table("salons").rows[0]
     assert salon["is_active"] is True
     assert salon["registration_fee_paid"] is True
+    # payment receipt + welcome email fired to the vendor join request's owner
+    assert len(pm.sent_emails) == 1
+    sent = pm.sent_emails[0]
+    assert sent["to_email"] == "owner@example.com"
+    assert sent["owner_name"] == "Owner"
+    assert sent["salon_name"] == "Test Salon"
+    assert sent["amount"] == 1000.0
+    assert sent["razorpay_payment_id"] == "pay_reg_1"
+    assert sent["salon_id"] == "s1"
+
+
+def test_registration_verify_missing_owner_email_skips_receipt_email(pm):
+    pm.seed_reg_payment(razorpay_order_id="order_reg", status="pending", vendor_request_id="vr1")
+    pm.seed_vendor_request("vr1", status="approved", owner_email=None)
+    pm.seed_salon("s1", join_request_id="vr1")
+    pm.login_as("u1", role="vendor")
+    FakeRazorpay.valid = True
+
+    r = pm.client.post(f"{PAYMENTS}/registration/verify", json=_verify_payload("order_reg"))
+    assert r.status_code == 200, r.text
+    assert r.json()["success"] is True
+    assert pm.sent_emails == []
+
+
+def test_registration_verify_already_success_does_not_resend_email(pm):
+    pm.seed_reg_payment(razorpay_order_id="order_reg", status="success",
+                        razorpay_payment_id="pay_old", salon_id="s1")
+    pm.login_as("u1", role="vendor")
+    FakeRazorpay.valid = True
+
+    r = pm.client.post(f"{PAYMENTS}/registration/verify", json=_verify_payload("order_reg"))
+    assert r.status_code == 200, r.text
+    assert pm.sent_emails == []
 
 
 def test_registration_verify_invalid_signature_is_400(pm):

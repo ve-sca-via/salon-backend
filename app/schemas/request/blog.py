@@ -15,7 +15,28 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 META_TITLE_MAX = 70
 META_DESCRIPTION_MAX = 160
 
+# FAQ entries render as a collapsible list at the bottom of the article and
+# feed a FAQPage JSON-LD block, so they are capped well short of what would
+# make either the accordion or the rich-snippet unreadable.
+FAQ_QUESTION_MAX = 300
+FAQ_ANSWER_MAX = 2000
+FAQS_MAX_ITEMS = 20
+
 VALID_STATUSES = {"draft", "published", "archived"}
+
+
+class FaqItem(BaseModel):
+    """One collapsible question/answer pair. Plain text — no HTML allowed."""
+    question: str = Field(..., min_length=1, max_length=FAQ_QUESTION_MAX)
+    answer: str = Field(..., min_length=1, max_length=FAQ_ANSWER_MAX)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def strip_and_require(cls, v):
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("Each FAQ needs both a question and an answer")
+        return v
 
 
 def _clean_tags(tags: Optional[List[str]]) -> Optional[List[str]]:
@@ -52,6 +73,12 @@ class BlogPostCreate(BaseModel):
 
     tags: Optional[List[str]] = Field(default=None, description="Flat taxonomy; normalized to lowercase")
     author_name: Optional[str] = Field(None, max_length=150, description="Display byline")
+
+    faqs: Optional[List[FaqItem]] = Field(
+        default=None,
+        max_length=FAQS_MAX_ITEMS,
+        description="Collapsible FAQ entries shown at the bottom of the article",
+    )
 
     status: str = Field(default="draft", description="draft | published | archived")
     published_at: Optional[datetime] = Field(
@@ -110,6 +137,8 @@ class BlogPostUpdate(BaseModel):
 
     tags: Optional[List[str]] = None
     author_name: Optional[str] = Field(None, max_length=150)
+
+    faqs: Optional[List[FaqItem]] = Field(default=None, max_length=FAQS_MAX_ITEMS)
 
     status: Optional[str] = None
     published_at: Optional[datetime] = None

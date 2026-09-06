@@ -166,15 +166,17 @@ def test_salon_image_happy(mock_upload):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["success"] is True
-    assert "salon-images" in body["url"]      # public URL from Supabase
-    assert body["path"].startswith("covers/")  # default folder
-    assert mock_upload.storage.uploaded[0]["bucket"] == "salon-images"
+    assert "res.cloudinary.com" in body["url"]  # Cloudinary URL
+    assert body["path"] == body["url"]
+    assert mock_upload.last_cloudinary_upload["folder"] == "salon-images/covers"  # default folder
+    # And it must NOT have touched Supabase storage at all.
+    assert mock_upload.storage.uploaded == []
 
 
 def test_salon_image_custom_folder(mock_upload):
     r = mock_upload.client.post(f"{API}/upload/salon-image?folder=gallery", files=_img())
     assert r.status_code == 200, r.text
-    assert r.json()["path"].startswith("gallery/")
+    assert mock_upload.last_cloudinary_upload["folder"] == "salon-images/gallery"
 
 
 def test_salon_image_invalid_folder(mock_upload):
@@ -194,7 +196,7 @@ def test_salon_image_too_large(mock_upload, monkeypatch):
 
 
 def test_salon_image_storage_failure_returns_500(mock_upload):
-    mock_upload.storage.upload_should_fail = True
+    mock_upload.cloudinary_should_fail = True
     r = mock_upload.client.post(f"{API}/upload/salon-image", files=_img())
     assert r.status_code == 500, r.text
 

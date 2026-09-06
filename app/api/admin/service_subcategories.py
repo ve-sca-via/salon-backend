@@ -162,35 +162,6 @@ async def create_subcategory(
 # SUBCATEGORY-LEVEL OPERATIONS (by subcategory ID)
 # =====================================================
 
-@router.get("/subcategories/{subcategory_id}", operation_id="admin_get_subcategory")
-async def get_subcategory(
-    subcategory_id: str,
-    current_user: TokenData = Depends(require_admin),
-    db = Depends(get_db_client)
-):
-    """Get a specific subcategory by ID"""
-    try:
-        response = db.table("service_subcategories").select(
-            "*, service_categories(id, name)"
-        ).eq("id", subcategory_id).single().execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Subcategory not found"
-            )
-        
-        return response.data
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching subcategory {subcategory_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch subcategory: {str(e)}"
-        )
-
-
 @router.put("/subcategories/{subcategory_id}", operation_id="admin_update_subcategory")
 async def update_subcategory(
     subcategory_id: str,

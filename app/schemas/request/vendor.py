@@ -5,7 +5,7 @@ All vendor request models should be defined here for consistency
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict, Any, List
 from datetime import time
-from ..domain.common import BusinessType, RequestStatus
+from ..domain.common import BusinessType, RequestStatus, OutletType
 
 
 # =====================================================
@@ -39,7 +39,7 @@ class VendorJoinRequestBase(BaseModel):
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     
     # Legal & Compliance
-    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    outlet: Optional[OutletType] = Field(None, description="Type of outlet: franchisee or Company owned")
     is_gst: Optional[bool] = Field(False, description="Whether the business has GST registration")
     gst_number: Optional[str] = Field(None, max_length=50)
     pan_number: Optional[str] = Field(None, pattern=r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$', description="PAN format: ABCDE1234F")
@@ -89,10 +89,10 @@ class SalonBase(BaseModel):
     address: str
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., max_length=6)
+    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    outlet: Optional[OutletType] = Field(None, description="Type of outlet: franchisee or Company owned")
     is_gst: Optional[bool] = Field(False, description="Whether the salon has GST registration")
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)
@@ -114,10 +114,10 @@ class SalonUpdate(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = Field(None, max_length=100)
     state: Optional[str] = Field(None, max_length=100)
-    pincode: Optional[str] = Field(None, max_length=6)
+    pincode: Optional[str] = Field(None, pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    outlet: Optional[str] = Field(None, description="Type of outlet: franchisee or Company owned")
+    outlet: Optional[OutletType] = Field(None, description="Type of outlet: franchisee or Company owned")
     is_gst: Optional[bool] = Field(None, description="Whether the salon has GST registration")
     gst_number: Optional[str] = Field(None, max_length=15)
     pan_number: Optional[str] = Field(None, max_length=10)

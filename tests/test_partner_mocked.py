@@ -376,30 +376,6 @@ def test_list_requires_admin(pr):
 
 
 # =====================================================================
-# GET /partners/requests/{id}  (admin detail)
-# =====================================================================
-def test_get_one_happy(pr):
-    row = pr.seed_request(shop_name="Detail Shop")
-    pr.login_admin()
-
-    r = pr.client.get(f"{PARTNERS}/requests/{row['id']}")
-    assert r.status_code == 200, r.text
-    assert r.json()["shop_name"] == "Detail Shop"
-
-
-def test_get_one_not_found(pr):
-    pr.login_admin()
-    r = pr.client.get(f"{PARTNERS}/requests/{uuid.uuid4()}")
-    assert r.status_code == 404, r.text
-
-
-def test_get_one_requires_admin(pr):
-    row = pr.seed_request()
-    r = pr.client.get(f"{PARTNERS}/requests/{row['id']}")
-    assert r.status_code in (401, 403), r.text
-
-
-# =====================================================================
 # PATCH /partners/requests/{id}  (admin status update)
 # =====================================================================
 def test_update_status_happy(pr):

@@ -217,7 +217,7 @@ class UserService:
         if bookings_check.count and bookings_check.count > 0:
             raise ValueError(f"Cannot delete user: Has {bookings_check.count} active booking(s). Please cancel or complete bookings first.")
 
-        payments_check = self.db.table("booking_payments").select("id", count="exact").eq("customer_id", user_id).is_("deleted_at", "null").execute()
+        payments_check = self.db.table("payments").select("id", count="exact").eq("customer_id", user_id).is_("deleted_at", "null").execute()
         if payments_check.count and payments_check.count > 0:
             raise ValueError(f"Cannot delete user: Has {payments_check.count} payment record(s). Please resolve payments first.")
 

@@ -51,6 +51,10 @@ class BusinessType(str, Enum):
     RETAIL_SHOP = "retail_shop"
     WHOLESALE_BUYER = "wholesale_buyer"
 
+class OutletType(str, Enum):
+    FRANCHISEE = "franchisee"
+    COMPANY_OWNED = "Company owned"
+
 
 # =====================================================
 # BASE DOMAIN MODELS

@@ -56,11 +56,6 @@ def get_feature_status(db, key: str) -> str:
     return get_feature_statuses(db).get(key, STATUS_DISABLED)
 
 
-def is_feature_enabled(db, key: str) -> bool:
-    """True only when the client is entitled to the feature."""
-    return get_feature_status(db, key) == STATUS_ENABLED
-
-
 def is_feature_visible_to(db, key: str, is_internal: bool) -> bool:
     """
     Whether this caller may use the feature at all.

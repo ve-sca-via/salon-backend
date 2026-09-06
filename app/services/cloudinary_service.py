@@ -189,6 +189,28 @@ class CloudinaryService:
                 detail=f"File upload failed: {str(e)}"
             )
 
+    def delete_file(self, db_url: str) -> bool:
+        """
+        Delete a previously uploaded asset from Cloudinary given its stored URL.
+        Never raises - logs and returns False on any failure so callers can
+        treat cleanup as best-effort.
+        """
+        if not db_url or "res.cloudinary.com" not in db_url:
+            return False
+
+        try:
+            self._ensure_configured()
+            resource_type, public_id, _fmt = self._extract_from_cloudinary_url(db_url)
+            result = cloudinary.uploader.destroy(
+                public_id,
+                resource_type=resource_type,
+                type=self._upload_type,
+            )
+            return result.get("result") == "ok"
+        except Exception as e:
+            logger.warning(f"Failed to delete Cloudinary asset for {db_url}: {str(e)}")
+            return False
+
     def generate_download_url(self, db_url: str, expires_in: Optional[int] = None) -> str:
         """
         Generate a download URL. Returns a signed URL for private assets

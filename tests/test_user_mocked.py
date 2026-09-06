@@ -429,6 +429,21 @@ def test_delete_blocked_by_active_bookings_is_400(us):
     assert us.db.table("profiles").rows != []   # not deleted
 
 
+def test_delete_blocked_by_payment_history_is_400(us):
+    # Regression: the guard used to query the retired `booking_payments` table and
+    # never fired for anyone who transacted after the payments-table migration.
+    user = us.seed_profile(role="customer")
+    us.db.table("payments").rows.append(
+        {"id": str(uuid.uuid4()), "customer_id": user["id"], "deleted_at": None}
+    )
+    us.login_admin()
+
+    r = us.client.delete(f"{USERS}/{user['id']}")
+    assert r.status_code == 400, r.text
+    assert "payment" in r.text.lower()
+    assert us.db.table("profiles").rows != []   # not deleted
+
+
 def test_delete_admin_is_400(us):
     admin_user = us.seed_profile(role="admin")
     us.login_admin()

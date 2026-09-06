@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booking Cancelled</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #ff6b6b;
+        }
+        .header h1 {
+            color: #ff6b6b;
+            margin: 0;
+            font-size: 28px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .details-box {
+            background-color: #fff5f5;
+            border-left: 4px solid #ff6b6b;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .button {
+            display: inline-block;
+            padding: 15px 30px;
+            background-color: #2196F3;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Booking Cancelled</h1>
+        </div>
+
+        <div class="content">
+            <p>Hi {{ salon_name }} Team,</p>
+            <p>A customer has cancelled their booking. The appointment slot is now available again.</p>
+
+            <div class="details-box">
+                <h3 style="margin-top: 0;">Cancelled Booking Details</h3>
+                <p><strong>Booking Number:</strong> {{ booking_number }}</p>
+                <p><strong>Customer:</strong> {{ customer_name }}</p>
+                <p><strong>Phone:</strong> {{ customer_phone }}</p>
+                <p><strong>Date:</strong> {{ booking_date }}</p>
+                <p><strong>Time:</strong> {{ booking_time }}</p>
+                <p><strong>Services:</strong><br>
+                {% for service in services %}
+                    {% if service.quantity and service.quantity > 1 %}
+                        • {{ service.name }} (x{{ service.quantity }}) — ₹{{ "%.2f"|format(service.price) }} each<br>
+                    {% else %}
+                        • {{ service.name }} — ₹{{ "%.2f"|format(service.price) }}<br>
+                    {% endif %}
+                {% else %}
+                    • Service<br>
+                {% endfor %}
+                </p>
+                {% if cancellation_reason %}
+                <p><strong>Cancellation Reason:</strong> {{ cancellation_reason }}</p>
+                {% endif %}
+            </div>
+
+            <p style="text-align: center;">
+                <a href="{{ vendor_portal_url }}/bookings" class="button">View in Dashboard</a>
+            </p>
+
+            <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                This is an automated notification from Lubist.
+            </p>
+        </div>
+
+        <div class="footer">
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Lubist. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

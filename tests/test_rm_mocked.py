@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.core.database import get_db_client
 from app.core.auth import require_rm, require_admin, TokenData
 from app.services.activity_log_service import ActivityLogService
+from app.services.cloudinary_service import CloudinaryService
 
 API = settings.API_PREFIX
 RM = f"{API}/rm"
@@ -410,6 +411,28 @@ def test_delete_not_found_404(rm):
     rm.login_rm(rm_id)
     r = rm.client.delete(f"{RM}/vendor-requests/{uuid.uuid4()}")
     assert r.status_code == 404, r.text
+
+
+def test_delete_draft_cleans_up_cloudinary_images(rm, monkeypatch):
+    # Regression: cleanup used to call Supabase Storage on a Cloudinary URL
+    # (silent no-op, false "Deleted N images" log) instead of Cloudinary itself.
+    rm_id = rm.seed_rm()
+    req = rm.seed_vendor_request(
+        rm_id, status="draft",
+        cover_image_url="https://res.cloudinary.com/demo/image/upload/salon-images/vendor/cover.jpg",
+        gallery_images=["https://res.cloudinary.com/demo/image/upload/salon-images/vendor/g1.jpg"],
+    )
+    rm.login_rm(rm_id)
+
+    deleted_urls = []
+    monkeypatch.setattr(
+        CloudinaryService, "delete_file",
+        lambda self, url: deleted_urls.append(url) or True,
+    )
+
+    r = rm.client.delete(f"{RM}/vendor-requests/{req['id']}")
+    assert r.status_code == 200, r.text
+    assert set(deleted_urls) == {req["cover_image_url"], *req["gallery_images"]}
 
 
 # =====================================================================

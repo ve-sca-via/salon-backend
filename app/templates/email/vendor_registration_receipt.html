@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Receipt</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #4CAF50;
+        }
+        .header h1 {
+            color: #4CAF50;
+            margin: 0;
+            font-size: 28px;
+        }
+        .emoji {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px 0;
+        }
+        .success-box {
+            background-color: #f0fdf4;
+            border-left: 4px solid #4CAF50;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .button {
+            display: inline-block;
+            padding: 15px 30px;
+            background-color: #4CAF50;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #45a049;
+        }
+        .info-table {
+            width: 100%;
+            margin: 20px 0;
+        }
+        .info-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .info-table td:first-child {
+            font-weight: bold;
+            color: #666;
+            width: 40%;
+        }
+        .footer {
+            text-align: center;
+            padding-top: 30px;
+            border-top: 2px solid #eee;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="emoji">🎉</div>
+            <h1>You're live!</h1>
+            <p style="font-size: 18px; color: #666; margin: 10px 0 0 0;">Payment received &amp; {{ salon_name }} is now active</p>
+        </div>
+
+        <div class="content">
+            <p>Dear {{ owner_name }},</p>
+
+            <div class="success-box">
+                <p style="margin: 0; font-size: 16px;">
+                    <strong>Welcome aboard!</strong> Your registration payment has been received and
+                    <strong>{{ salon_name }}</strong> is now active on our platform. You can start
+                    adding services and accepting bookings right away.
+                </p>
+            </div>
+
+            <h2 style="color: #333; margin-top: 30px;">🧾 Payment Receipt</h2>
+            <table class="info-table">
+                <tr>
+                    <td>Amount Paid</td>
+                    <td><strong>₹{{ "%.2f"|format(amount) }}</strong></td>
+                </tr>
+                <tr>
+                    <td>Payment ID</td>
+                    <td>{{ razorpay_payment_id }}</td>
+                </tr>
+                <tr>
+                    <td>Salon</td>
+                    <td>{{ salon_name }}</td>
+                </tr>
+            </table>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{{ vendor_login_url }}" class="button">Go to Vendor Dashboard →</a>
+            </div>
+
+            <p style="margin-top: 30px;">
+                If you have any questions or need assistance, please don't hesitate to reach out to our support team.
+            </p>
+
+            <p style="margin-top: 30px;">
+                Welcome to the platform!<br>
+                <strong>Team Salon Platform</strong>
+            </p>
+        </div>
+
+        <div class="footer">
+            <p>
+                Need help? Contact us at <a href="mailto:{{ support_email }}" style="color: #3b82f6;">{{ support_email }}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                © {{ current_year }} Salon Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

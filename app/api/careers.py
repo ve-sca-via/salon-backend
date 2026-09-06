@@ -142,20 +142,6 @@ async def get_career_applications(
     )
 
 
-@router.get("/applications/{application_id}")
-async def get_career_application(
-    application_id: str,
-    admin: TokenData = Depends(require_admin),
-    career_service: CareerService = Depends(get_career_service)
-):
-    """
-    Get a specific career application by ID (Admin only)
-    
-    Requires: Admin authentication
-    """
-    return career_service.get_application_by_id(application_id)
-
-
 @router.patch("/applications/{application_id}", response_model=CareerApplicationUpdateResponse)
 async def update_career_application_status(
     application_id: str,

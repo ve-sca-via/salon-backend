@@ -15,7 +15,7 @@ client's admin panel cannot distinguish them from routes that do not exist.
 from fastapi import APIRouter, Depends
 from supabase import Client
 
-from app.core.auth import get_current_user, require_admin, require_internal, TokenData
+from app.core.auth import require_admin, require_internal, TokenData
 from app.core.database import get_db_client
 from app.services.feature_service import FeatureService
 from app.schemas.request.features import FeatureStatusUpdate

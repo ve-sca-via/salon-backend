@@ -11,6 +11,7 @@ from fastapi import HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
 from app.services.salon_service import SalonService
+from app.services.pricing_service import effective_service_price
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class CustomerService:
                     salon_id = item.get("salon_id")
                     salon_name = salon_details.get("business_name")
                 
-                unit_price = self._get_effective_service_price(service_details)
+                unit_price = effective_service_price(service_details)
                 quantity = item.get("quantity", 1)
                 line_total = unit_price * quantity
                 total_amount += line_total
@@ -1584,18 +1585,3 @@ class CustomerService:
             'all_booking_times': booking.get('booking_time')
         }
     
-    def _get_effective_service_price(self, service_details: Dict[str, Any]) -> float:
-        """
-        Get the effective price for a service.
-        Uses discounted_price when present, otherwise returns the base price.
-        
-        Args:
-            service_details: Service data from database
-            
-        Returns:
-            Effective price as float
-        """
-        discounted_price = service_details.get('discounted_price')
-        if discounted_price is not None:
-            return float(discounted_price)
-        return float(service_details.get('price', 0.0))

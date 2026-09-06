@@ -182,30 +182,6 @@ class PartnerService:
                 detail="Failed to fetch partner requests"
             )
 
-    def get_request_by_id(self, request_id: str) -> Dict[str, Any]:
-        """Get a specific partner request by ID."""
-        try:
-            result = (
-                self.db.table("partner_requests").select("*").eq("id", request_id).execute()
-            )
-
-            if not result.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Partner request not found"
-                )
-
-            return result.data[0]
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching partner request {request_id}: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to fetch partner request"
-            )
-
     async def update_request_status(
         self,
         request_id: str,
