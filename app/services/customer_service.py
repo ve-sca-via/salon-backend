@@ -10,6 +10,7 @@ from datetime import datetime
 from fastapi import HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
+from app.schemas.response.vendor import SalonListResponse
 from app.services.salon_service import SalonService
 from app.services.pricing_service import effective_service_price
 
@@ -904,6 +905,17 @@ class CustomerService:
 
             favorites = salons_response.data or []
             SalonService.flatten_business_type(favorites)
+
+            # FavoritesResponse declares untyped dict rows (it is shared with the
+            # product favorites), so nothing downstream would strip the salon
+            # columns a customer must not see — owner contact details, GST/PAN,
+            # vendor_id, the registration/agreement trail. Project every row
+            # through the public card model, the same boundary the public
+            # listings enforce.
+            favorites = [
+                SalonListResponse.model_validate(salon).model_dump(mode="json")
+                for salon in favorites
+            ]
 
             logger.info(f"Retrieved {len(favorites)} favorites for customer {customer_id}")
             

@@ -129,10 +129,29 @@ class SalonResponse(BaseModel):
         from_attributes = True
 
 class SalonListResponse(BaseModel):
-    """List view with minimal fields for performance"""
+    """
+    Public list view of a salon — the salon-card shape.
+
+    This model is a SECURITY BOUNDARY, not just a convenience shape. The public
+    listing endpoints read whole salon rows from the database (`select("*")`),
+    so anything declared here is published to anonymous callers. It therefore
+    does NOT set `extra = "allow"`: unknown keys must be dropped, not passed
+    through.
+
+    Deliberately absent, and not to be re-added: the owner's contact details
+    (`phone`, `email` — those are detail-page only, see PublicSalonResponse),
+    tax identifiers (`gst_number`, `pan_number`, `is_gst`), internal ownership
+    and workflow references (`vendor_id`, `rm_id`, `assigned_rm`,
+    `join_request_id`, `verified_by`, `created_by`, `updated_by`), and the
+    registration/agreement trail (`registration_fee_paid`,
+    `registration_fee_amount`, `registration_payment_id`,
+    `agreement_document_url`).
+    """
     id: str
     business_name: str
     business_type: Optional[BusinessType] = None  # Optional as not stored in salons table
+    salon_type: Optional[str] = None  # 'salon' | 'regular_buyer' (card badge fallback)
+    description: Optional[str] = None
     address: Optional[str] = None  # Street address — shown on listing cards
     city: str
     state: str
@@ -146,6 +165,11 @@ class SalonListResponse(BaseModel):
     distance_km: Optional[float] = None  # Calculated field for nearby search
     accepting_bookings: Optional[bool] = True
     facilities: Optional[Dict[str, bool]] = None
+    # Opening hours — drive the "open now" badge on cards
+    opening_time: Optional[time] = None
+    closing_time: Optional[time] = None
+    working_days: Optional[List[str]] = None
+    business_hours: Optional[Dict[str, Any]] = None
     # Public coupon/discount display data (attached on list endpoints)
     has_discounted_services: Optional[bool] = None
     max_discount_percentage: Optional[float] = None  # largest service discount %, for "UPTO X% OFF"
@@ -153,7 +177,24 @@ class SalonListResponse(BaseModel):
 
     class Config:
         from_attributes = True
-        extra = "allow"  # Pass through any extra fields from DB
+
+
+class PublicSalonResponse(SalonListResponse):
+    """
+    Public detail view of a salon (`GET /salons/{id}`).
+
+    Same security boundary as SalonListResponse, plus the fields a detail page
+    needs. `phone` and `email` are the salon's published contact details: the
+    web app renders them as `tel:` / `mailto:` links and the mobile app dials
+    `phone`, so they are public by design — but only here, never on the cards.
+    """
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    pincode: Optional[str] = None
+    outlet: Optional[OutletType] = None
+    created_at: Optional[datetime] = None
+    # Platform-wide coupons, attached alongside `coupons` on the detail endpoint
+    platform_coupons: Optional[List[AvailableCouponResponse]] = None
 
 # =====================================================
 # SERVICE RESPONSE SCHEMAS
@@ -245,8 +286,14 @@ class PublicSalonsResponse(BaseModel):
     limit: int
 
 class SalonDetailResponse(BaseModel):
-    """Detailed salon information for single salon view"""
-    salon: SalonResponse
+    """
+    Detailed salon information for the public single-salon view.
+
+    Uses PublicSalonResponse, NOT SalonResponse: SalonResponse is the vendor's
+    own view of their salon and carries tax, ownership and registration fields
+    that must never reach an anonymous caller.
+    """
+    salon: PublicSalonResponse
     services: Optional[List[Dict[str, Any]]] = None  # Service details
     available_slots: Optional[List[Dict[str, Any]]] = None
 

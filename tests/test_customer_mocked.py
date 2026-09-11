@@ -424,6 +424,25 @@ def test_favorites_with_items(cs):
     assert r.json()["count"] == 1
 
 
+def test_favorites_hide_private_salon_fields(cs):
+    # Favorites return whole salon rows; the customer must not receive the
+    # owner's contact details, tax ids or the registration/agreement trail.
+    salon = cs.seed_salon(vendor_id="vendor-1", gst_number="27AAPFU0939F1ZV",
+                          pan_number="AAPFU0939F", registration_payment_id="pay-1",
+                          agreement_document_url="https://files.example.com/a.pdf",
+                          email="owner@example.com")
+    cs.add("favorites", user_id="cust-1", salon_id=salon["id"])
+    cs.login()
+
+    r = cs.client.get(f"{CUST}/favorites")
+    assert r.status_code == 200, r.text
+    fav = r.json()["favorites"][0]
+    for field in ("vendor_id", "gst_number", "pan_number", "registration_payment_id",
+                  "agreement_document_url", "registration_fee_paid", "phone", "email"):
+        assert field not in fav, f"favorites leaked {field}"
+    assert fav["business_name"] == "Salon X"
+
+
 def test_add_favorite_new_then_idempotent(cs):
     salon = cs.seed_salon()
     cs.login()
