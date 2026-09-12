@@ -856,6 +856,7 @@ def test_password_reset_confirm_happy(mock_auth):
     body = r.json()
     assert body["success"] is True
     assert body["access_token"]
+    assert body["user"]["id"] == prof["id"]
 
 
 def test_password_reset_confirm_profile_missing_returns_404(mock_auth):
