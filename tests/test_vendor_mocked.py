@@ -746,6 +746,39 @@ def test_get_active_promotion_after_apply(vd):
     assert body["is_active"] is True
 
 
+def test_list_promotions_returns_history_newest_first(vd):
+    s = vd.seed_salon()
+    vd.seed_service(s["id"], price=1000.0)
+    today = date.today().isoformat()
+
+    vd.client.post(f"{VENDORS}/promotions/apply", json={
+        "title": "First Sale", "discount_type": "flat_amount", "discount_value": 50,
+        "start_date": today,
+    })
+    vd.client.post(f"{VENDORS}/promotions/apply", json={
+        "title": "Second Sale", "discount_type": "percentage", "discount_value": 15,
+        "start_date": today,
+    })
+
+    r = vd.client.get(f"{VENDORS}/promotions")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body) == 2
+    # newest first, and applying the second promo deactivated the first
+    assert body[0]["title"] == "Second Sale"
+    assert body[0]["is_active"] is True
+    assert body[1]["title"] == "First Sale"
+    assert body[1]["is_active"] is False
+    assert body[1]["status"] == "inactive"
+
+
+def test_list_promotions_empty(vd):
+    vd.seed_salon()
+    r = vd.client.get(f"{VENDORS}/promotions")
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+
 # =====================================================================
 # POST /vendors/complete-registration  (error path without a real auth stack)
 # =====================================================================

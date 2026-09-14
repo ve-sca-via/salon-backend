@@ -1369,6 +1369,18 @@ class VendorService:
         promo = response.data[0]
         return self._serialize_promo(promo, today)
 
+    async def list_salon_promotions(self, vendor_id: str) -> List[Dict[str, Any]]:
+        """Every promotion ever applied to this salon, newest first (history, not just the active one)."""
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        await self._sync_promotions_if_needed(salon_id)
+        today = date.today()
+
+        response = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).order("created_at", desc=True).execute()
+
+        return [self._serialize_promo(promo, today) for promo in response.data or []]
+
     # =====================================================
     # VENDOR COUPONS (code-based discounts, scoped to this salon)
     # =====================================================
