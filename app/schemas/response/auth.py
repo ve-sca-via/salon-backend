@@ -43,6 +43,7 @@ class PasswordResetConfirmResponse(BaseModel):
     message: str
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
+    user: Optional[Dict] = None
 
 class PhoneLoginSendOTPResponse(BaseModel):
     """Response after sending OTP to phone"""

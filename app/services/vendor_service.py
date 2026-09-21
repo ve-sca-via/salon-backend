@@ -934,7 +934,14 @@ class VendorService:
         
         logger.info(f"Creating db auth user for {vendor_email}...")
         
-        # Create db auth user using admin API
+        # Create db auth user using admin API.
+        #
+        # NOTE: there used to be a fallback here that called self.db.auth.sign_up()
+        # when admin.create_user() failed. It was removed because it silently masked
+        # real errors (duplicate email, weak password) and created the vendor down a
+        # different path than the one above - sign_up() does not auto-confirm the
+        # email, so the vendor would land in a half-registered state that the rest of
+        # this flow does not expect.
         auth_user_created = False
         try:
             auth_response = self.db.auth.admin.create_user({
@@ -950,27 +957,10 @@ class VendorService:
             logger.info("Auth user created successfully")
         except Exception as auth_error:
             logger.error(f"Auth user creation failed: {str(auth_error)}")
-            # Try alternative approach: sign up the user
-            logger.info("Attempting alternative signup method...")
-            try:
-                auth_response = self.db.auth.sign_up({
-                    "email": vendor_email,
-                    "password": password,
-                    "options": {
-                        "data": {
-                            "role": user_role,
-                            "full_name": vendor_full_name
-                        }
-                    }
-                })
-                auth_user_created = True
-                logger.info("User signed up successfully")
-            except Exception as signup_error:
-                logger.error(f"User signup also failed: {str(signup_error)}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to create user account"
-                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user account"
+            )
         
         # Extract user ID from response
         if hasattr(auth_response, 'user') and auth_response.user:
@@ -1368,6 +1358,18 @@ class VendorService:
 
         promo = response.data[0]
         return self._serialize_promo(promo, today)
+
+    async def list_salon_promotions(self, vendor_id: str) -> List[Dict[str, Any]]:
+        """Every promotion ever applied to this salon, newest first (history, not just the active one)."""
+        salon_id = await self.get_vendor_salon_id(vendor_id)
+        await self._sync_promotions_if_needed(salon_id)
+        today = date.today()
+
+        response = self.db.table("salon_discount_promotions").select("*").eq(
+            "salon_id", salon_id
+        ).order("created_at", desc=True).execute()
+
+        return [self._serialize_promo(promo, today) for promo in response.data or []]
 
     # =====================================================
     # VENDOR COUPONS (code-based discounts, scoped to this salon)
