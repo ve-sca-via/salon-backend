@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -d postgres -At -c \"select column_name from information_schema.columns where table_schema='public' and table_name='profiles' and is_nullable='NO' and column_default is null;\")",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; & G:\\\\vescavia\\\\Projects\\\\backend\\\\.venv\\\\Scripts\\\\python.exe G:\\\\vescavia\\\\Projects\\\\backend\\\\scripts\\\\seed_web_test_accounts.py)",
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -d postgres -c \"select p.email, p.user_role, \\(u.email_confirmed_at is not null\\) confirmed from profiles p join auth.users u on u.id=p.id where p.email like 'web.%'; select business_name, email, salon_type, is_verified, registration_fee_paid, vendor_id is not null linked from salons where email like 'web.%';\")",
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -d postgres -c \"select id, business_name, owner_email, status, created_at from vendor_join_requests where owner_email like 'web.%' order by created_at desc;\")",
+      "PowerShell(Stop-Process -Id 9668,17976 -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process -Id 9668,17976 -ErrorAction SilentlyContinue)",
+      "Read(//c/Users/Safdar Ali Niazi/AppData/Local/Temp/claude/g--vescavia-Projects-backend/cfc8d219-7b8f-4a27-8e24-8048367d0a15/**)",
+      "Read(//c/Users/Safdar Ali Niazi/AppData/Local/Temp/claude/g--vescavia-Projects-backend/cfc8d219-7b8f-4a27-8e24-8048367d0a15/scratchpad/**)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8000,3000 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess, @{n='Proc';e={\\(Get-Process -Id $_.OwningProcess\\).ProcessName}})",
+      "Bash(python -)",
+      "Bash(npx prettier *)",
+      "PowerShell($paths = @\\(\"$env:ProgramFiles\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\", \"${env:ProgramFiles\\(x86\\)}\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\", \"$env:LOCALAPPDATA\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\"\\); foreach \\($p in $paths\\) { if \\(Test-Path $p\\) { Write-Output \"FOUND: $p\" } }; Write-Output '--- global npm ---'; npm ls -g --depth=0 2>$null)",
+      "Bash(npx --yes playwright@latest install chromium --with-deps)",
+      "Bash(mkdir -p \"C:\\\\Users\\\\SAFDAR~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\g--vescavia-Projects-backend\\\\fd83d010-fc71-447f-947f-ef37bca639af\\\\scratchpad\\\\pw-check\" && cd \"C:\\\\Users\\\\SAFDAR~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\g--vescavia-Projects-backend\\\\fd83d010-fc71-447f-947f-ef37bca639af\\\\scratchpad\\\\pw-check\" && npm init -y >/dev/null 2>&1 && npm install playwright 2>&1 | tail -15)",
+      "Bash(git add *)",
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -At -c $q)",
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -At -c \"select id from profiles where email='web.customer@example.com'; select id, name, price from services where salon_id='92ef165c-7ba8-4b0e-a1cc-b7554889bf19' limit 2; select current_date, now\\(\\);\")",
+      "PowerShell(docker exec supabase_db_backend psql -U postgres -At -c \"select column_name, data_type, udt_name from information_schema.columns where table_schema='public' and table_name='bookings' and column_name in \\('time_slots','services','status','duration_minutes','customer_name'\\);\")",
+      "Bash(node -e \"const m = require\\('storybook/test'\\); console.log\\(Object.keys\\(m\\).filter\\(k => /screen|userEvent|waitFor|within|instrument/i.test\\(k\\)\\)\\)\")",
+      "Bash(npm pkg *)",
+      "Bash(xargs grep -l \"navigation\")",
+      "Bash(node -e \"const m = require\\('storybook/test'\\); console.log\\(Object.keys\\(m\\)\\)\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Safdar Ali Niazi\\AppData\\Local\\Temp\\claude\\g--vescavia-Projects-backend\\73f298bb-4842-4a1b-9d12-746aed356b01\\scratchpad",
+      "C:\\Users\\Safdar Ali Niazi\\AppData\\Local\\Temp\\claude\\g--vescavia-Projects-backend\\17441cfd-f0e7-4399-b32a-43f6bebe2b2d\\scratchpad\\pw"
+    ]
+  }
+}
