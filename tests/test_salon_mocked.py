@@ -41,6 +41,47 @@ SALONS = f"{API}/salons"
 LOCATION = f"{API}/location"
 ADMIN_SALONS = f"{API}/admin/salons"
 
+# Columns that exist on every salon row but must never reach a public caller.
+# The public endpoints all read whole rows (select("*")), so the response models
+# are the only thing standing between these and an anonymous GET.
+SENSITIVE_SALON_FIELDS = [
+    "vendor_id", "rm_id", "assigned_rm", "join_request_id",
+    "gst_number", "pan_number", "is_gst",
+    "registration_fee_paid", "registration_fee_amount",
+    "registration_payment_id", "agreement_document_url",
+    "verified_by", "verified_at", "created_by", "updated_by",
+    "deleted_at", "deleted_by", "location",
+]
+
+# The owner's contact details are published on the detail page only (the web app
+# renders tel:/mailto: links, the mobile app dials `phone`) — never on a card.
+CONTACT_FIELDS = ["phone", "email"]
+
+# Values seeded onto a salon so a leak shows up as a real value, not a None.
+PRIVATE_SALON_ROW = {
+    "vendor_id": "vendor-uuid-1",
+    "rm_id": "rm-uuid-1",
+    "assigned_rm": "rm-uuid-1",
+    "join_request_id": "vjr-uuid-1",
+    "gst_number": "27AAPFU0939F1ZV",
+    "pan_number": "AAPFU0939F",
+    "is_gst": True,
+    "registration_payment_id": "pay-uuid-1",
+    "agreement_document_url": "https://files.example.com/agreement.pdf",
+    "verified_by": "admin-uuid-1",
+    "created_by": "admin-uuid-1",
+    "updated_by": "admin-uuid-1",
+}
+
+
+def assert_no_private_fields(salon, *, allow_contact=False):
+    """Assert a public salon payload carries no internal or owner-private data."""
+    leaked = [f for f in SENSITIVE_SALON_FIELDS if f in salon]
+    assert leaked == [], f"public payload leaked: {leaked}"
+    if not allow_contact:
+        leaked_contact = [f for f in CONTACT_FIELDS if f in salon]
+        assert leaked_contact == [], f"card leaked owner contact: {leaked_contact}"
+
 
 # =====================================================================
 # In-memory fake Supabase client (covers the ops salon_service uses)
@@ -472,6 +513,55 @@ def test_salon_detail_attaches_vendor_and_platform_coupons(sa):
 
 
 # =====================================================================
+# Public field boundary
+#
+# Every public salon endpoint reads whole rows from the DB, so each one is
+# checked against a salon seeded with real private values.
+# =====================================================================
+def test_public_list_hides_private_salon_fields(sa):
+    sa.seed_salon(business_name="Leaky", **PRIVATE_SALON_ROW)
+
+    r = sa.client.get(f"{SALONS}/public")
+    assert r.status_code == 200, r.text
+    salon = r.json()["salons"][0]
+    assert_no_private_fields(salon)
+    # the card still carries what it needs to render
+    assert salon["business_name"] == "Leaky"
+    assert salon["city"] == "Testville"
+
+
+def test_salon_detail_hides_private_fields_but_keeps_public_contact(sa):
+    s = sa.seed_salon(business_name="Detail", **PRIVATE_SALON_ROW)
+
+    r = sa.client.get(f"{SALONS}/{s['id']}")
+    assert r.status_code == 200, r.text
+    salon = r.json()["salon"]
+    assert_no_private_fields(salon, allow_contact=True)
+    # published contact details stay — the apps render tel:/mailto: from these
+    assert salon["phone"] == "+919999999999"
+    assert salon["email"] == "salon@example.com"
+
+
+def test_search_hides_private_salon_fields(sa):
+    sa.seed_salon(business_name="Glamour Studio", **PRIVATE_SALON_ROW)
+
+    r = sa.client.get(f"{SALONS}/search/query", params={"q": "glamour"})
+    assert r.status_code == 200, r.text
+    assert_no_private_fields(r.json()["salons"][0])
+
+
+def test_related_hides_private_salon_fields(sa):
+    source = sa.seed_salon(business_name="Source")
+    sa.seed_salon(business_name="Related", **PRIVATE_SALON_ROW)
+
+    r = sa.client.get(f"{SALONS}/{source['id']}/related")
+    assert r.status_code == 200, r.text
+    salons = r.json()["salons"]
+    assert [s["business_name"] for s in salons] == ["Related"]
+    assert_no_private_fields(salons[0])
+
+
+# =====================================================================
 # GET /salons/popular-cities
 # =====================================================================
 def test_popular_cities(sa):
@@ -705,10 +795,14 @@ def test_search_city_filter(sa):
 def test_nearby_happy(sa):
     s1 = sa.seed_salon(business_name="Near A")
     s2 = sa.seed_salon(business_name="Near B")
+    # The PostGIS function selects whole salon columns, vendor_id and
+    # assigned_rm included — mirror that here.
     sa.db.rpc_results["get_nearby_salons"] = [
         {"id": s1["id"], "business_name": "Near A", "distance_km": 1.2,
+         "city": "Testville", "state": "Test State",
          "is_active": True, "is_verified": True},
         {"id": s2["id"], "business_name": "Near B", "distance_km": 3.4,
+         "city": "Testville", "state": "Test State",
          "is_active": True, "is_verified": True},
     ]
 
@@ -725,8 +819,10 @@ def test_nearby_excludes_regular_buyer(sa):
     s2 = sa.seed_salon(business_name="Near Buyer", salon_type="regular_buyer")
     sa.db.rpc_results["get_nearby_salons"] = [
         {"id": s1["id"], "business_name": "Near Salon", "distance_km": 1.0,
+         "city": "Testville", "state": "Test State",
          "is_active": True, "is_verified": True},
         {"id": s2["id"], "business_name": "Near Buyer", "distance_km": 2.0,
+         "city": "Testville", "state": "Test State",
          "is_active": True, "is_verified": True},
     ]
 
@@ -735,6 +831,23 @@ def test_nearby_excludes_regular_buyer(sa):
     assert r.status_code == 200, r.text
     names = [s["business_name"] for s in r.json()["salons"]]
     assert names == ["Near Salon"]
+
+
+def test_nearby_hides_private_salon_fields(sa):
+    s1 = sa.seed_salon(business_name="Near Leaky")
+    sa.db.rpc_results["get_nearby_salons"] = [
+        {"id": s1["id"], "business_name": "Near Leaky", "distance_km": 1.0,
+         "city": "Testville", "state": "Test State",
+         "is_active": True, "is_verified": True,
+         **PRIVATE_SALON_ROW},
+    ]
+
+    r = sa.client.get(f"{LOCATION}/salons/nearby",
+                      params={"lat": 19.0, "lon": 72.8})
+    assert r.status_code == 200, r.text
+    salon = r.json()["salons"][0]
+    assert_no_private_fields(salon)
+    assert salon["distance_km"] == 1.0
 
 
 # =====================================================================

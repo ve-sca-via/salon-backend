@@ -401,6 +401,13 @@ class CouponService:
     # =====================================================
     async def create_coupon(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert a coupon. `data` must already carry scope/salon_id/funded_by/created_by."""
+        # `valid_from` is NOT NULL DEFAULT now() in the DB, but an explicit NULL
+        # (which is what `CouponCreate.model_dump()` sends when the field is left
+        # blank — Pydantic includes the key with value None rather than omitting
+        # it) overrides that default in Postgres and 500s the insert. Drop every
+        # None so the column defaults apply; omitting a nullable column leaves it
+        # NULL either way, so this changes nothing for the rest of the fields.
+        data = {k: v for k, v in data.items() if v is not None}
         if data.get("code"):
             data["code"] = data["code"].strip().upper()
         # Vendor-scoped coupons must point at a real salon. The FK would catch a

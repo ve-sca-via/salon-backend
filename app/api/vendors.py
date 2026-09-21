@@ -247,6 +247,15 @@ async def get_active_promotion(
     return await vendor_service.get_active_salon_promotion(vendor_id=current_user.user_id)
 
 
+@router.get("/promotions", response_model=List[SalonPromoResponse], operation_id="vendor_list_promotions")
+async def list_promotions(
+    current_user: TokenData = Depends(require_vendor),
+    vendor_service: VendorService = Depends(get_vendor_service)
+):
+    """Every promotion ever applied to this salon, newest first."""
+    return await vendor_service.list_salon_promotions(vendor_id=current_user.user_id)
+
+
 @router.post("/promotions/apply", response_model=SalonPromoResponse, operation_id="vendor_apply_promotion")
 async def apply_promotion(
     promo: SalonPromoApplyRequest,
