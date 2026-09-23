@@ -1,12 +1,66 @@
 """
 Logging configuration and setup for FastAPI application.
 Configures rotating, file, and console logging with environment-aware formatting.
+
+Outside development the formatter emits one JSON object per line. Our platform
+(DigitalOcean) forwards stdout to Better Stack, whose source is configured to
+parse each line as JSON into `message_json.*`. Plain prose lines would arrive as
+an opaque blob you cannot filter, group or alert on, so keep this structured.
 """
+import json
 import logging
 import sys
 import os
+from datetime import datetime, timezone
 
 from app.core.config import settings
+from app.core.request_context import get_request_id
+
+
+class JsonFormatter(logging.Formatter):
+    """
+    Render each record as a single-line JSON object.
+
+    Anything passed via `extra={...}` at the call site is merged into the
+    payload as a top-level field, which is what makes Better Stack queries like
+    `status_code:500` or "group by path" possible.
+    """
+
+    # Attributes present on a bare LogRecord are framework internals, not the
+    # custom fields we want to forward. Derived rather than hand-listed so new
+    # attributes in future Python versions don't leak into the payload.
+    _RESERVED = frozenset(
+        logging.LogRecord("", 0, "", 0, "", None, None).__dict__
+    ) | {"asctime", "message", "taskName"}
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+
+        # Fall back to the ContextVar so service-layer logs are correlated too,
+        # even when the call site passed no explicit request_id.
+        request_id = getattr(record, "request_id", None) or get_request_id()
+        if request_id:
+            payload["request_id"] = request_id
+
+        for key, value in record.__dict__.items():
+            if key not in self._RESERVED and not key.startswith("_"):
+                payload[key] = value
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        if record.stack_info:
+            payload["stack"] = self.formatStack(record.stack_info)
+
+        # default=str so an unexpected non-serialisable extra degrades to its
+        # repr instead of throwing inside the logging call.
+        return json.dumps(payload, default=str, ensure_ascii=False)
 
 
 def setup_logging():
@@ -42,16 +96,19 @@ def setup_logging():
             # Log error but don't fail startup
             logging.warning(f"Could not create log file directory: {e}")
 
-    # Configure basicConfig
-    logging.basicConfig(
-        level=log_level,
-        format=(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            if not settings.is_development
-            else "%(name)s - %(message)s"
-        ),
-        handlers=handlers
-    )
+    # Development keeps human-readable output; everywhere else emits JSON so the
+    # log pipeline (DigitalOcean -> Better Stack) can index individual fields.
+    if settings.is_development:
+        logging.basicConfig(
+            level=log_level,
+            format="%(name)s - %(message)s",
+            handlers=handlers,
+        )
+    else:
+        json_formatter = JsonFormatter()
+        for handler in handlers:
+            handler.setFormatter(json_formatter)
+        logging.basicConfig(level=log_level, handlers=handlers)
 
     # Configure uvicorn loggers for better visibility
     logging.getLogger("uvicorn").setLevel(logging.INFO)
