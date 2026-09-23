@@ -22,6 +22,7 @@ from typing import Optional
 from supabase import Client
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.core.auth import require_admin, get_optional_user, TokenData
 from app.services.product_service import ProductService
 from app.schemas.request.product import ProductCreate, ProductUpdate
@@ -200,7 +201,7 @@ async def create_product(
 
 @router.get("/{product_id}/related", response_model=ProductListResponse)
 async def get_related_products(
-    product_id: str,
+    product_id: UUIDPath,
     limit: int = Query(10, ge=1, le=20, description="Maximum number of related products"),
     current_user: Optional[TokenData] = Depends(get_optional_user),
     product_service: ProductService = Depends(get_product_service),
@@ -235,7 +236,7 @@ async def get_related_products(
 
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product_by_id(
-    product_id: str,
+    product_id: UUIDPath,
     current_user: Optional[TokenData] = Depends(get_optional_user),
     product_service: ProductService = Depends(get_product_service),
 ):
@@ -263,7 +264,7 @@ async def get_product_by_id(
 
 @router.put("/{product_id}", response_model=ProductOperationResponse)
 async def update_product(
-    product_id: str,
+    product_id: UUIDPath,
     payload: ProductUpdate,
     current_user: TokenData = Depends(require_admin),
     product_service: ProductService = Depends(get_product_service),
@@ -288,7 +289,7 @@ async def update_product(
 
 @router.delete("/{product_id}", response_model=ProductDeleteResponse)
 async def delete_product(
-    product_id: str,
+    product_id: UUIDPath,
     hard: bool = Query(False, description="If true, permanently delete instead of soft-delete"),
     current_user: TokenData = Depends(require_admin),
     product_service: ProductService = Depends(get_product_service),

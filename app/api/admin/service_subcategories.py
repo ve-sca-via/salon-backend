@@ -5,6 +5,7 @@ Handles subcategory CRUD operations nested under parent categories (Category 2)
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from typing import Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath
 from app.core.database import get_db_client
 from app.schemas.admin import ServiceSubcategoryCreate, ServiceSubcategoryUpdate, StatusToggle
 from app.services.activity_log_service import ActivityLogger
@@ -21,7 +22,7 @@ router = APIRouter()
 
 @router.get("/{category_id}/subcategories", operation_id="admin_get_subcategories")
 async def get_subcategories_by_category(
-    category_id: str,
+    category_id: UUIDPath,
     is_active: Optional[bool] = Query(None),
     include_nested: bool = Query(
         False, description="Attach level-3 sub-subcategories under each subcategory"
@@ -70,7 +71,7 @@ async def get_subcategories_by_category(
 
 @router.post("/{category_id}/subcategories", operation_id="admin_create_subcategory")
 async def create_subcategory(
-    category_id: str,
+    category_id: UUIDPath,
     subcategory_data: ServiceSubcategoryCreate,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
@@ -164,7 +165,7 @@ async def create_subcategory(
 
 @router.put("/subcategories/{subcategory_id}", operation_id="admin_update_subcategory")
 async def update_subcategory(
-    subcategory_id: str,
+    subcategory_id: UUIDPath,
     subcategory_data: ServiceSubcategoryUpdate,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
@@ -207,7 +208,7 @@ async def update_subcategory(
 
 @router.patch("/subcategories/{subcategory_id}/toggle-status", operation_id="admin_toggle_subcategory_status")
 async def toggle_subcategory_status(
-    subcategory_id: str,
+    subcategory_id: UUIDPath,
     status_data: StatusToggle,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
@@ -251,7 +252,7 @@ async def toggle_subcategory_status(
 
 @router.delete("/subcategories/{subcategory_id}", operation_id="admin_delete_subcategory")
 async def delete_subcategory(
-    subcategory_id: str,
+    subcategory_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
 ):

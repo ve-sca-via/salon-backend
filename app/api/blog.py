@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.core.auth import RequireFeature, TokenData
 from app.services.blog_service import BlogService
 from app.schemas.request.blog import BlogPostCreate, BlogPostUpdate
@@ -136,7 +137,7 @@ async def admin_list_all_posts(
 
 @router.get("/admin/{post_id}", response_model=BlogPostOperationResponse)
 async def admin_get_post(
-    post_id: str,
+    post_id: UUIDPath,
     current_user: TokenData = Depends(require_blog),
     blog_service: BlogService = Depends(get_blog_service),
 ):
@@ -176,7 +177,7 @@ async def create_blog_post(
 
 @router.put("/{post_id}", response_model=BlogPostOperationResponse)
 async def update_blog_post(
-    post_id: str,
+    post_id: UUIDPath,
     payload: BlogPostUpdate,
     current_user: TokenData = Depends(require_blog),
     blog_service: BlogService = Depends(get_blog_service),
@@ -194,7 +195,7 @@ async def update_blog_post(
 
 @router.delete("/{post_id}", response_model=BlogPostDeleteResponse)
 async def delete_blog_post(
-    post_id: str,
+    post_id: UUIDPath,
     hard: bool = Query(False, description="If true, permanently delete instead of archiving"),
     current_user: TokenData = Depends(require_blog),
     blog_service: BlogService = Depends(get_blog_service),

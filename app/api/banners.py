@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.core.auth import require_admin, TokenData
 from app.services.banner_service import BannerService
 from app.schemas.request.banner import BannerCreate, BannerUpdate, BannerReorder
@@ -115,7 +116,7 @@ async def reorder_banners(
 
 @router.put("/{banner_id}", response_model=BannerOperationResponse)
 async def update_banner(
-    banner_id: str,
+    banner_id: UUIDPath,
     payload: BannerUpdate,
     current_user: TokenData = Depends(require_admin),
     banner_service: BannerService = Depends(get_banner_service),
@@ -133,7 +134,7 @@ async def update_banner(
 
 @router.delete("/{banner_id}", response_model=BannerDeleteResponse)
 async def delete_banner(
-    banner_id: str,
+    banner_id: UUIDPath,
     hard: bool = Query(False, description="If true, permanently delete instead of soft-delete"),
     current_user: TokenData = Depends(require_admin),
     banner_service: BannerService = Depends(get_banner_service),

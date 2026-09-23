@@ -5,6 +5,7 @@ Handles Relationship Manager profiles and score management
 from fastapi import APIRouter, HTTPException, Depends, status
 from typing import List, Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath
 from app.core.database import get_db_client
 from supabase import Client
 from app.schemas import RMProfileResponse
@@ -55,7 +56,7 @@ async def get_all_rms(
 
 @router.put("/{rm_id}", response_model=RMProfileResponse)
 async def update_rm_profile(
-    rm_id: str,
+    rm_id: UUIDPath,
     updates: RMProfileUpdate,
     current_user: TokenData = Depends(require_admin),
     rm_service: RMService = Depends(get_rm_service)

@@ -40,6 +40,16 @@ from app.services.booking_service import BookingService
 API = settings.API_PREFIX
 VENDORS = f"{API}/vendors"
 
+# Taxonomy ids the fake DB is seeded with. These are real UUIDs, not "cat-1"
+# labels: service_categories.id and service_subcategories.id are uuid columns,
+# and the request schemas now reject anything else at the routing layer (see
+# app/core/validators.py and docs/INCIDENT_salon_id_500.md). Readable-but-wrong
+# ids would make these tests pass against a contract production does not have.
+CAT_HAIR = "11111111-1111-4111-8111-111111111111"
+CAT_SKIN = "22222222-2222-4222-8222-222222222222"
+SUB_MENS_CUT = "33333333-3333-4333-8333-333333333333"
+SUB_FADE = "44444444-4444-4444-8444-444444444444"
+
 
 # =====================================================================
 # In-memory fake Supabase client (covers the ops vendor_service uses)
@@ -284,7 +294,7 @@ class Handle:
         self.db.table("services").rows.append(row)
         return row
 
-    def seed_category(self, cid="cat-1", name="Hair", **fields):
+    def seed_category(self, cid=CAT_HAIR, name="Hair", **fields):
         row = {
             "id": cid,
             "name": name,
@@ -299,7 +309,7 @@ class Handle:
         self.db.table("service_categories").rows.append(row)
         return row
 
-    def seed_subcategory(self, sid, name, parent_category_id="cat-1",
+    def seed_subcategory(self, sid, name, parent_category_id=CAT_HAIR,
                          parent_subcategory_id=None, **fields):
         row = {
             "id": sid,
@@ -431,11 +441,11 @@ def test_update_salon_missing_404(vd):
 # GET /vendors/service-categories  (P3c: shared tree builder)
 # =====================================================================
 def test_service_categories_tree(vd):
-    vd.seed_category("cat-1", "Hair", display_order=1)
-    vd.seed_category("cat-2", "Skin", display_order=2)
-    vd.seed_subcategory("sub-1", "Mens Cut", parent_category_id="cat-1")
-    vd.seed_subcategory("sub-1a", "Fade", parent_category_id="cat-1",
-                        parent_subcategory_id="sub-1")  # level-3
+    vd.seed_category(CAT_HAIR, "Hair", display_order=1)
+    vd.seed_category(CAT_SKIN, "Skin", display_order=2)
+    vd.seed_subcategory(SUB_MENS_CUT, "Mens Cut", parent_category_id=CAT_HAIR)
+    vd.seed_subcategory(SUB_FADE, "Fade", parent_category_id=CAT_HAIR,
+                        parent_subcategory_id=SUB_MENS_CUT)  # level-3
 
     r = vd.client.get(f"{VENDORS}/service-categories")
     assert r.status_code == 200, r.text
@@ -481,32 +491,32 @@ def test_get_services_no_salon_404(vd):
 # =====================================================================
 def test_create_service_happy(vd):
     s = vd.seed_salon()
-    vd.seed_category("cat-1", "Hair")
+    vd.seed_category(CAT_HAIR, "Hair")
 
     payload = {
         "name": "Premium Cut",
         "duration_minutes": 45,
         "price": 800,
-        "category_id": "cat-1",
+        "category_id": CAT_HAIR,
     }
     r = vd.client.post(f"{VENDORS}/services", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["name"] == "Premium Cut"
     assert body["salon_id"] == s["id"]          # auto-assigned
-    assert body["category_id"] == "cat-1"
+    assert body["category_id"] == CAT_HAIR
 
 
 def test_create_service_computes_discount(vd):
     s = vd.seed_salon()
-    vd.seed_category("cat-1", "Hair")
+    vd.seed_category(CAT_HAIR, "Hair")
 
     payload = {
         "name": "Discounted Cut",
         "duration_minutes": 30,
         "price": 1000,
         "discount_percentage": 25,
-        "category_id": "cat-1",
+        "category_id": CAT_HAIR,
     }
     r = vd.client.post(f"{VENDORS}/services", json=payload)
     assert r.status_code == 200, r.text
@@ -524,8 +534,8 @@ def test_create_service_requires_category(vd):
 
 
 def test_create_service_no_salon_404(vd):
-    vd.seed_category("cat-1", "Hair")
-    payload = {"name": "Orphan Service", "duration_minutes": 30, "price": 100, "category_id": "cat-1"}
+    vd.seed_category(CAT_HAIR, "Hair")
+    payload = {"name": "Orphan Service", "duration_minutes": 30, "price": 100, "category_id": CAT_HAIR}
     r = vd.client.post(f"{VENDORS}/services", json=payload)
     assert r.status_code == 404, r.text
 
@@ -605,6 +615,28 @@ def test_get_bookings_status_filter(vd):
     assert r.status_code == 200, r.text
     body = r.json()
     assert [b["booking_number"] for b in body] == ["BK-2"]
+
+
+def test_get_bookings_unknown_status_filter_is_422_not_500(vd):
+    """
+    bookings.status is a Postgres enum, so an unknown label made the query fail
+    with SQLSTATE 22P02 -- the same fault as a malformed uuid, and the same 500.
+    See docs/INCIDENT_salon_id_500.md and app/core/validators.py.
+    """
+    vd.seed_salon()
+    r = vd.client.get(f"{VENDORS}/bookings", params={"status_filter": "bogus"})
+    assert r.status_code == 422, r.text
+
+
+def test_get_bookings_blank_status_filter_means_no_filter(vd):
+    """`?status_filter=` is how the vendor app clears the filter; it must not 422."""
+    s = vd.seed_salon()
+    vd.seed_booking_view(s["id"], booking_number="BK-1", status="confirmed")
+    vd.seed_booking_view(s["id"], booking_number="BK-2", status="completed")
+
+    r = vd.client.get(f"{VENDORS}/bookings", params={"status_filter": ""})
+    assert r.status_code == 200, r.text
+    assert {b["booking_number"] for b in r.json()} == {"BK-1", "BK-2"}
 
 
 def test_get_bookings_no_salon_404(vd):

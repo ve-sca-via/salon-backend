@@ -8,6 +8,7 @@ from pydantic import EmailStr
 import logging
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.core.auth import require_admin, TokenData
 from app.services.career_service import CareerService
 from app.schemas import (
@@ -144,7 +145,7 @@ async def get_career_applications(
 
 @router.patch("/applications/{application_id}", response_model=CareerApplicationUpdateResponse)
 async def update_career_application_status(
-    application_id: str,
+    application_id: UUIDPath,
     update_data: ApplicationStatusUpdate,
     admin: TokenData = Depends(require_admin),
     career_service: CareerService = Depends(get_career_service)
@@ -178,7 +179,7 @@ async def update_career_application_status(
 
 @router.get("/applications/{application_id}/download/{document_type}")
 async def download_document(
-    application_id: str,
+    application_id: UUIDPath,
     document_type: str,
     admin: TokenData = Depends(require_admin),
     career_service: CareerService = Depends(get_career_service)

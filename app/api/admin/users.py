@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, status, Query
 from typing import Optional
 from supabase import Client
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath, UserRoleQueryFilter
 from app.core.database import get_db_client
 from app.services.user_service import UserService, CreateUserRequest
 from app.schemas.user import UserCreate, UserUpdate
@@ -27,7 +28,7 @@ async def get_all_users(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(20, ge=1, le=100, description="Results per page (max 100)"),
     search: Optional[str] = None,
-    role: Optional[str] = None,
+    role: UserRoleQueryFilter = None,
     is_active: Optional[bool] = None,
     current_user: TokenData = Depends(require_admin),
     user_service: UserService = Depends(get_user_service)
@@ -107,7 +108,7 @@ async def create_user(
 
 @router.put("/{user_id}")
 async def update_user(
-    user_id: str,
+    user_id: UUIDPath,
     updates: UserUpdate,
     current_user: TokenData = Depends(require_admin),
     user_service: UserService = Depends(get_user_service)
@@ -128,7 +129,7 @@ async def update_user(
 
 @router.delete("/{user_id}")
 async def delete_user(
-    user_id: str,
+    user_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     user_service: UserService = Depends(get_user_service)
 ):

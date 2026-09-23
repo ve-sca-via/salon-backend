@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, List
 from pydantic import BaseModel
 from app.core.auth import get_current_user, TokenData
+from app.core.validators import UUIDPath
 from app.core.database import get_db_client
 from app.services.product_order_service import ProductOrderService
 from supabase import Client
@@ -63,7 +64,7 @@ async def verify_payment(
 
 @router.post("/dev-verify/{order_id}")
 async def dev_verify_payment(
-    order_id: str,
+    order_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     product_order_service: ProductOrderService = Depends(get_product_order_service)
 ):
