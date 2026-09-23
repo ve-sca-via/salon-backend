@@ -5,6 +5,8 @@ All authentication request models should be defined here for consistency
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
+from .base import PartialUpdateModel
+
 
 # =====================================================
 # AUTH REQUEST SCHEMAS
@@ -59,7 +61,7 @@ class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
 
-class UserProfileUpdate(BaseModel):
+class UserProfileUpdate(PartialUpdateModel):
     """Request to update user profile details"""
     full_name: Optional[str] = Field(None, min_length=2, max_length=100)
     phone: Optional[str] = None

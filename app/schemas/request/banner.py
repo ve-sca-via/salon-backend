@@ -8,6 +8,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.validators import UUIDStr
+from .base import PartialUpdateModel
 
 
 class BannerCreate(BaseModel):
@@ -27,7 +28,7 @@ class BannerCreate(BaseModel):
         return self
 
 
-class BannerUpdate(BaseModel):
+class BannerUpdate(PartialUpdateModel):
     """Schema for updating a banner (all fields optional)."""
     title: Optional[str] = Field(None, max_length=200)
     image_url: Optional[str] = Field(None, min_length=1, max_length=1000)

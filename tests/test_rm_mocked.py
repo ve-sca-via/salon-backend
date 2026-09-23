@@ -492,6 +492,84 @@ def test_update_own_profile_no_valid_fields_400(rm):
     assert r.status_code == 400, r.text
 
 
+# ---------------------------------------------------------------------
+# Reported bug: RM edits their name, leaves phone blank, save fails with
+# nothing to explain why. See docs/PARTIAL_UPDATES.md.
+#
+# `profiles.phone` carries CHECK valid_phone_format:
+#     phone IS NULL OR phone ~ '^\+?[1-9]\d{1,14}$'
+# An empty string satisfies neither, so writing `phone: ""` was a Postgres
+# 23514 that nothing on this route caught -- a bare 500.
+#
+# `_reject_blank_phone` below is that constraint. It is what makes these tests
+# a reproduction rather than an assertion about payload shape: if a blank ever
+# reaches the write again, the test fails the same way production did.
+# ---------------------------------------------------------------------
+def _reject_blank_phone(table):
+    """Make the fake `profiles` table enforce the real CHECK constraint."""
+    from postgrest.exceptions import APIError
+
+    original = table.update
+
+    def guarded(payload):
+        phone = payload.get("phone")
+        if phone is not None and not str(phone).strip():
+            raise APIError({
+                "code": "23514",
+                "message": 'new row for relation "profiles" violates check '
+                           'constraint "valid_phone_format"',
+            })
+        return original(payload)
+
+    table.update = guarded
+
+
+def test_update_own_profile_with_blank_phone_saves_the_name(rm):
+    """
+    The exact reported flow: change the name, leave the phone input empty.
+
+    The blank is dropped as "untouched" before validation, so the write never
+    contains `phone` and the stored number is left as it was.
+    """
+    rm_id = rm.seed_rm(full_name="Old Name", phone="9876543210")
+    rm.login_rm(rm_id)
+    _reject_blank_phone(rm.db.table("profiles"))
+
+    r = rm.client.put(f"{RM}/profile", json={"full_name": "New Name", "phone": ""})
+
+    assert r.status_code == 200, r.text
+    row = rm.db.table("profiles").rows[0]
+    assert row["full_name"] == "New Name"
+    assert row["phone"] == "9876543210", "an untouched blank must not overwrite the number"
+
+
+def test_update_own_profile_can_still_change_the_phone(rm):
+    """Dropping blanks must not stop a real phone edit from going through."""
+    rm_id = rm.seed_rm(phone="9876543210")
+    rm.login_rm(rm_id)
+    _reject_blank_phone(rm.db.table("profiles"))
+
+    r = rm.client.put(f"{RM}/profile", json={"phone": "9000000001"})
+
+    assert r.status_code == 200, r.text
+    assert rm.db.table("profiles").rows[0]["phone"] == "9000000001"
+
+
+def test_update_own_profile_all_blank_is_a_400_not_a_500(rm):
+    """
+    A form submitted with nothing changed now says so, rather than writing
+    blanks and failing at the constraint.
+    """
+    rm_id = rm.seed_rm()
+    rm.login_rm(rm_id)
+    _reject_blank_phone(rm.db.table("profiles"))
+
+    r = rm.client.put(f"{RM}/profile", json={"full_name": "", "phone": ""})
+
+    assert r.status_code == 400, r.text
+    assert "No valid fields to update" in r.text
+
+
 # =====================================================================
 # GET /rm/score-history & /rm/dashboard
 # =====================================================================

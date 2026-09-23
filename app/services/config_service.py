@@ -214,7 +214,7 @@ class ConfigService:
                 raise ValueError(f"Configuration not found: {config_key}")
             
             # Convert Pydantic model to dict and encrypt sensitive values before saving
-            processed_updates = updates.model_dump(exclude_none=True)
+            processed_updates = updates.model_dump(exclude_unset=True)
             if config_key in SENSITIVE_CONFIG_KEYS and 'config_value' in processed_updates:
                 original_value = processed_updates['config_value']
                 try:

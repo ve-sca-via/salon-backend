@@ -1,7 +1,11 @@
 # Incident: Admin "User not allowed" when creating users (RM/customer)
 
-Creating a Relationship Manager (or customer) from the admin panel fails. The panel
-shows "Failed to create authentication account"; the backend logs show GoTrue's
+**Status: RESOLVED 2026-09-21.** Fixed in `9b59793`, shipped to production via PR #155
+(dev → staging) and PR #156 (staging → main), and confirmed working — creating a
+Relationship Manager from the admin panel succeeds again.
+
+Creating a Relationship Manager (or customer) from the admin panel failed. The panel
+showed "Failed to create authentication account"; the backend logs showed GoTrue's
 `User not allowed` (HTTP 403) from `POST /auth/v1/admin/users`.
 
 > **This document was rewritten on 2026-09-21.** The original version blamed stale
@@ -77,8 +81,9 @@ Already fixed upstream. **No bug report to Supabase is needed.**
 | 2.31.0 (latest as of 2026-09) | fixed | no |
 
 The real remediation is upgrading off 2.0.3; `2.5.0` is the minimum that removes the bug.
-**When the upgrade happens, delete the `_isolated_options()` workaround** in
-`app/core/database.py` — and note that later versions rename the class to `SyncClient`
+**This upgrade is still outstanding** — it was deliberately not bundled with the hotfix so
+it can be tested on its own. When it happens, delete the `_isolated_options()` workaround
+in `app/core/database.py` — and note that later versions rename the class to `SyncClient`
 and move `ClientOptions`, so the import there needs checking.
 
 ## Disproven theories (do not re-chase these)

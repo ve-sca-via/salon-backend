@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
+from .request.base import PartialUpdateModel
+
 
 class ServiceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
@@ -18,7 +20,7 @@ class ServiceCreate(BaseModel):
     image_url: Optional[str] = None
 
 
-class ServiceUpdate(BaseModel):
+class ServiceUpdate(PartialUpdateModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     duration_minutes: Optional[int] = Field(None, gt=0)
     price: Optional[float] = Field(None, ge=0)
@@ -46,7 +48,7 @@ class ServiceCategoryCreate(BaseModel):
     is_active: bool = Field(default=True)
 
 
-class ServiceCategoryUpdate(BaseModel):
+class ServiceCategoryUpdate(PartialUpdateModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     icon_url: Optional[str] = None
@@ -66,7 +68,7 @@ class ServiceSubcategoryCreate(BaseModel):
     parent_subcategory_id: Optional[str] = None
 
 
-class ServiceSubcategoryUpdate(BaseModel):
+class ServiceSubcategoryUpdate(PartialUpdateModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     icon_url: Optional[str] = None

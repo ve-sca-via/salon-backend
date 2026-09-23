@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
 from app.core.validators import UUIDStr, BlankableUUIDStr
+from .base import PartialUpdateModel
 
 
 # =====================================================
@@ -25,7 +26,7 @@ class ReviewCreate(BaseModel):
     comment: str = Field(..., min_length=10, max_length=500)
 
 
-class ReviewUpdate(BaseModel):
+class ReviewUpdate(PartialUpdateModel):
     rating: Optional[int] = Field(None, ge=1, le=5)
     comment: Optional[str] = Field(None, min_length=10, max_length=500)
 

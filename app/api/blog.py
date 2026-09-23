@@ -185,11 +185,12 @@ async def update_blog_post(
     """
     Update an existing post.
 
-    **Admin only.** Only provided (non-None) fields are updated. Changing a
-    published post's slug breaks any link search engines have already indexed —
-    the admin UI warns before allowing it.
+    **Admin only.** Only the fields present in the body are updated; a field
+    sent as `null` is cleared, and one sent as `""` is treated as untouched.
+    Changing a published post's slug breaks any link search engines have
+    already indexed — the admin UI warns before allowing it.
     """
-    post = await blog_service.update_post(post_id, payload.model_dump(exclude_none=True))
+    post = await blog_service.update_post(post_id, payload.model_dump(exclude_unset=True))
     return {"success": True, "message": "Blog post updated successfully", "post": post}
 
 

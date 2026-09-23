@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from .common import UserRole, TimestampMixin, ProfileBase
+from ..request.base import PartialUpdateModel
 
 
 # =====================================================
@@ -16,7 +17,7 @@ class ProfileCreate(ProfileBase):
     user_role: UserRole = UserRole.CUSTOMER
     password: str = Field(..., min_length=8)
 
-class ProfileUpdate(BaseModel):
+class ProfileUpdate(PartialUpdateModel):
     full_name: Optional[str] = Field(None, min_length=2, max_length=255)
     phone: Optional[str] = Field(None, max_length=20)
     avatar_url: Optional[str] = None

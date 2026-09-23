@@ -274,10 +274,11 @@ async def update_product(
 
     **Admin only** — requires admin authentication.
 
-    Only provided (non-None) fields are updated.
+    Only the fields present in the body are updated; a field sent as `null` is
+    cleared, and one sent as `""` is treated as untouched.
     Auto-recalculates discount_percentage when price or discount_price changes.
     """
-    update_data = payload.model_dump(exclude_none=True)
+    update_data = payload.model_dump(exclude_unset=True)
     product = await product_service.update_product(product_id, update_data)
 
     return {

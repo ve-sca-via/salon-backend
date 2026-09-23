@@ -414,7 +414,7 @@ class SalonService:
         
         # Normalize updates: accept Pydantic model or raw dict
         if isinstance(updates, SalonUpdate):
-            updates_dict = updates.model_dump(exclude_none=True)
+            updates_dict = updates.model_dump(exclude_unset=True)
         else:
             updates_dict = dict(updates)
 

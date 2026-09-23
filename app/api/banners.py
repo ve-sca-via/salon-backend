@@ -124,10 +124,11 @@ async def update_banner(
     """
     Update an existing banner.
 
-    **Admin only.** Only provided (non-None) fields are updated.
+    **Admin only.** Only the fields present in the body are updated; a field
+    sent as `null` is cleared, and one sent as `""` is treated as untouched.
     """
     banner = await banner_service.update_banner(
-        banner_id, payload.model_dump(exclude_none=True)
+        banner_id, payload.model_dump(exclude_unset=True)
     )
     return {"success": True, "message": "Banner updated successfully", "banner": banner}
 
