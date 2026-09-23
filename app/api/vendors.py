@@ -10,6 +10,7 @@ from app.core.auth import (
     require_vendor,
     TokenData
 )
+from app.core.validators import UUIDPath, BookingStatusFilter
 
 from app.schemas import (
     SalonUpdate,
@@ -190,7 +191,7 @@ async def create_service(
 
 @router.put("/services/{service_id}", response_model=ServiceResponse)
 async def update_service(
-    service_id: str,
+    service_id: UUIDPath,
     update: ServiceUpdate,
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -219,7 +220,7 @@ async def update_service(
 
 @router.delete("/services/{service_id}", response_model=SuccessResponse)
 async def delete_service(
-    service_id: str,
+    service_id: UUIDPath,
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
 ):
@@ -306,7 +307,7 @@ async def create_vendor_coupon(
 
 @router.patch("/coupons/{coupon_id}", response_model=CouponResponse, operation_id="vendor_update_coupon")
 async def update_vendor_coupon(
-    coupon_id: str,
+    coupon_id: UUIDPath,
     updates: CouponUpdate,
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
@@ -321,7 +322,7 @@ async def update_vendor_coupon(
 
 @router.delete("/coupons/{coupon_id}", response_model=CouponResponse, operation_id="vendor_deactivate_coupon")
 async def deactivate_vendor_coupon(
-    coupon_id: str,
+    coupon_id: UUIDPath,
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)
 ):
@@ -338,7 +339,7 @@ async def deactivate_vendor_coupon(
 
 @router.get("/bookings", response_model=List[BookingResponse], operation_id="vendor_get_salon_bookings")
 async def get_salon_bookings(
-    status_filter: Optional[str] = None,
+    status_filter: BookingStatusFilter = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     limit: int = 50,
@@ -363,7 +364,7 @@ async def get_salon_bookings(
 
 @router.put("/bookings/{booking_id}/status", response_model=SuccessResponse, operation_id="vendor_update_booking_status")
 async def update_booking_status(
-    booking_id: str,
+    booking_id: UUIDPath,
     status: str = Body(..., embed=True),
     current_user: TokenData = Depends(require_vendor),
     vendor_service: VendorService = Depends(get_vendor_service)

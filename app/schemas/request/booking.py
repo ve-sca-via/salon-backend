@@ -5,6 +5,8 @@ All booking request models should be defined here for consistency
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
+from app.core.validators import UUIDStr
+
 
 # =====================================================
 # BOOKING REQUEST SCHEMAS
@@ -12,14 +14,14 @@ from typing import Optional, List
 
 # Module-level small service item for BookingCreate.services
 class ServiceItem(BaseModel):
-    service_id: str
+    service_id: UUIDStr
     quantity: int = 1
     class Config:
         from_attributes = True
 
 class BookingCreate(BaseModel):
     """Schema for creating a new booking - supports multiple time slots"""
-    salon_id: str  # UUID string
+    salon_id: UUIDStr
     booking_date: str
     booking_time: str  # DEPRECATED: For backward compatibility only, use time_slots
     time_slots: Optional[List[str]] = Field(None, max_length=3, min_length=1)  # Up to 3 time slots

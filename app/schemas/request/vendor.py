@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Dict, Any, List
 from datetime import time
 from ..domain.common import BusinessType, RequestStatus, OutletType
+from app.core.validators import BlankableUUIDStr
 
 
 # =====================================================
@@ -142,9 +143,9 @@ class ServiceCreate(BaseModel):
     duration_minutes: int = Field(..., gt=0)
     price: float = Field(..., ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
-    category_id: Optional[str] = None
-    subcategory_id: Optional[str] = None
-    sub_subcategory_id: Optional[str] = None
+    category_id: BlankableUUIDStr = None
+    subcategory_id: BlankableUUIDStr = None
+    sub_subcategory_id: BlankableUUIDStr = None
     category_name: Optional[str] = Field(None, min_length=1, max_length=255)
     subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     sub_subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -158,9 +159,9 @@ class ServiceUpdate(BaseModel):
     duration_minutes: Optional[int] = Field(None, gt=0)
     price: Optional[float] = Field(None, ge=0)
     discount_percentage: Optional[float] = Field(None, ge=0, le=100)
-    category_id: Optional[str] = None
-    subcategory_id: Optional[str] = None
-    sub_subcategory_id: Optional[str] = None
+    category_id: BlankableUUIDStr = None
+    subcategory_id: BlankableUUIDStr = None
+    sub_subcategory_id: BlankableUUIDStr = None
     category_name: Optional[str] = Field(None, min_length=1, max_length=255)
     subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)
     sub_subcategory_name: Optional[str] = Field(None, min_length=1, max_length=255)

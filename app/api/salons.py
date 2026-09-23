@@ -14,6 +14,7 @@ from supabase import Client
 import logging
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath, uuid_csv_query
 from app.services.salon_service import SalonService
 from app.utils.scheduling import generate_slots, parse_date
 from app.schemas import (
@@ -144,7 +145,7 @@ async def get_popular_cities(
 
 @router.get("/{salon_id}", response_model=SalonDetailResponse)
 async def get_salon(
-    salon_id: str,
+    salon_id: UUIDPath,
     include_services: bool = Query(False, description="Include salon services"),
     salon_service: SalonService = Depends(get_salon_service)
 ):
@@ -212,7 +213,7 @@ async def get_salon(
 
 @router.get("/{salon_id}/related", response_model=PublicSalonsResponse)
 async def get_related_salons(
-    salon_id: str,
+    salon_id: UUIDPath,
     limit: int = Query(10, ge=1, le=20, description="Maximum number of related salons"),
     salon_service: SalonService = Depends(get_salon_service)
 ):
@@ -240,7 +241,7 @@ async def get_related_salons(
 
 @router.get("/{salon_id}/reviews", response_model=PublicSalonReviewsResponse)
 async def get_salon_reviews(
-    salon_id: str,
+    salon_id: UUIDPath,
     customer_service: CustomerService = Depends(get_customer_service)
 ):
     """Get publicly visible reviews for a salon."""
@@ -249,7 +250,7 @@ async def get_salon_reviews(
 
 @router.get("/{salon_id}/feedback", response_model=ReviewFeedbackContextResponse)
 async def get_salon_feedback_context(
-    salon_id: str,
+    salon_id: UUIDPath,
     token: str = Query(..., description="Signed review link token"),
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -259,7 +260,7 @@ async def get_salon_feedback_context(
 
 @router.post("/{salon_id}/feedback", response_model=ReviewOperationResponse)
 async def submit_salon_feedback(
-    salon_id: str,
+    salon_id: UUIDPath,
     payload: FeedbackReviewCreate,
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -274,7 +275,7 @@ async def submit_salon_feedback(
 
 @router.get("/{salon_id}/services", response_model=SalonServicesResponse)
 async def get_salon_services(
-    salon_id: str,
+    salon_id: UUIDPath,
     salon_service: SalonService = Depends(get_salon_service)
 ):
     """
@@ -303,9 +304,9 @@ async def get_salon_services(
 
 @router.get("/{salon_id}/available-slots", response_model=AvailableSlotsResponse)
 async def get_available_slots(
-    salon_id: str,
+    salon_id: UUIDPath,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
-    service_ids: Optional[str] = Query(None, description="Comma-separated service IDs"),
+    service_ids: Optional[str] = uuid_csv_query("Comma-separated service IDs"),
     salon_service: SalonService = Depends(get_salon_service),
     db = Depends(get_db_client)
 ):

@@ -5,6 +5,7 @@ Handles salon CRUD operations and status management for admins
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath
 from app.services.salon_service import SalonService, SalonSearchParams
 from app.schemas.request.vendor import SalonUpdate
 from app.schemas.admin import StatusToggle
@@ -60,7 +61,7 @@ async def get_all_salons_admin(
 
 @router.put("/{salon_id}", operation_id="admin_update_salon")
 async def update_salon(
-    salon_id: str,
+    salon_id: UUIDPath,
     updates: SalonUpdate,
     current_user: TokenData = Depends(require_admin),
     salon_service: SalonService = Depends(get_salon_service)
@@ -82,7 +83,7 @@ async def update_salon(
 
 @router.delete("/{salon_id}", operation_id="admin_delete_salon")
 async def delete_salon(
-    salon_id: str,
+    salon_id: UUIDPath,
     hard_delete: bool = False,
     current_user: TokenData = Depends(require_admin),
     salon_service: SalonService = Depends(get_salon_service)
@@ -103,7 +104,7 @@ async def delete_salon(
 
 @router.put("/{salon_id}/status", operation_id="admin_toggle_salon_status")
 async def toggle_salon_status(
-    salon_id: str,
+    salon_id: UUIDPath,
     request_body: StatusToggle,
     current_user: TokenData = Depends(require_admin),
     salon_service: SalonService = Depends(get_salon_service)
@@ -128,7 +129,7 @@ async def toggle_salon_status(
 
 @router.post("/{salon_id}/send-payment-reminder", operation_id="admin_send_payment_reminder")
 async def send_payment_reminder(
-    salon_id: str,
+    salon_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     salon_service: SalonService = Depends(get_salon_service),
     db: Client = Depends(get_db_client)

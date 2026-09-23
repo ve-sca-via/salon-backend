@@ -7,6 +7,7 @@ from typing import Optional
 import logging
 
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.core.auth import require_admin, TokenData
 from app.services.partner_service import PartnerService
 from app.schemas import (
@@ -78,7 +79,7 @@ async def get_partner_requests(
 
 @router.patch("/requests/{request_id}", response_model=PartnerRequestUpdateResponse)
 async def update_partner_request(
-    request_id: str,
+    request_id: UUIDPath,
     update_data: PartnerRequestStatusUpdate,
     admin: TokenData = Depends(require_admin),
     partner_service: PartnerService = Depends(get_partner_service),

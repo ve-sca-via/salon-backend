@@ -5,6 +5,7 @@ Handles service categories CRUD operations for admins
 from fastapi import APIRouter, HTTPException, Depends, status, Query, UploadFile, File
 from typing import Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath
 from app.core.database import get_db_client
 from app.schemas.admin import ServiceCategoryCreate, ServiceCategoryUpdate, StatusToggle
 from app.services.storage_service import StorageService
@@ -52,7 +53,7 @@ async def get_all_service_categories(
 
 @router.get("/{category_id}", operation_id="admin_get_service_category")
 async def get_service_category(
-    category_id: str,
+    category_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
 ):
@@ -118,7 +119,7 @@ async def create_service_category(
 
 @router.put("/{category_id}", operation_id="admin_update_service_category")
 async def update_service_category(
-    category_id: str,
+    category_id: UUIDPath,
     category_data: ServiceCategoryUpdate,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
@@ -159,7 +160,7 @@ async def update_service_category(
 
 @router.patch("/{category_id}/toggle-status", operation_id="admin_toggle_service_category_status")
 async def toggle_service_category_status(
-    category_id: str,
+    category_id: UUIDPath,
     status_data: StatusToggle,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
@@ -201,7 +202,7 @@ async def toggle_service_category_status(
 
 @router.delete("/{category_id}", operation_id="admin_delete_service_category")
 async def delete_service_category(
-    category_id: str,
+    category_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     db = Depends(get_db_client)
 ):

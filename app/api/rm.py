@@ -8,6 +8,7 @@ import logging
 from supabase import Client
 
 from app.core.auth import require_rm, TokenData
+from app.core.validators import UUIDPath, VendorRequestStatusFilter
 from app.schemas.user import UserProfileUpdate
 from app.schemas import (
     VendorJoinRequestCreate,
@@ -54,7 +55,7 @@ async def create_vendor_request(
 
 @router.put("/vendor-requests/{request_id}", response_model=VendorRequestOperationResponse)
 async def update_vendor_request(
-    request_id: str,
+    request_id: UUIDPath,
     request: VendorJoinRequestCreate,
     submit_for_approval: bool = False,
     current_user: TokenData = Depends(require_rm),
@@ -71,7 +72,7 @@ async def update_vendor_request(
 
 @router.delete("/vendor-requests/{request_id}", response_model=VendorRequestOperationResponse)
 async def delete_vendor_request(
-    request_id: str,
+    request_id: UUIDPath,
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)
 ):
@@ -88,7 +89,7 @@ async def delete_vendor_request(
 
 @router.get("/vendor-requests", response_model=VendorRequestsListResponse)
 async def get_own_vendor_requests(
-    status_filter: Optional[str] = Query(None, description="Filter by status"),
+    status_filter: VendorRequestStatusFilter = Query(None, description="Filter by status"),
     limit: int = 50,
     offset: int = 0,
     current_user: TokenData = Depends(require_rm),
@@ -112,7 +113,7 @@ async def get_own_vendor_requests(
 
 @router.get("/vendor-requests/{request_id}", response_model=VendorJoinRequestResponse, operation_id="rm_get_vendor_request")
 async def get_vendor_request(
-    request_id: str,
+    request_id: UUIDPath,
     current_user: TokenData = Depends(require_rm),
     rm_service: RMService = Depends(get_rm_service)
 ):

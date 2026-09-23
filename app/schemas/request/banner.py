@@ -7,6 +7,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.validators import UUIDStr
+
 
 class BannerCreate(BaseModel):
     """Schema for creating a new carousel banner."""
@@ -44,7 +46,7 @@ class BannerUpdate(BaseModel):
 
 class BannerOrderItem(BaseModel):
     """A single (id, sort_order) pair used by the bulk reorder endpoint."""
-    id: str = Field(..., description="Banner UUID")
+    id: UUIDStr = Field(..., description="Banner UUID")
     sort_order: int = Field(..., ge=0, description="New ascending position")
 
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from supabase import Client
 from app.core.auth import get_current_user, TokenData
+from app.core.validators import UUIDPath
 from app.core.database import get_db_client
 from app.core.rate_limit import limiter, RateLimits
 from app.services.customer_service import CustomerService
@@ -89,7 +90,7 @@ async def add_to_cart(
 
 @router.put("/cart/{item_id}", response_model=CartOperationResponse)
 async def update_cart_item(
-    item_id: str,
+    item_id: UUIDPath,
     cart_update: CartItemUpdate,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
@@ -106,7 +107,7 @@ async def update_cart_item(
 
 @router.delete("/cart/{item_id}", response_model=SuccessResponse)
 async def remove_from_cart(
-    item_id: str,
+    item_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -151,7 +152,7 @@ async def add_to_product_cart(
 
 @router.put("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def update_product_cart_item(
-    item_id: str,
+    item_id: UUIDPath,
     item: ProductCartItemUpdate,
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
@@ -175,7 +176,7 @@ async def clear_product_cart(
 
 @router.delete("/product-cart/{item_id}", response_model=ProductCartOperationResponse)
 async def remove_from_product_cart(
-    item_id: str,
+    item_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     product_cart_service: ProductCartService = Depends(get_product_cart_service)
 ):
@@ -302,7 +303,7 @@ async def get_my_bookings(
 
 @router.put("/bookings/{booking_id}/cancel", response_model=BookingCancelResponse, operation_id="customer_cancel_booking")
 async def cancel_booking(
-    booking_id: str,
+    booking_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     booking_service: BookingService = Depends(get_booking_service)
 ):
@@ -383,7 +384,7 @@ async def add_favorite_product(
 
 @router.delete("/favorites/products/{product_id}", response_model=FavoriteOperationResponse)
 async def remove_favorite_product(
-    product_id: str,
+    product_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -398,7 +399,7 @@ async def remove_favorite_product(
 
 @router.delete("/favorites/{salon_id}", response_model=FavoriteOperationResponse)
 async def remove_favorite(
-    salon_id: str,
+    salon_id: UUIDPath,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -436,7 +437,7 @@ async def create_review(
 
 @router.put("/reviews/{review_id}", response_model=ReviewOperationResponse)
 async def update_review(
-    review_id: str,
+    review_id: UUIDPath,
     review_data: ReviewUpdate,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
