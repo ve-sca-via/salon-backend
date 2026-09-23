@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
+from app.core.validators import BlankableUUIDStr
+
 
 # =====================================================
 # SHARED VALIDATION
@@ -89,7 +91,7 @@ class VendorCouponCreate(CouponBase):
 class AdminCouponCreate(CouponBase):
     """Coupon created by an admin. Can be platform-wide or scoped to a salon."""
     scope: str = Field("platform", pattern="^(platform|vendor)$")
-    salon_id: Optional[str] = Field(None, description="Required when scope='vendor'")
+    salon_id: BlankableUUIDStr = Field(None, description="Required when scope='vendor'")
     funded_by: str = Field("platform", pattern="^(platform|vendor)$")
 
     @field_validator("salon_id")

@@ -5,6 +5,7 @@ Handles vendor join request approvals, rejections, and management
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, status
 from typing import List, Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath, VendorRequestStatusFilter
 from app.core.database import get_db_client
 from supabase import Client
 from app.schemas import (
@@ -42,7 +43,7 @@ def get_approval_service(db: Client = Depends(get_db_client)) -> VendorApprovalS
 
 @router.get("", response_model=List[VendorJoinRequestResponse], operation_id="admin_get_vendor_requests")
 async def get_vendor_requests(
-    status_filter: Optional[str] = "pending",
+    status_filter: VendorRequestStatusFilter = "pending",
     limit: int = 50,
     offset: int = 0,
     current_user: TokenData = Depends(require_admin),
@@ -70,7 +71,7 @@ APPROVAL_ERROR_STATUS = {
 
 @router.post("/{request_id}/approve", operation_id="admin_approve_vendor_request")
 async def approve_vendor_request(
-    request_id: str,
+    request_id: UUIDPath,
     request_body: VendorApprovalRequest,
     background_tasks: BackgroundTasks,
     current_user: TokenData = Depends(require_admin),
@@ -143,7 +144,7 @@ async def approve_vendor_request(
 
 @router.post("/{request_id}/resend-approval-email", operation_id="admin_resend_approval_email")
 async def resend_approval_email(
-    request_id: str,
+    request_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     approval_service: VendorApprovalService = Depends(get_approval_service),
     db: Client = Depends(get_db_client)
@@ -201,7 +202,7 @@ async def resend_approval_email(
 
 @router.post("/{request_id}/reject", operation_id="admin_reject_vendor_request")
 async def reject_vendor_request(
-    request_id: str,
+    request_id: UUIDPath,
     request_body: VendorRejectionRequest,
     current_user: TokenData = Depends(require_admin),
     approval_service: VendorApprovalService = Depends(get_approval_service)

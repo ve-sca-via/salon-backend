@@ -5,6 +5,7 @@ Handles booking CRUD operations and status management for admins
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from app.core.auth import require_admin, TokenData
+from app.core.validators import BookingStatusFilter
 from app.core.database import get_db_client
 from app.services.booking_service import BookingService
 import logging
@@ -22,7 +23,7 @@ router = APIRouter()
 async def get_all_bookings_admin(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(20, ge=1, le=100, description="Results per page (max 100)"),
-    status: Optional[str] = None,
+    status: BookingStatusFilter = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     current_user: TokenData = Depends(require_admin),

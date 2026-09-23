@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from typing import List, Optional
 
 from app.core.auth import require_admin, TokenData
+from app.core.validators import UUIDPath, uuid_query
 from app.core.database import get_db_client
 from app.services.coupon_service import CouponService
 from app.schemas import AdminCouponCreate, CouponUpdate, CouponResponse
@@ -26,7 +27,7 @@ def get_coupon_service(db=Depends(get_db_client)) -> CouponService:
 @router.get("", response_model=List[CouponResponse])
 async def list_coupons(
     scope: Optional[str] = Query(None, description="Filter by scope: platform | vendor"),
-    salon_id: Optional[str] = Query(None, description="Filter by salon"),
+    salon_id: Optional[str] = uuid_query("Filter by salon"),
     current_user: TokenData = Depends(require_admin),
     coupon_service: CouponService = Depends(get_coupon_service)
 ):
@@ -53,7 +54,7 @@ async def create_coupon(
 
 @router.get("/{coupon_id}", response_model=CouponResponse)
 async def get_coupon(
-    coupon_id: str,
+    coupon_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     coupon_service: CouponService = Depends(get_coupon_service)
 ):
@@ -63,7 +64,7 @@ async def get_coupon(
 
 @router.patch("/{coupon_id}", response_model=CouponResponse)
 async def update_coupon(
-    coupon_id: str,
+    coupon_id: UUIDPath,
     updates: CouponUpdate,
     current_user: TokenData = Depends(require_admin),
     coupon_service: CouponService = Depends(get_coupon_service)
@@ -74,7 +75,7 @@ async def update_coupon(
 
 @router.delete("/{coupon_id}", response_model=CouponResponse)
 async def deactivate_coupon(
-    coupon_id: str,
+    coupon_id: UUIDPath,
     current_user: TokenData = Depends(require_admin),
     coupon_service: CouponService = Depends(get_coupon_service)
 ):

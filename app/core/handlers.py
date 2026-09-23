@@ -11,6 +11,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
 from app.core.exceptions import AppException
@@ -18,6 +19,11 @@ from app.core.request_context import REQUEST_ID_HEADER, get_request_id
 from app.schemas.response import ErrorResponse, ValidationErrorResponse, ErrorDetail
 
 logger = logging.getLogger(__name__)
+
+# SQLSTATE 22P02, invalid_text_representation: what Postgres answers when a
+# value cannot be parsed as the column's type -- e.g. "not-a-uuid" compared
+# against a uuid column.
+PG_INVALID_TEXT_REPRESENTATION = "22P02"
 
 
 def _context(request: Request) -> dict:
@@ -139,8 +145,54 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
     )
 
 
+async def invalid_identifier_response(request: Request, exc) -> JSONResponse:
+    """
+    Turn Postgres 22P02 ("invalid input syntax for type uuid") into a 400.
+
+    This is a backstop, not the fix. Malformed ids are rejected declaratively at
+    the routing layer by the types in `app.core.validators`, before any query
+    runs. But an id can still reach Postgres from somewhere with no such
+    declaration -- a webhook payload, a stored reference, a route added later
+    without `UUIDPath`. Without this, any of those is a 500 on a public
+    endpoint, which is what docs/INCIDENT_salon_id_500.md was about.
+
+    It only catches what reaches here uncaught. A service that wraps the call in
+    `except Exception` and raises its own HTTPException(500) still returns 500 --
+    this does not reach inside those. The routing-layer types are what actually
+    close the hole; `test_uuid_validation.py::test_every_id_path_param_is_uuid_validated`
+    is what keeps them in place as routes are added.
+
+    It answers 400 rather than the 422 the routing layer returns, deliberately:
+    the two are not the same event. A 422 is the contract working. An
+    INVALID_IDENTIFIER 400 means a value got past every declared check, so it
+    marks a validation gap worth finding -- hence the distinct error_code and
+    error_kind to alert on.
+    """
+    logger.warning(
+        f"Malformed identifier reached the database on {request.method} {request.url.path}: {exc}",
+        extra={
+            **_context(request),
+            "status_code": 400,
+            "error_code": "INVALID_IDENTIFIER",
+            "error_kind": "invalid_identifier",
+            "pg_code": getattr(exc, "code", None),
+        },
+    )
+    return _error_response(
+        400,
+        ErrorResponse(
+            message="One of the identifiers in this request is not a valid ID.",
+            error_code="INVALID_IDENTIFIER",
+        ).dict(),
+        request,
+    )
+
+
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
+    if isinstance(exc, APIError) and getattr(exc, "code", None) == PG_INVALID_TEXT_REPRESENTATION:
+        return await invalid_identifier_response(request, exc)
+
     logger.error(
         f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}",
         extra={

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Literal
 from app.core.database import get_db_client
+from app.core.validators import UUIDPath
 from app.services.product_order_service import ProductOrderService
 from supabase import Client
 
@@ -23,7 +24,7 @@ async def get_all_orders(
 
 @router.patch("/{order_id}/status")
 async def update_order_status(
-    order_id: str,
+    order_id: UUIDPath,
     request: UpdateStatusRequest,
     product_order_service: ProductOrderService = Depends(get_product_order_service)
 ):
