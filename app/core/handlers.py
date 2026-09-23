@@ -14,30 +14,83 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
 from app.core.exceptions import AppException
+from app.core.request_context import REQUEST_ID_HEADER, get_request_id
 from app.schemas.response import ErrorResponse, ValidationErrorResponse, ErrorDetail
 
 logger = logging.getLogger(__name__)
 
 
+def _context(request: Request) -> dict:
+    """Structured fields identifying the request that produced an error."""
+    return {
+        "request_id": getattr(request.state, "request_id", None) or get_request_id(),
+        "method": request.method,
+        "path": request.url.path,
+    }
+
+
+def _level_for(status_code: int) -> int:
+    """
+    Map a status code to a log level.
+
+    404s are excluded from WARNING because crawlers and stale frontend links
+    generate a constant background of them; they stay at INFO so a genuine
+    spike is still visible without drowning the warning stream.
+    """
+    if status_code >= 500:
+        return logging.ERROR
+    if status_code == 404:
+        return logging.INFO
+    return logging.WARNING
+
+
+def _error_response(status_code: int, content: dict, request: Request) -> JSONResponse:
+    """Build the JSON response, echoing the correlation ID for support."""
+    request_id = getattr(request.state, "request_id", None) or get_request_id()
+    headers = {REQUEST_ID_HEADER: request_id} if request_id else None
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
+
+
 async def app_exception_handler(request: Request, exc: AppException):
     """Handle custom application exceptions."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=ErrorResponse(
-            message=exc.detail,
-            error_code=exc.error_code
-        ).dict()
+    status_code = exc.status_code
+    logger.log(
+        _level_for(status_code),
+        f"AppException {status_code} {exc.error_code}: {exc.detail}",
+        extra={
+            **_context(request),
+            "status_code": status_code,
+            "error_code": exc.error_code,
+            "error_kind": "app_exception",
+        },
+        # A 5xx we raised deliberately still needs a traceback to be actionable.
+        exc_info=status_code >= 500,
+    )
+    return _error_response(
+        status_code,
+        ErrorResponse(message=exc.detail, error_code=exc.error_code).dict(),
+        request,
     )
 
 
 async def http_exception_handler(request: Request, exc):
     """Handle FastAPI HTTP exceptions."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=ErrorResponse(
-            message=exc.detail,
-            error_code=f"HTTP_{exc.status_code}"
-        ).dict()
+    status_code = exc.status_code
+    logger.log(
+        _level_for(status_code),
+        f"HTTPException {status_code}: {exc.detail}",
+        extra={
+            **_context(request),
+            "status_code": status_code,
+            "error_code": f"HTTP_{status_code}",
+            "error_kind": "http_exception",
+        },
+        exc_info=status_code >= 500,
+    )
+    return _error_response(
+        status_code,
+        ErrorResponse(message=exc.detail, error_code=f"HTTP_{status_code}").dict(),
+        request,
     )
 
 
@@ -47,9 +100,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         ErrorDetail(field=".".join(str(loc) for loc in error["loc"]), message=error["msg"])
         for error in exc.errors()
     ]
-    return JSONResponse(
-        status_code=422,
-        content=ValidationErrorResponse(errors=errors).dict()
+    # 422s are how a client/server contract mismatch shows up. Logging the
+    # offending fields turns "the form stopped working" into a one-line answer.
+    logger.warning(
+        f"Request validation failed on {request.method} {request.url.path}",
+        extra={
+            **_context(request),
+            "status_code": 422,
+            "error_kind": "request_validation",
+            "invalid_fields": [e.field for e in errors],
+        },
+    )
+    return _error_response(
+        422, ValidationErrorResponse(errors=errors).dict(), request
     )
 
 
@@ -59,21 +122,41 @@ async def pydantic_validation_exception_handler(request: Request, exc: Validatio
         ErrorDetail(field=".".join(str(loc) for loc in error["loc"]), message=error["msg"])
         for error in exc.errors()
     ]
-    return JSONResponse(
-        status_code=422,
-        content=ValidationErrorResponse(errors=errors).dict()
+    # Unlike the request-parsing case above, this means our own code built an
+    # invalid model -- a backend bug, so it is logged at ERROR with a traceback.
+    logger.error(
+        f"Internal validation error on {request.method} {request.url.path}",
+        extra={
+            **_context(request),
+            "status_code": 422,
+            "error_kind": "internal_validation",
+            "invalid_fields": [e.field for e in errors],
+        },
+        exc_info=True,
+    )
+    return _error_response(
+        422, ValidationErrorResponse(errors=errors).dict(), request
     )
 
 
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
-    logger.error(f"Unexpected error: {str(exc)}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content=ErrorResponse(
-            message="An unexpected error occurred",
-            error_code="INTERNAL_ERROR"
-        ).dict()
+    logger.error(
+        f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}",
+        extra={
+            **_context(request),
+            "status_code": 500,
+            "error_kind": "unhandled",
+            "exception_type": type(exc).__name__,
+        },
+        exc_info=True,
+    )
+    return _error_response(
+        500,
+        ErrorResponse(
+            message="An unexpected error occurred", error_code="INTERNAL_ERROR"
+        ).dict(),
+        request,
     )
 
 

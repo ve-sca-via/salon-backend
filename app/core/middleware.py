@@ -19,7 +19,8 @@ forward HTTP internally; that middleware would cause a redirect loop. Configure
 HTTPS enforcement at the platform edge instead.
 """
 import logging
-from datetime import datetime
+import time
+from uuid import uuid4
 
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,42 +30,83 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.core.config import settings
+from app.core.request_context import (
+    REQUEST_ID_HEADER,
+    reset_request_id,
+    set_request_id,
+)
 
 logger = logging.getLogger(__name__)
 
+# Requests slower than this are logged at WARNING so they surface without
+# having to query for percentiles.
+SLOW_REQUEST_MS = 2000
+
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    """Per-request timing and method/path logging."""
+    """
+    Assigns a correlation ID to every request and logs its outcome.
+
+    Only one line per request is emitted at INFO: the completion line, which
+    already carries the method, path and client that an inbound line would.
+    Logging both doubled ingest volume for no extra signal.
+    """
 
     async def dispatch(self, request: Request, call_next):
-        logger.info(
-            f"-> {request.method} {request.url.path} - "
-            f"{request.client.host if request.client else 'unknown'}"
-        )
+        # Honour an upstream ID if the caller already set one, so a request can
+        # be followed across services; otherwise mint one.
+        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid4().hex
+        request.state.request_id = request_id
+        token = set_request_id(request_id)
 
-        safe_headers = {
-            k: v for k, v in request.headers.items()
-            if k.lower() not in ("authorization", "cookie", "x-api-key")
+        client_ip = request.client.host if request.client else "unknown"
+        context = {
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "client_ip": client_ip,
         }
-        if safe_headers:
-            logger.debug(f"Request headers: {safe_headers}")
 
-        start_time = datetime.utcnow()
+        logger.debug(f"-> {request.method} {request.url.path}", extra=context)
+
+        start_time = time.perf_counter()
         try:
             response = await call_next(request)
-            process_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-            logger.info(
-                f"<- {request.method} {request.url.path} - "
-                f"{response.status_code} - {process_time:.2f}ms"
-            )
-            return response
-        except Exception as e:
-            process_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            # No exc_info here. Starlette's ServerErrorMiddleware wraps this one,
+            # so `general_exception_handler` sees the same exception and logs the
+            # traceback; emitting it here too would duplicate every stack trace.
+            # This line contributes the timing, joined to that one by request_id.
             logger.error(
-                f":( {request.method} {request.url.path} - ERROR - "
-                f"{process_time:.2f}ms - {str(e)}"
+                f"{request.method} {request.url.path} raised {type(exc).__name__}",
+                extra={
+                    **context,
+                    "duration_ms": round(duration_ms, 2),
+                    "exception_type": type(exc).__name__,
+                },
             )
             raise
+        else:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            level = logging.INFO
+            if response.status_code >= 500 or duration_ms >= SLOW_REQUEST_MS:
+                level = logging.WARNING
+            logger.log(
+                level,
+                f"{request.method} {request.url.path} "
+                f"{response.status_code} {duration_ms:.2f}ms",
+                extra={
+                    **context,
+                    "status_code": response.status_code,
+                    "duration_ms": round(duration_ms, 2),
+                },
+            )
+            # Echo the ID so clients and support can quote it in bug reports.
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
+        finally:
+            reset_request_id(token)
 
 
 def _resolve_cors_origins() -> list[str]:
