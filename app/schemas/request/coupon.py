@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 from app.core.validators import BlankableUUIDStr
+from .base import PartialUpdateModel
 
 
 # =====================================================
@@ -102,7 +103,7 @@ class AdminCouponCreate(CouponBase):
         return v
 
 
-class CouponUpdate(BaseModel):
+class CouponUpdate(PartialUpdateModel):
     """Partial update for a coupon. Code/scope are immutable post-creation."""
     title: Optional[str] = Field(None, min_length=2, max_length=255)
     discount_value: Optional[float] = Field(None, gt=0)

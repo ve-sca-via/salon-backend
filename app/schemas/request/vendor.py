@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 from datetime import time
 from ..domain.common import BusinessType, RequestStatus, OutletType
 from app.core.validators import BlankableUUIDStr
+from .base import PartialUpdateModel
 
 
 # =====================================================
@@ -65,7 +66,7 @@ class VendorJoinRequestBase(BaseModel):
 class VendorJoinRequestCreate(VendorJoinRequestBase):
     pass
 
-class VendorJoinRequestUpdate(BaseModel):
+class VendorJoinRequestUpdate(PartialUpdateModel):
     status: RequestStatus
     admin_notes: Optional[str] = None
 
@@ -107,7 +108,7 @@ class SalonBase(BaseModel):
 class SalonCreate(SalonBase):
     pass
 
-class SalonUpdate(BaseModel):
+class SalonUpdate(PartialUpdateModel):
     business_name: Optional[str] = Field(None, min_length=2, max_length=255)
     description: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=20)
@@ -153,7 +154,7 @@ class ServiceCreate(BaseModel):
     image_url: Optional[str] = None
     is_active: Optional[bool] = True
 
-class ServiceUpdate(BaseModel):
+class ServiceUpdate(PartialUpdateModel):
     name: Optional[str] = Field(None, min_length=2, max_length=255)
     description: Optional[str] = None
     duration_minutes: Optional[int] = Field(None, gt=0)

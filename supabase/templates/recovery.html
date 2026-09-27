@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Magic Link - Lubist</title>
+    <title>Reset Your Password - Lubist</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -60,6 +60,14 @@
             font-weight: 600;
             font-size: 16px;
         }
+        .notice {
+            margin: 30px 0;
+            padding: 16px 20px;
+            background-color: #fef6f3;
+            border-radius: 6px;
+            color: #555;
+            font-size: 15px;
+        }
         .link-text {
             color: #888;
             font-size: 14px;
@@ -88,40 +96,60 @@
 </head>
 <body>
     <div class="container">
+        <!-- Header -->
         <div class="header">
             <h1>Lubist</h1>
-            <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Your Beauty & Wellness Platform</p>
+            <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">
+                Beauty. Booking. Simplified.
+            </p>
         </div>
 
+        <!-- Main Content -->
         <div class="content">
-            <h2>Sign in to Lubist</h2>
-            
-            <p>Hi there,</p>
-            
-            <p>Click the button below to sign in to your Lubist account:</p>
+            <h2>Reset your password</h2>
 
+            <p>Hi there,</p>
+
+            <p>
+                We received a request to reset the password for the Lubist account
+                registered to <strong>{{ .Email }}</strong>. Choose a new password using
+                the button below.
+            </p>
+
+            <!-- Reset Button -->
             <div class="button-container">
                 <a href="{{ .ConfirmationURL }}" class="button">
-                    Sign In to Lubist
+                    Choose a New Password
                 </a>
             </div>
 
-            <p>This link will expire in 1 hour for security reasons.</p>
+            <div class="notice">
+                <strong>This link can only be used once,</strong> and it expires in
+                60 minutes. Request a new one from the "Forgot password" page if it
+                has already run out.
+            </div>
 
-            <p>If you didn't request this email, you can safely ignore it.</p>
+            <p>
+                If you did not ask to reset your password, you can safely ignore this
+                email — your current password stays active and nothing changes.
+            </p>
 
+            <!-- Alternative Link -->
             <p style="color: #888; font-size: 14px; margin-top: 30px;">
-                <strong>Button not working?</strong> Copy and paste this link into your browser:
+                <strong>Button not working?</strong>
+                Copy and paste the link below into your browser:
             </p>
             <div class="link-text">
                 {{ .ConfirmationURL }}
             </div>
         </div>
 
+        <!-- Footer -->
         <div class="footer">
-            <p><strong>Lubist</strong> - Your trusted beauty and wellness partner</p>
+            <p><strong>Lubist</strong> — Beauty. Booking. Simplified.</p>
             <p>
-                Questions? Contact us at <a href="mailto:support@lubist.com">support@lubist.com</a>
+                Need help? Contact us at
+                <a href="mailto:support@lubist.com">support@lubist.com</a>
             </p>
             <p style="margin-top: 15px;">
                 © Lubist. All rights reserved.

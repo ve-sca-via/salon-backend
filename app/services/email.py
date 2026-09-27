@@ -2,6 +2,7 @@
 Email Service
 Handles sending emails through the Resend HTTP API with HTML templates.
 """
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
@@ -44,6 +45,26 @@ _jinja2_env = Environment(
 logger.info("Initialized shared Jinja2 template environment (singleton)")
 
 
+# =====================================================
+# LINKS BACK INTO THE FRONTEND
+# =====================================================
+# Every path here must resolve in BOTH frontends: the production SPA that serves
+# lubist.com today, and the Next.js app that replaces it. The Next app 308s each of
+# these legacy paths (next.config.ts `legacyRedirects`), so the old spelling keeps
+# working after cutover while the new spelling would 404 in production before it.
+# That is why this is /my-bookings and not the Next app's own /account/bookings.
+# See salon_management_next/docs/LAUNCH_CHECKLIST.md.
+CUSTOMER_BOOKINGS_PATH = "/my-bookings"
+SALON_LISTING_PATH = "/salons"
+PRIVACY_POLICY_PATH = "/privacy-policy"
+TERMS_PATH = "/terms-of-service"
+
+
+def _frontend_url(path: str) -> str:
+    """Absolute link into the customer-facing frontend."""
+    return f"{settings.FRONTEND_URL.rstrip('/')}{path}"
+
+
 def _normalize_booking_services(services: list) -> list:
     """
     Normalize booking services into plain {name, price, quantity} dicts for
@@ -74,10 +95,21 @@ class EmailService:
         self.env = _jinja2_env
 
     def _render(self, template_name: str, **context) -> str:
-        """Render a template, injecting current_year once so no call site hardcodes it."""
-        from datetime import datetime
+        """
+        Render a template, injecting the context every email needs so no call site
+        hardcodes it: the year, the support address, and the frontend links. An
+        explicit keyword still wins, so a caller can override any of them.
+        """
         template = self.env.get_template(template_name)
-        return template.render(current_year=datetime.now().year, **context)
+        shared = {
+            "current_year": datetime.now().year,
+            "support_email": settings.SUPPORT_EMAIL,
+            "bookings_url": _frontend_url(CUSTOMER_BOOKINGS_PATH),
+            "salons_url": _frontend_url(SALON_LISTING_PATH),
+            "privacy_url": _frontend_url(PRIVACY_POLICY_PATH),
+            "terms_url": _frontend_url(TERMS_PATH),
+        }
+        return template.render({**shared, **context})
 
     async def _send_email(
         self,
@@ -310,7 +342,6 @@ class EmailService:
                 salon_name=salon_name,
                 registration_url=registration_url,
                 registration_fee=registration_fee,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Congratulations! {salon_name} has been approved"
@@ -367,7 +398,6 @@ class EmailService:
                 points_awarded=points_awarded,
                 new_total_score=new_total_score,
                 registration_fee=registration_fee,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Salon Approved: {salon_name} - You've earned {points_awarded} points!"
@@ -415,7 +445,6 @@ class EmailService:
                 salon_name=salon_name,
                 owner_name=owner_name,
                 rejection_reason=rejection_reason,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Salon Submission Update: {salon_name}"
@@ -469,7 +498,6 @@ class EmailService:
                 booking_date=booking_date,
                 booking_time=booking_time,
                 cancellation_reason=cancellation_reason,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Booking Cancelled: {salon_name}"
@@ -582,7 +610,6 @@ class EmailService:
                 salon_name=salon_name,
                 vendor_login_url=vendor_login_url,
                 registration_fee=registration_fee,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Payment Reminder - Complete registration for {salon_name}"
@@ -632,7 +659,6 @@ class EmailService:
                 amount=amount,
                 razorpay_payment_id=razorpay_payment_id,
                 vendor_login_url=self._vendor_login_url(),
-                support_email=settings.EMAIL_FROM,
             )
 
             subject = f"Payment Receipt & Welcome to {settings.EMAIL_FROM_NAME} - {salon_name} is now live!"
@@ -679,7 +705,6 @@ class EmailService:
                 position=position,
                 application_number=application_number,
                 current_date=current_date,
-                support_email=settings.EMAIL_FROM,
             )
             
             subject = f"Application Received - {position}"
@@ -1041,14 +1066,13 @@ class EmailService:
         Send a thank-you email with a review link after service completion.
         """
         try:
-            template = self.env.get_template('review_request.html')
-            html_body = template.render(
+            html_body = self._render(
+                'review_request.html',
                 customer_name=customer_name,
                 salon_name=salon_name,
                 booking_number=booking_number,
                 booking_date=booking_date,
                 feedback_url=feedback_url,
-                support_email=settings.EMAIL_FROM
             )
 
             subject = f"Thanks for visiting {salon_name} - Share your feedback"

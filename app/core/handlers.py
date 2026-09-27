@@ -8,6 +8,7 @@ Access-Control-Allow-* headers. Don't duplicate that logic here; the two
 implementations will drift.
 """
 import logging
+import re
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +25,59 @@ logger = logging.getLogger(__name__)
 # value cannot be parsed as the column's type -- e.g. "not-a-uuid" compared
 # against a uuid column.
 PG_INVALID_TEXT_REPRESENTATION = "22P02"
+
+# SQLSTATE 23502, not_null_violation: a partial update asked to clear a column
+# the schema requires. Reachable since update bodies send `null` to mean
+# "clear this" (see app/schemas/request/base.py), so it is a client mistake --
+# a 400 -- not a server fault.
+PG_NOT_NULL_VIOLATION = "23502"
+
+# Postgres phrases it as: null value in column "full_name" of relation
+# "profiles" violates not-null constraint.
+_NOT_NULL_COLUMN = re.compile(r'null value in column "([^"]+)"', re.IGNORECASE)
+
+# Wrapper segments in a Pydantic error location; the field name is what's left.
+_LOC_WRAPPERS = {"body", "query", "path", "header", "cookie"}
+
+# Enough field names in the summary to be actionable without an unreadable toast.
+_MAX_FIELDS_IN_MESSAGE = 3
+
+
+def _leaf_field(loc) -> str:
+    """
+    "body.items.0.price" -> "price".
+
+    The wrapper segment and list indices are plumbing; the frontends show this
+    string next to an input, so it has to be the name the user can recognise.
+    """
+    parts = [
+        str(part)
+        for part in loc
+        if str(part) not in _LOC_WRAPPERS and not str(part).isdigit()
+    ]
+    return ".".join(parts)
+
+
+def _validation_message(errors: list) -> str:
+    """
+    A summary naming the fields that failed.
+
+    The old flat "Validation failed" was technically accurate and completely
+    useless: every client showed it as a toast with no indication of which
+    input to look at. Putting the fields in `message` means even a client that
+    only reads `message` -- the legacy SPA, the mobile app -- shows something
+    actionable, without needing to learn the `errors[]` shape.
+    """
+    named = [e for e in errors if e.field]
+    if not named:
+        return "Validation failed"
+
+    shown = named[:_MAX_FIELDS_IN_MESSAGE]
+    summary = "; ".join(f"{e.field}: {e.message}" for e in shown)
+    remaining = len(named) - len(shown)
+    if remaining:
+        summary += f" (and {remaining} more field{'s' if remaining > 1 else ''})"
+    return summary
 
 
 def _context(request: Request) -> dict:
@@ -103,7 +157,7 @@ async def http_exception_handler(request: Request, exc):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle Pydantic validation errors from request parsing."""
     errors = [
-        ErrorDetail(field=".".join(str(loc) for loc in error["loc"]), message=error["msg"])
+        ErrorDetail(field=_leaf_field(error["loc"]), message=error["msg"])
         for error in exc.errors()
     ]
     # 422s are how a client/server contract mismatch shows up. Logging the
@@ -118,14 +172,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         },
     )
     return _error_response(
-        422, ValidationErrorResponse(errors=errors).dict(), request
+        422,
+        ValidationErrorResponse(
+            message=_validation_message(errors), errors=errors
+        ).dict(),
+        request,
     )
 
 
 async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
     """Handle Pydantic validation errors from internal operations."""
     errors = [
-        ErrorDetail(field=".".join(str(loc) for loc in error["loc"]), message=error["msg"])
+        ErrorDetail(field=_leaf_field(error["loc"]), message=error["msg"])
         for error in exc.errors()
     ]
     # Unlike the request-parsing case above, this means our own code built an
@@ -188,10 +246,51 @@ async def invalid_identifier_response(request: Request, exc) -> JSONResponse:
     )
 
 
+async def required_field_cleared_response(request: Request, exc) -> JSONResponse:
+    """
+    Turn Postgres 23502 into a 400 that names the column.
+
+    An update body sends `null` to clear a field. For a column the schema
+    requires that is a client mistake, and the useful answer says which field
+    it was -- not "An unexpected error occurred".
+    """
+    match = _NOT_NULL_COLUMN.search(str(getattr(exc, "message", "") or exc))
+    column = match.group(1) if match else None
+    message = (
+        f"'{column}' is required and cannot be cleared."
+        if column
+        else "A required field was left empty."
+    )
+    logger.warning(
+        f"Not-null violation on {request.method} {request.url.path}: {exc}",
+        extra={
+            **_context(request),
+            "status_code": 400,
+            "error_code": "REQUIRED_FIELD",
+            "error_kind": "required_field_cleared",
+            "pg_code": getattr(exc, "code", None),
+            "invalid_fields": [column] if column else [],
+        },
+    )
+    return _error_response(
+        400,
+        ErrorResponse(
+            message=message,
+            errors=[message],
+            error_code="REQUIRED_FIELD",
+        ).dict(),
+        request,
+    )
+
+
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
-    if isinstance(exc, APIError) and getattr(exc, "code", None) == PG_INVALID_TEXT_REPRESENTATION:
-        return await invalid_identifier_response(request, exc)
+    if isinstance(exc, APIError):
+        pg_code = getattr(exc, "code", None)
+        if pg_code == PG_INVALID_TEXT_REPRESENTATION:
+            return await invalid_identifier_response(request, exc)
+        if pg_code == PG_NOT_NULL_VIOLATION:
+            return await required_field_cleared_response(request, exc)
 
     logger.error(
         f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}",

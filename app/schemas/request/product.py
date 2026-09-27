@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 import re
 
+from .base import PartialUpdateModel
+
 # Slug format: lowercase letters/numbers, single hyphens between segments
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -60,7 +62,7 @@ class ProductCreate(BaseModel):
         return v
 
 
-class ProductUpdate(BaseModel):
+class ProductUpdate(PartialUpdateModel):
     """Schema for updating a product (all fields optional)"""
     name: Optional[str] = Field(None, min_length=2, max_length=200)
     slug: Optional[str] = Field(None, max_length=250)

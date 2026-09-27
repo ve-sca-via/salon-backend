@@ -268,7 +268,7 @@ class UserService:
         if current_role == "admin":
             raise ValueError("Cannot modify admin user accounts")
 
-        updates_dict = updates.model_dump(exclude_none=True)
+        updates_dict = updates.model_dump(exclude_unset=True)
         filtered_updates = {k: v for k, v in updates_dict.items() if k in self.ALLOWED_UPDATE_FIELDS}
         if not filtered_updates:
             raise ValueError("No valid fields to update")

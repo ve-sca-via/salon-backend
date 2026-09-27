@@ -338,7 +338,7 @@ class RMService:
         
         # Convert Pydantic model to dict and filter out protected fields
         try:
-            update_payload = updates.model_dump(exclude_none=True)
+            update_payload = updates.model_dump(exclude_unset=True)
         except Exception:
             # Fall back to expecting a plain dict
             update_payload = dict(updates) if updates else {}

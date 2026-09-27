@@ -351,3 +351,86 @@ def test_career_admin_notification_is_async():
     assert asyncio.iscoroutinefunction(
         EmailService.send_new_career_application_notification
     )
+
+
+# =====================================================================
+# Links and the support address (audit of 2026-09-27)
+#
+# Every link in an email must resolve in BOTH frontends — the production SPA and
+# the Next.js app that replaces it — which is why these assert the legacy paths
+# (/my-bookings, not /account/bookings). See
+# salon_management_next/docs/LAUNCH_CHECKLIST.md, section L1.
+# =====================================================================
+def test_no_template_ships_a_dead_link():
+    """Three templates shipped href="#" buttons that did nothing when clicked."""
+    dead = [
+        path.name
+        for path in email_module.template_dir.glob("*.html")
+        if 'href="#"' in path.read_text(encoding="utf-8")
+    ]
+    assert dead == [], f"dead href=\"#\" links in: {dead}"
+
+
+def test_booking_confirmation_links_to_the_customers_bookings(mail):
+    run(mail.service.send_booking_confirmation_to_customer(
+        customer_email="cust@example.com", customer_name="Cust",
+        salon_name="Glow Salon", booking_number="B-100",
+        booking_date="2026-06-12", booking_time="10:00", services=_services(),
+        total_amount=400.0, convenience_fee=40.0, service_price=360.0,
+    ))
+    # This email had no link at all until 2026-09-27.
+    assert f'href="{settings.FRONTEND_URL.rstrip("/")}/my-bookings"' in mail.last_html()
+
+
+def test_booking_cancellation_links_to_the_salon_listing(mail):
+    run(mail.service.send_booking_cancellation_email(
+        to_email="cust@example.com", customer_name="Cust", salon_name="Glow Salon",
+        service_name="Haircut", booking_date="2026-06-12", booking_time="10:00",
+    ))
+    assert f'href="{settings.FRONTEND_URL.rstrip("/")}/salons"' in mail.last_html()
+
+
+def test_career_confirmation_links_to_the_real_legal_pages(mail):
+    run(mail.service.send_career_application_confirmation(
+        to_email="applicant@example.com", applicant_name="Jane",
+        position="Relationship Manager", application_number="CA-2026-0001",
+    ))
+    html = mail.last_html()
+    base = settings.FRONTEND_URL.rstrip("/")
+    assert f'href="{base}/privacy-policy"' in html
+    assert f'href="{base}/terms-of-service"' in html
+
+
+@pytest.mark.parametrize("send", [
+    lambda s: s.send_vendor_approval_email(
+        to_email="o@example.com", owner_name="O", salon_name="Glow",
+        registration_token="t", registration_fee=1.0),
+    lambda s: s.send_booking_cancellation_email(
+        to_email="c@example.com", customer_name="C", salon_name="Glow",
+        service_name="Haircut", booking_date="2026-06-12", booking_time="10:00"),
+    lambda s: s.send_payment_reminder_email(
+        to_email="v@example.com", salon_name="Glow", registration_fee=1.0),
+    lambda s: s.send_review_request_email(
+        customer_email="c@example.com", customer_name="C", salon_name="Glow",
+        booking_number="B-1", booking_date="2026-06-12", feedback_url="https://x/y",
+        booking_id="bk-1"),
+])
+def test_support_line_never_shows_the_noreply_sender(mail, send):
+    """`support_email` was settings.EMAIL_FROM, i.e. a noreply nobody reads."""
+    run(send(mail.service))
+    html = mail.last_html()
+    assert settings.SUPPORT_EMAIL in html
+    assert settings.EMAIL_FROM not in html
+
+
+def test_render_injects_shared_context_without_call_sites_passing_it(mail):
+    """_render owns year/support/links, so no sender has to remember them."""
+    html = mail.service._render("booking_cancellation.html", customer_name="C")
+    assert settings.SUPPORT_EMAIL in html
+    assert f"{settings.FRONTEND_URL.rstrip('/')}/salons" in html
+
+    # An explicit keyword still wins over the injected default.
+    overridden = mail.service._render(
+        "booking_cancellation.html", customer_name="C", support_email="x@y.z"
+    )
+    assert "x@y.z" in overridden

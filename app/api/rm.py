@@ -157,7 +157,7 @@ async def update_own_profile(
     """Update own RM profile - limited fields allowed"""
     # Only fields the service routes to the profiles table are accepted here.
     allowed_fields = {"full_name", "phone"}
-    update_data = profile_data.model_dump(exclude_none=True)
+    update_data = profile_data.model_dump(exclude_unset=True)
     update_data = {k: v for k, v in update_data.items() if k in allowed_fields}
     
     if not update_data:
