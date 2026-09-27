@@ -120,6 +120,12 @@ class Settings(BaseSettings):
     # requests, partner leads) are delivered.
     ADMIN_EMAIL: str
 
+    # The address shown to users in every "Contact us at ..." line. Must be a real
+    # inbox someone reads — EMAIL_FROM is a noreply sender and was wrongly used for
+    # this until 2026-09-27. Keep it in step with the support address that
+    # auth_service.py prints in its user-facing error messages.
+    SUPPORT_EMAIL: str = "support@lubist.com"
+
     # Resend (https://resend.com) is the only transport. Optional so the app
     # still boots without it — sends then no-op with a warning instead of
     # crashing at import, which keeps local dev usable without a real key.

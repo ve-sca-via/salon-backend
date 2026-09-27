@@ -5,6 +5,8 @@ All admin request models should be defined here for consistency
 from pydantic import BaseModel, Field
 from typing import Optional
 
+from .base import PartialUpdateModel
+
 
 # =====================================================
 # ADMIN REQUEST SCHEMAS
@@ -17,7 +19,7 @@ class SystemConfigCreate(BaseModel):
     description: Optional[str] = Field(None, description="Optional description")
     is_active: Optional[bool] = Field(default=True, description="Whether config is active")
 
-class SystemConfigUpdate(BaseModel):
+class SystemConfigUpdate(PartialUpdateModel):
     config_value: Optional[str] = None
     config_type: Optional[str] = None
     description: Optional[str] = None

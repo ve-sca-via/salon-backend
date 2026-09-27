@@ -11,6 +11,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .base import PartialUpdateModel
+
 # Search engines truncate beyond roughly these lengths.
 META_TITLE_MAX = 70
 META_DESCRIPTION_MAX = 160
@@ -121,7 +123,7 @@ class BlogPostCreate(BaseModel):
         return self
 
 
-class BlogPostUpdate(BaseModel):
+class BlogPostUpdate(PartialUpdateModel):
     """Schema for updating a blog post (all fields optional)."""
     title: Optional[str] = Field(None, min_length=1, max_length=300)
     slug: Optional[str] = Field(None, max_length=200)

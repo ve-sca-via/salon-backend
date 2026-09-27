@@ -4,8 +4,10 @@ Request schemas for RM endpoints
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
+from .base import PartialUpdateModel
 
-class RMProfileUpdate(BaseModel):
+
+class RMProfileUpdate(PartialUpdateModel):
     """Update RM profile. Profile fields (name, phone, email, is_active) update profiles table.
     RM-specific fields update rm_profiles table."""
     # Profile table fields (will be routed to profiles table)

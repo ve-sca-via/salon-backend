@@ -208,10 +208,15 @@ otp_expiry = 3600
 # port = 465
 # user = "resend"
 # pass = "env(RESEND_API_KEY)"
-# admin_email = "noreply@lubist.in"
+# admin_email = "noreply@lubist.com"
 # sender_name = "Lubist"
 
-# Customize email templates for branding
+# Customize email templates for branding.
+#
+# THIS SECTION ONLY APPLIES TO LOCAL SUPABASE. Hosted projects ignore it — the same
+# HTML must be pasted into Dashboard -> Authentication -> Email Templates for staging
+# and production separately, or those environments keep sending Supabase's unbranded
+# defaults. Same dual-channel trap as the SMTP settings above.
 [auth.email.template.confirmation]
 subject = "Welcome to Lubist - Confirm Your Email"
 content_path = "./supabase/templates/confirmation.html"
@@ -219,6 +224,12 @@ content_path = "./supabase/templates/confirmation.html"
 [auth.email.template.magic_link]
 subject = "Sign in to Lubist - Your Magic Link"
 content_path = "./supabase/templates/magic_link.html"
+
+# Password reset. The link lands on FRONTEND_URL/reset-password — auth_service.py's
+# reset_password passes that as redirect_to.
+[auth.email.template.recovery]
+subject = "Reset your Lubist password"
+content_path = "./supabase/templates/recovery.html"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]

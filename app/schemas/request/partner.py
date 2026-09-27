@@ -5,6 +5,8 @@ All partner request models should be defined here for consistency
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, Literal
 
+from .base import PartialUpdateModel
+
 
 # =====================================================
 # PARTNER REQUEST SCHEMAS
@@ -28,7 +30,7 @@ class PartnerRequestCreate(BaseModel):
         return cleaned
 
 
-class PartnerRequestStatusUpdate(BaseModel):
+class PartnerRequestStatusUpdate(PartialUpdateModel):
     """Schema for updating a partner request's status (admin only)"""
     status: Literal['new', 'contacted', 'approved', 'rejected']
     admin_notes: Optional[str] = None

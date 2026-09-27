@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
+from .request.base import PartialUpdateModel
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -12,13 +14,13 @@ class UserCreate(BaseModel):
     gender: str = Field(..., description="User gender: male, female, or other")
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(PartialUpdateModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: Optional[bool] = None
 
 
-class UserProfileUpdate(BaseModel):
+class UserProfileUpdate(PartialUpdateModel):
     full_name: Optional[str] = Field(None, min_length=1, max_length=255)
     phone: Optional[str] = None
     address: Optional[str] = None
