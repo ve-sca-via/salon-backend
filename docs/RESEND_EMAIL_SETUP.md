@@ -19,7 +19,9 @@ emails work, some don't".
 Nothing works until this is done. Resend rejects any `from` address on an
 unverified domain with **HTTP 422**.
 
-1. Resend → **Domains** → *Add Domain* → enter your domain (e.g. `lubist.in`).
+1. Resend → **Domains** → *Add Domain* → enter your domain. **Ours is `lubist.com`**
+   (confirmed by the client 2026-09-27 — earlier revisions of this doc said `lubist.com`,
+   which was wrong and would have 422'd every send).
 2. Add the DNS records Resend shows you (SPF `TXT`, DKIM `CNAME`/`TXT`, and the
    DMARC record if offered) at your DNS provider.
 3. Wait for the status to flip to **Verified**.
@@ -38,10 +40,17 @@ Set on **Railway (staging)** and **DigitalOcean (production)**:
 
 ```
 RESEND_API_KEY=re_xxxxxxxxxxxx
-EMAIL_FROM=noreply@lubist.in          # must be on the verified domain
+EMAIL_FROM=noreply@lubist.com          # must be on the verified domain
 EMAIL_FROM_NAME=Lubist
 ADMIN_EMAIL=<real admin inbox>        # where admin notifications land
+SUPPORT_EMAIL=support@lubist.com      # shown to users; must be a monitored inbox
 ```
+
+`SUPPORT_EMAIL` is what every "Need help? Contact us at …" line in every template
+renders. It defaults to `support@lubist.com` and must **not** be the `EMAIL_FROM`
+noreply address — it was, until 2026-09-27, so users were being invited to reply
+into a void. Keep it in step with the support address `auth_service.py` prints in
+its user-facing error messages, and make sure the inbox actually exists.
 
 The old `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_TLS` /
 `SMTP_SSL` vars are no longer read. Deleting them is tidy but not required —
@@ -65,19 +74,44 @@ Supabase Dashboard → **Project Settings → Authentication → SMTP Settings**
 | Port | `465` |
 | Username | `resend` |
 | Password | your Resend API key |
-| Sender email | `noreply@lubist.in` (verified domain) |
+| Sender email | `noreply@lubist.com` (verified domain) |
 | Sender name | `Lubist` |
 
 Then go to **Authentication → Rate Limits** and raise **"Emails per hour"**. The
 built-in Supabase SMTP is capped at **2 emails/hour**, which silently drops signup
 confirmations — a very common cause of "the confirmation email never arrived".
 
+### 4b. Supabase Auth email templates (the same trap, one level down)
+
+Getting the SMTP right only decides *how* those emails are sent, not what they look
+like. The branded HTML in `supabase/templates/` is wired up in `supabase/config.toml`,
+and **hosted projects ignore that file entirely** — it applies to local Supabase only.
+Until the HTML is pasted into the dashboard, staging and production keep sending
+Supabase's unbranded default templates.
+
+Supabase Dashboard → **Authentication → Emails → Templates**, per project:
+
+| Template | Paste from | Subject |
+|---|---|---|
+| Confirm signup | `supabase/templates/confirmation.html` | `Welcome to Lubist - Confirm Your Email` |
+| Reset password | `supabase/templates/recovery.html` | `Reset your Lubist password` |
+| Magic Link | `supabase/templates/magic_link.html` | `Sign in to Lubist - Your Magic Link` |
+
+Two things to check after pasting:
+
+- **URL Configuration → Redirect URLs** must contain the frontend origin, or the link
+  in the email bounces the user to the Site URL instead of the page it names. Reset
+  links are built from `FRONTEND_URL` + `/reset-password` by `auth_service.py`.
+- The support address hardcoded in those three files (`support@lubist.com`) cannot read
+  env vars — Supabase renders them, not our code. If `SUPPORT_EMAIL` ever changes, the
+  three files change with it.
+
 ## 5. Verify the cutover
 
 On boot the API logs a line you can check in the deploy logs:
 
 ```
-Email (Resend): key=configured, from=noreply@lubist.in, admin=<admin inbox>
+Email (Resend): key=configured, from=noreply@lubist.com, admin=<admin inbox>
 ```
 
 If it says `key=MISSING - sends disabled`, the env var did not reach the app.
