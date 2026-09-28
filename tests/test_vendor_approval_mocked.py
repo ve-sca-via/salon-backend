@@ -98,6 +98,14 @@ class _Query:
         self._filters.append(("in", col, list(vals)))
         return self
 
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
+    def ilike(self, col, pattern):
+        self._filters.append(("ilike", col, pattern))
+        return self
+
     def single(self):
         self._single = True
         return self
@@ -111,8 +119,16 @@ class _Query:
             rv = row.get(c)
             if op == "eq" and rv != v:
                 return False
+            if op == "neq" and rv == v:
+                return False
             if op == "in" and rv not in v:
                 return False
+            if op == "ilike":
+                # The duplicate-owner check escapes ILIKE wildcards; no test needs
+                # wildcard matching, so unescape and compare case-folded.
+                literal = v.replace("\\_", "_").replace("\\%", "%").replace("\\\\", "\\")
+                if str(rv or "").lower() != literal.lower():
+                    return False
         return True
 
     def _embed(self, row, cols):
@@ -249,6 +265,10 @@ class Handle:
     def seed_rm(self, rm_id, *, full_name="Alice RM", email="rm@example.com"):
         self.db.table("profiles").rows.append({
             "id": rm_id, "full_name": full_name, "email": email, "is_active": True,
+            # Real profiles always carry a role, and the duplicate-owner check
+            # names it back to the admin ("...already has a relationship manager
+            # account"), so the fake has to have one too.
+            "user_role": "relationship_manager",
         })
         self.db.table("rm_profiles").rows.append({"id": rm_id, "performance_score": 0})
 
@@ -373,9 +393,14 @@ def test_approve_happy(va):
     assert len(va.spy.tokens) == 1
 
 
-def test_approve_skips_vendor_email_when_owner_is_rm(va):
-    # When the vendor's owner_email equals the RM email, the vendor approval
-    # email is skipped (testing scenario), but the RM notification still goes out.
+def test_approve_refuses_an_owner_email_that_is_the_rms_own(va):
+    """
+    Tester bug #4. This used to be approved: the salon was created, the vendor
+    email was skipped because the address belonged to the RM, and nobody could
+    ever finish registering it - `complete_registration` creates a *new* Supabase
+    user from `owner_email`, and that email already had one. The approval is now
+    refused outright, with the reason, and no salon is created.
+    """
     rm_id = str(uuid.uuid4())
     va.seed_config()
     va.seed_rm(rm_id, email="same@example.com")
@@ -383,10 +408,29 @@ def test_approve_skips_vendor_email_when_owner_is_rm(va):
                           latitude=12.97, longitude=77.59)
 
     r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
-    assert r.status_code == 200, r.text
-    kinds = [k for k, _ in va.spy.emails]
-    assert "vendor_approval" not in kinds
-    assert "rm_approved" in kinds
+
+    assert r.status_code == 409, r.text
+    assert "relationship manager account" in r.text
+    assert va.db.table("salons").rows == []
+    assert va.db.table("vendor_join_requests").rows[0]["status"] == "pending", \
+        "a refused approval must leave the request claimable"
+    assert va.spy.emails == []
+
+
+def test_approve_refuses_a_second_salon_on_one_owner_email(va):
+    """Tester bug #5, caught at approval as well as at submission - a request
+    submitted before the check shipped must not slip through."""
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    va.seed_request(rm_id, status="approved", business_name="First Salon")
+    req = va.seed_request(rm_id, latitude=12.97, longitude=77.59)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={})
+
+    assert r.status_code == 409, r.text
+    assert "First Salon" in r.text
+    assert va.db.table("salons").rows == []
 
 
 def test_approve_geocodes_when_no_coordinates(va):
@@ -614,11 +658,24 @@ def test_resend_approval_email_resends_only_the_vendor_email(va):
 
 
 def test_resend_approval_email_forces_send_when_owner_is_the_rm(va):
-    # The approve flow deliberately skips this address; the manual resend must not.
+    """
+    Approval now refuses an owner email that belongs to the RM, so this state can
+    only be reached by a salon approved *before* that check shipped - and those
+    exist in production, stranded with no registration link. The manual resend is
+    their recovery path, so it must still bypass the skip. Seeded directly rather
+    than approved through the API, which would now (correctly) 409.
+    """
     rm_id = str(uuid.uuid4())
     va.seed_config()
     va.seed_rm(rm_id, email="same@example.com")
-    req = _approve(va, rm_id, owner_email="same@example.com")
+    req = va.seed_request(rm_id, status="approved", owner_email="same@example.com",
+                          latitude=12.97, longitude=77.59)
+    va.db.table("salons").rows.append({
+        "id": str(uuid.uuid4()),
+        "join_request_id": req["id"],
+        "business_name": req["business_name"],
+        "email": req["owner_email"],
+    })
 
     r = va.client.post(f"{VREQS}/{req['id']}/resend-approval-email")
     assert r.status_code == 200, r.text

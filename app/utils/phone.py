@@ -58,6 +58,58 @@ def normalize_phone(phone: Optional[str], country_code: str = "91") -> Optional[
     return f"+{country_code}{phone}"
 
 
+#: Indian mobile numbers are exactly 10 digits and start with 6-9. The same rule
+#: is enforced client-side by the RM salon form and the admin panel, so keeping it
+#: here as the single server-side definition stops the two drifting again.
+INDIAN_MOBILE_PATTERN = re.compile(r"^[6-9]\d{9}$")
+
+INDIAN_MOBILE_RULE = (
+    "Enter a 10-digit Indian mobile number starting with 6-9 "
+    "(a +91 or 91 prefix is accepted and stripped)"
+)
+
+
+def to_indian_mobile_e164(phone: Optional[str]) -> Optional[str]:
+    """
+    Validate a phone number as an Indian mobile and return it in E.164 form.
+
+    Unlike :func:`normalize_phone`, which returns ``None`` for anything it cannot
+    parse, this raises. Silently dropping a bad number is fine when the phone is
+    incidental, but on a create/update form it means the admin typed 11 digits,
+    saw "saved", and got an account with no phone at all - which is how
+    ``profiles.phone`` ended up holding both bare 10-digit and +91 shapes.
+
+    Args:
+        phone: Phone in any of the shapes a form produces ("9876543210",
+            "+91 98765 43210", "91-9876543210"), or None/blank.
+
+    Returns:
+        E.164 (e.g. "+919876543210"), or None when nothing was supplied.
+
+    Raises:
+        ValueError: The number is not a valid Indian mobile. The message is the
+            user-facing rule, so Pydantic surfaces something readable in the 422.
+    """
+    if phone is None:
+        return None
+
+    raw = str(phone).strip()
+    if not raw:
+        return None
+
+    digits = re.sub(r"\D", "", raw)
+
+    # Strip the country code only at its full length, for the same reason
+    # normalize_phone does: a valid local number can itself start with "91".
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+
+    if not INDIAN_MOBILE_PATTERN.match(digits):
+        raise ValueError(INDIAN_MOBILE_RULE)
+
+    return f"+91{digits}"
+
+
 def is_phone_valid_e164(phone: Optional[str]) -> bool:
     """
     Check if phone number is in valid E.164 format

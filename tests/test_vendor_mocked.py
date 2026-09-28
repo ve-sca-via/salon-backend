@@ -826,3 +826,83 @@ def test_complete_registration_invalid_token(vd):
     }
     r = vd.client.post(f"{VENDORS}/complete-registration", json=payload)
     assert r.status_code in (400, 401, 422, 500), r.text
+
+
+# =====================================================================
+# An email that already has an account (tester bug #5, tail end)
+# =====================================================================
+# Submission and approval both refuse a taken owner email now, but a request
+# approved before that shipped still ends here - where Supabase refuses to create
+# the auth user. That used to surface as a bare 500 "Failed to create user
+# account" on the last screen of onboarding.
+
+class _RaisingAuthAdmin:
+    """Supabase Auth refusing a duplicate email, as gotrue reports it."""
+
+    def __init__(self, error):
+        self._error = error
+        self.deleted = []
+
+    def create_user(self, _payload):
+        raise self._error
+
+    def delete_user(self, user_id):
+        self.deleted.append(user_id)
+
+
+def _duplicate_email_error():
+    error = Exception("A user with this email address has already been registered")
+    error.code = "email_exists"
+    return error
+
+
+def _registration_payload(token):
+    return {
+        "token": token,
+        "full_name": "New Vendor",
+        "password": "Secret123!",
+        "confirm_password": "Secret123!",
+        "age": 30,
+        "gender": "male",
+    }
+
+
+def test_complete_registration_duplicate_email_is_409_not_500(vd):
+    from types import SimpleNamespace
+    from app.core.auth import create_registration_token
+
+    salon = vd.seed_salon(vendor_id=None)
+    token = create_registration_token(
+        request_id=str(uuid.uuid4()),
+        salon_id=salon["id"],
+        owner_email="taken@example.com",
+        request_type="salon",
+    )
+    vd.db.auth = SimpleNamespace(admin=_RaisingAuthAdmin(_duplicate_email_error()))
+
+    r = vd.client.post(f"{VENDORS}/complete-registration", json=_registration_payload(token))
+
+    assert r.status_code == 409, r.text
+    body = r.text
+    assert "taken@example.com" in body
+    assert "already exists" in body
+    assert "relationship manager" in body, "the owner needs to know who to ask"
+
+
+def test_complete_registration_other_auth_failures_still_500(vd):
+    """Only the duplicate is the caller's to fix; everything else stays a 500."""
+    from types import SimpleNamespace
+    from app.core.auth import create_registration_token
+
+    salon = vd.seed_salon(vendor_id=None)
+    token = create_registration_token(
+        request_id=str(uuid.uuid4()),
+        salon_id=salon["id"],
+        owner_email="owner@example.com",
+        request_type="salon",
+    )
+    vd.db.auth = SimpleNamespace(admin=_RaisingAuthAdmin(RuntimeError("gotrue unreachable")))
+
+    r = vd.client.post(f"{VENDORS}/complete-registration", json=_registration_payload(token))
+
+    assert r.status_code == 500, r.text

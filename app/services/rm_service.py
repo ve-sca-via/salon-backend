@@ -12,6 +12,7 @@ from app.schemas.request.rm import RMProfileUpdate
 from app.services.activity_log_service import ActivityLogService
 from app.services.cloudinary_service import CloudinaryService
 from app.services.email import email_service
+from app.services.owner_identity import find_owner_conflicts
 from app.utils.location_text import normalize_city_name
 
 logger = logging.getLogger(__name__)
@@ -408,6 +409,37 @@ class RMService:
     # VENDOR REQUEST CRUD
     # =====================================================
     
+    def _reject_duplicate_owner(
+        self,
+        request_data: VendorJoinRequestCreate,
+        exclude_request_id: Optional[str] = None
+    ) -> None:
+        """
+        Refuse a submission whose owner email (or phone) is already taken.
+
+        Raises:
+            HTTPException: 409 listing every conflict, so the RM can fix the form
+                in one pass instead of one field per attempt.
+        """
+        conflicts = find_owner_conflicts(
+            self.db,
+            getattr(request_data, "owner_email", None),
+            getattr(request_data, "owner_phone", None),
+            exclude_request_id=exclude_request_id,
+        )
+
+        if not conflicts:
+            return
+
+        logger.info(
+            f"Rejected vendor request for {getattr(request_data, 'owner_email', None)}: "
+            f"{[c.field for c in conflicts]}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=" ".join(conflict.message for conflict in conflicts)
+        )
+
     async def create_vendor_request(
         self,
         rm_id: str,
@@ -445,6 +477,11 @@ class RMService:
                     detail="RM account is inactive"
                 )
             
+            # One owner email = one salon. Checked here so the RM finds out while
+            # the form is still in front of them, rather than the owner hitting a
+            # dead registration link weeks later.
+            self._reject_duplicate_owner(request_data)
+
             # Prepare request data (mode='json' converts time objects to strings)
             db_data = request_data.model_dump(mode='json')
             db_data["rm_id"] = rm_id
@@ -558,6 +595,10 @@ class RMService:
                     detail="Only draft or rejected requests can be updated"
                 )
             
+            # Same duplicate rule as creation, excluding this request so an RM can
+            # keep editing (and resubmitting) their own draft.
+            self._reject_duplicate_owner(request_data, exclude_request_id=request_id)
+
             # Prepare update data (mode='json' converts time objects to strings)
             update_data = request_data.model_dump(mode='json')
             if update_data.get("city"):
