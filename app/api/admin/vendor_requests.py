@@ -66,6 +66,7 @@ async def get_vendor_requests(
 APPROVAL_ERROR_STATUS = {
     "not_found": status.HTTP_404_NOT_FOUND,
     "already_reviewed": status.HTTP_409_CONFLICT,
+    "duplicate_owner": status.HTTP_409_CONFLICT,
 }
 
 

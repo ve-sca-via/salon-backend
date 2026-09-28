@@ -584,3 +584,73 @@ def test_list_pagination(us):
 def test_list_requires_admin(us):
     r = us.client.get(f"{USERS}/")
     assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# Phone validation (tester bug #1: an RM could be created with 11+ digits)
+# =====================================================================
+# The admin panel only checked "at least 10 digits", the schema accepted any
+# string, and profiles.valid_phone_format allows up to 15 - so 98765432101 was
+# stored as a phone number. The rule now lives in one place
+# (app.utils.phone.to_indian_mobile_e164) and applies to create and update alike.
+
+def test_create_normalizes_phone_to_e164(us):
+    us.login_admin()
+    r = us.client.post(f"{USERS}/", json=_create_body(phone="9876543210"))
+
+    assert r.status_code == 200, r.text
+    assert us.db.table("profiles").rows[0]["phone"] == "+919876543210"
+
+
+def test_create_accepts_a_prefixed_number(us):
+    """An admin pasting the number as the owner wrote it must still work."""
+    us.login_admin()
+    r = us.client.post(f"{USERS}/", json=_create_body(phone="+91 98765 43210"))
+
+    assert r.status_code == 200, r.text
+    assert us.db.table("profiles").rows[0]["phone"] == "+919876543210"
+
+
+@pytest.mark.parametrize("phone", [
+    "98765432101",    # 11 digits - the reported bug
+    "987654321",      # 9 digits
+    "1234567890",     # 10 digits but not a mobile prefix
+    "09876543210",    # leading zero
+    "98765 4321o",    # typo'd letter
+    "+1 415 555 2671",  # not an Indian number
+])
+def test_create_rejects_a_phone_that_is_not_ten_digits(us, phone):
+    us.login_admin()
+    r = us.client.post(f"{USERS}/", json=_create_body(phone=phone))
+
+    assert r.status_code == 422, r.text
+    assert "10-digit" in r.text
+    assert us.db.table("profiles").rows == [], "nothing may be stored on a 422"
+
+
+def test_create_still_allows_no_phone(us):
+    """The field is optional and must stay optional."""
+    us.login_admin()
+    body = _create_body()
+    body.pop("phone")
+
+    r = us.client.post(f"{USERS}/", json=body)
+    assert r.status_code == 200, r.text
+    assert us.db.table("profiles").rows[0]["phone"] is None
+
+
+def test_update_rejects_an_overlong_phone(us):
+    user = us.seed_profile(role="relationship_manager")
+    us.login_admin()
+
+    r = us.client.put(f"{USERS}/{user['id']}", json={"phone": "98765432101"})
+    assert r.status_code == 422, r.text
+
+
+def test_update_normalizes_phone_to_e164(us):
+    user = us.seed_profile(role="relationship_manager")
+    us.login_admin()
+
+    r = us.client.put(f"{USERS}/{user['id']}", json={"phone": "9000000001"})
+    assert r.status_code == 200, r.text
+    assert us.db.table("profiles").rows[0]["phone"] == "+919000000001"

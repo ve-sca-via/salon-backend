@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from app.services.geocoding import geocoding_service
 from app.services.email import email_service
+from app.services.owner_identity import find_owner_conflicts
 from app.core.auth import create_registration_token
 from app.schemas.response.vendor import VendorJoinRequestResponse
 from app.utils.location_text import normalize_city_name
@@ -92,12 +93,33 @@ class VendorApprovalService:
         except RequestAlreadyReviewedError as e:
             return ApprovalResult(success=False, error=str(e), error_code="already_reviewed")
 
-        # Step 2: Get system config (RM score, registration fee)
+        # Step 2: Refuse an owner who already has an account or another live
+        # request. Submission checks this too, but a request made before that
+        # check existed would otherwise still get approved into a salon whose
+        # owner can never finish registering - which is exactly how salons ended
+        # up stranded under an RM's own email.
+        conflicts = find_owner_conflicts(
+            self.db,
+            request_data.owner_email,
+            getattr(request_data, "owner_phone", None),
+            exclude_request_id=request_id,
+        )
+        if conflicts:
+            logger.warning(
+                f"Refusing to approve {request_id}: {[c.field for c in conflicts]}"
+            )
+            return ApprovalResult(
+                success=False,
+                error=" ".join(conflict.message for conflict in conflicts),
+                error_code="duplicate_owner",
+            )
+
+        # Step 3: Get system config (RM score, registration fee)
         config = await self._get_approval_config()
 
         warnings = []
 
-        # Step 3: Claim the request (atomic pending -> approved). Doing this first
+        # Step 4: Claim the request (atomic pending -> approved). Doing this first
         # means a double-clicked Approve button can't create two salons; the second
         # call finds no pending row and stops here.
         try:
@@ -112,12 +134,12 @@ class VendorApprovalService:
                 error_code="already_reviewed"
             )
 
-        # Step 4: Geocode address if needed
+        # Step 5: Geocode address if needed
         coordinates = await self._geocode_salon_address(request_data)
         if coordinates['latitude'] == 0.0:
             warnings.append("Geocoding failed - coordinates set to 0.0")
 
-        # Step 5: Create salon. If this fails the request must go back to pending,
+        # Step 6: Create salon. If this fails the request must go back to pending,
         # otherwise it is stuck as "approved" with no salon and no way to retry.
         try:
             salon_id = await self._create_salon(request_id, request_data, coordinates, config)
@@ -129,7 +151,7 @@ class VendorApprovalService:
         # Services are no longer created at approval time — vendors add their own
         # services (category / subcategory / sub-subcategory) after onboarding.
 
-        # Step 6: Update RM score and get new total
+        # Step 7: Update RM score and get new total
         rm_new_score = None
         try:
             rm_new_score = await self._update_rm_score(request_data.rm_id, config['rm_score'], salon_id, request_data.business_name)

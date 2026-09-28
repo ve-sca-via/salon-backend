@@ -27,6 +27,25 @@ from app.services.service_taxonomy import ServiceTaxonomyResolver
 logger = logging.getLogger(__name__)
 
 
+#: How Supabase Auth reports an email that already has a user. It answers with an
+#: `email_exists` code on newer versions and only the prose on older ones, so both
+#: are matched - getting this wrong just means falling back to a 500.
+_DUPLICATE_EMAIL_MARKERS = (
+    "email_exists",
+    "user_already_exists",
+    "already been registered",
+    "already registered",
+    "duplicate key value",
+)
+
+
+def _is_duplicate_email_error(error: Exception) -> bool:
+    """True when Supabase refused to create the auth user because the email is taken."""
+    code = str(getattr(error, "code", "") or "").lower()
+    message = str(error).lower()
+    return any(marker in code or marker in message for marker in _DUPLICATE_EMAIL_MARKERS)
+
+
 class VendorService:
     """
     Service class for vendor operations.
@@ -957,6 +976,20 @@ class VendorService:
             logger.info("Auth user created successfully")
         except Exception as auth_error:
             logger.error(f"Auth user creation failed: {str(auth_error)}")
+            # An email that already has an account is the one failure here that is
+            # the caller's to fix, and it used to arrive as a bare 500 on the last
+            # screen of onboarding. It should no longer be reachable now that
+            # submission and approval both refuse a taken email, but a request
+            # approved before that check shipped can still land here.
+            if _is_duplicate_email_error(auth_error):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"An account already exists for {vendor_email}. "
+                        "Sign in with that account instead, or ask your relationship "
+                        "manager to resubmit this salon under a different owner email."
+                    )
+                )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create user account"

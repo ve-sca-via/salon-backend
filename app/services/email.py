@@ -59,10 +59,53 @@ SALON_LISTING_PATH = "/salons"
 PRIVACY_POLICY_PATH = "/privacy-policy"
 TERMS_PATH = "/terms-of-service"
 
+# Vendor-portal paths, absolute from the site root. VENDOR_PORTAL_URL is *supposed*
+# to point at the portal itself (https://host/vendor), but it has been deployed as a
+# bare origin more than once - and "{VENDOR_PORTAL_URL}/complete-registration" then
+# sends an approved owner to https://host/complete-registration, which exists in
+# neither frontend. Every vendor link is therefore built from the origin plus one of
+# these, so the env var's own path can no longer change where the link lands.
+VENDOR_PORTAL_PATH = "/vendor"
+VENDOR_LOGIN_PATH = "/vendor-login"
+VENDOR_REGISTRATION_PATH = "/vendor/complete-registration"
+
+#: Portal paths that may appear on VENDOR_PORTAL_URL and must be stripped before a
+#: canonical path is appended. Longest first so /vendor/... wins over /vendor.
+_VENDOR_PORTAL_SUFFIXES = (VENDOR_REGISTRATION_PATH, VENDOR_LOGIN_PATH, VENDOR_PORTAL_PATH)
+
 
 def _frontend_url(path: str) -> str:
     """Absolute link into the customer-facing frontend."""
     return f"{settings.FRONTEND_URL.rstrip('/')}{path}"
+
+
+def _vendor_origin() -> str:
+    """
+    Where the vendor portal is served from, with the portal's own path removed.
+
+    Accepts every shape VENDOR_PORTAL_URL has been set to in practice -
+    `https://host/vendor`, `https://host`, `host/vendor`, a trailing slash, even
+    `https://host/vendor-login` - and keeps any deployment sub-path that sits in
+    front of those (`https://host/app/vendor` -> `https://host/app`).
+    """
+    raw = (settings.VENDOR_PORTAL_URL or "").strip()
+    if not raw:
+        return ""
+
+    parsed = urlsplit(raw if raw.startswith(('http://', 'https://')) else f"https://{raw}")
+    path = parsed.path.rstrip('/')
+
+    for suffix in _VENDOR_PORTAL_SUFFIXES:
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+def _vendor_url(path: str) -> str:
+    """Absolute link into the vendor portal, e.g. `_vendor_url(VENDOR_LOGIN_PATH)`."""
+    return f"{_vendor_origin()}{path}"
 
 
 def _normalize_booking_services(services: list) -> list:
@@ -324,7 +367,7 @@ class EmailService:
             bool: Success status
         """
         try:
-            registration_url = f"{settings.VENDOR_PORTAL_URL}/complete-registration?token={registration_token}"
+            registration_url = f"{_vendor_url(VENDOR_REGISTRATION_PATH)}?token={registration_token}"
 
             # Log registration URL for easy access (in all environments)
             logger.info("=" * 100)
@@ -540,7 +583,7 @@ class EmailService:
                 booking_time=booking_time,
                 services=_normalize_booking_services(services),
                 cancellation_reason=cancellation_reason,
-                vendor_portal_url=settings.VENDOR_PORTAL_URL,
+                vendor_portal_url=_vendor_url(VENDOR_PORTAL_PATH),
             )
 
             subject = f"Booking Cancelled - {customer_name} ({booking_number})"
@@ -561,18 +604,8 @@ class EmailService:
             return False
     
     def _vendor_login_url(self) -> str:
-        """Normalize VENDOR_PORTAL_URL (whatever path it points to) to the vendor login page."""
-        vendor_portal_url = settings.VENDOR_PORTAL_URL.strip()
-        parsed = urlsplit(vendor_portal_url if vendor_portal_url.startswith(('http://', 'https://')) else f"https://{vendor_portal_url}")
-        portal_path = parsed.path.rstrip('/')
-
-        if portal_path.endswith('/vendor-login'):
-            return vendor_portal_url.rstrip('/')
-        elif portal_path.endswith('/vendor') or portal_path == '':
-            base = parsed.netloc if not vendor_portal_url.startswith(('http://', 'https://')) else f"{parsed.scheme}://{parsed.netloc}"
-            return f"{base}/vendor-login"
-        else:
-            return f"{vendor_portal_url.rstrip('/')}/vendor-login"
+        """The vendor login page, whatever path VENDOR_PORTAL_URL happens to carry."""
+        return _vendor_url(VENDOR_LOGIN_PATH)
 
     async def send_payment_reminder_email(
         self,
@@ -1032,7 +1065,7 @@ class EmailService:
                 booking_time=booking_time,
                 services=_normalize_booking_services(services),
                 service_price=service_price,
-                vendor_portal_url=settings.VENDOR_PORTAL_URL,
+                vendor_portal_url=_vendor_url(VENDOR_PORTAL_PATH),
             )
 
             subject = f"New Booking - {customer_name} ({booking_number})"

@@ -32,9 +32,58 @@ would have silently wiped stored data the moment this shipped.
 Paired with `model_dump(exclude_unset=True)` at the call site -- `exclude_none`
 would throw away the explicit-null clear along with the absent keys.
 """
-from typing import Any
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
+
+from app.utils.phone import INDIAN_MOBILE_RULE, to_indian_mobile_e164
+
+def _local_indian_mobile(value: Any) -> Any:
+    """Validate via the E.164 helper, then hand back the local 10 digits."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return value
+    normalized = to_indian_mobile_e164(value)
+    return normalized[len("+91"):] if normalized else normalized
+
+
+#: An optional phone field that accepts what a form actually sends (10 digits, or
+#: a +91/91-prefixed number) and stores E.164. Use this instead of a bare
+#: `Optional[str]`: the admin panel's "at least 10 digits" check let 11- and
+#: 15-digit numbers through to `profiles.phone`, whose own CHECK allows up to 15.
+IndianMobile = Annotated[
+    Optional[str],
+    BeforeValidator(to_indian_mobile_e164),
+    Field(default=None, description=INDIAN_MOBILE_RULE, examples=["9876543210"]),
+]
+
+#: Same validation, but kept as the bare 10 digits the form sent. Salon and
+#: join-request numbers are shown on the public site and handed to the WhatsApp
+#: sender, so these deliberately are not rewritten into E.164 - the field only
+#: refuses what isn't a real mobile number.
+IndianMobileDigits = Annotated[
+    str,
+    BeforeValidator(_local_indian_mobile),
+    Field(description=INDIAN_MOBILE_RULE, examples=["9876543210"]),
+]
+
+OptionalIndianMobileDigits = Annotated[
+    Optional[str],
+    BeforeValidator(_local_indian_mobile),
+    Field(default=None, description=INDIAN_MOBILE_RULE, examples=["9876543210"]),
+]
+
+#: Indian PINs are six digits. `vendor_join_requests` and `salons` used to accept
+#: a 10-digit form too, which was never a real postal code - it only ever caused
+#: the varchar(6)/varchar(10) approval crash. See the migration that tightens the
+#: matching CHECK constraints.
+PINCODE_PATTERN = r"^\d{6}$"
+PINCODE_RULE = "6-digit Indian pincode"
+
+Pincode = Annotated[str, Field(pattern=PINCODE_PATTERN, description=PINCODE_RULE, examples=["400001"])]
+OptionalPincode = Annotated[
+    Optional[str],
+    Field(default=None, pattern=PINCODE_PATTERN, description=PINCODE_RULE, examples=["400001"]),
+]
 
 
 class PartialUpdateModel(BaseModel):
