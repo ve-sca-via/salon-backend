@@ -87,7 +87,9 @@ B2B discount pricing was refined in `20260514120000_add_b2b_discount_pricing.sql
 - Creates a `salons` row with `salon_type = request_type` (so `regular_buyer`),
   `is_active=false`, `is_verified=false`, `registration_fee_paid=false`.
 - Generates a JWT **registration token** and **sends the approval email** with a link to
-  `{VENDOR_PORTAL_URL}/complete-registration?token=...`.
+  `<vendor portal origin>/vendor/complete-registration?token=...`. The path is built by
+  `email.py`, not taken from `VENDOR_PORTAL_URL` — that env var only supplies the origin,
+  because being set without its `/vendor` path once sent every approved owner to a 404.
   (See `_send_approval_email()` and `app/services/email.py → send_vendor_approval_email()`.)
 
 ### Step 4 — Buyer completes registration
@@ -142,8 +144,8 @@ code. So if the salon email works but the regular-buyer one doesn't, check these
    tested right now. Verify SMTP settings (`SMTP_HOST/PORT/USER/PASSWORD/TLS/SSL`, `EMAIL_FROM`).
 
 3. **The registration URL is always the vendor portal.**
-   The email link is `{VENDOR_PORTAL_URL}/complete-registration?token=...` for both salons and
-   regular buyers. Even if email delivery is flaky, the backend **logs the full registration URL**
+   The email link is `<origin>/vendor/complete-registration?token=...` for both salons and
+   regular buyers, whatever path `VENDOR_PORTAL_URL` carries (`_vendor_url()` normalises it). Even if email delivery is flaky, the backend **logs the full registration URL**
    on every approval (banner in `email.py → send_vendor_approval_email()`), so you can copy it
    from the logs and hand it to the buyer to unblock them immediately.
 

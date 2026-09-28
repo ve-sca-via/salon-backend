@@ -77,7 +77,22 @@ class _Query:
         return self
 
     def eq(self, col, val):
-        self._filters.append((col, val))
+        self._filters.append(("eq", col, val))
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
+    def in_(self, col, vals):
+        self._filters.append(("in", col, list(vals)))
+        return self
+
+    def ilike(self, col, pattern):
+        # The duplicate-owner check matches emails case-insensitively, escaping
+        # ILIKE's own wildcards; no test needs wildcard matching, so unescape and
+        # compare case-folded.
+        self._filters.append(("ilike", col, pattern))
         return self
 
     def order(self, col, desc=False):
@@ -97,7 +112,19 @@ class _Query:
         return self
 
     def _match(self, row):
-        return all(row.get(c) == v for c, v in self._filters)
+        for op, col, val in self._filters:
+            actual = row.get(col)
+            if op == "eq" and actual != val:
+                return False
+            if op == "neq" and actual == val:
+                return False
+            if op == "in" and actual not in val:
+                return False
+            if op == "ilike":
+                literal = val.replace("\\_", "_").replace("\\%", "%").replace("\\\\", "\\")
+                if str(actual or "").lower() != literal.lower():
+                    return False
+        return True
 
     def _embed(self, row):
         """Attach embedded profiles(...) with only the requested columns."""
@@ -552,7 +579,9 @@ def test_update_own_profile_can_still_change_the_phone(rm):
     r = rm.client.put(f"{RM}/profile", json={"phone": "9000000001"})
 
     assert r.status_code == 200, r.text
-    assert rm.db.table("profiles").rows[0]["phone"] == "9000000001"
+    # Stored in E.164, the same shape signup produces, so `profiles.phone` no
+    # longer holds two spellings of the same number.
+    assert rm.db.table("profiles").rows[0]["phone"] == "+919000000001"
 
 
 def test_update_own_profile_all_blank_is_a_400_not_a_500(rm):
@@ -715,3 +744,135 @@ def test_removed_admin_score_history_is_404(rm):
     rm.login_admin()
     r = rm.client.get(f"{ADMIN_RMS}/{uuid.uuid4()}/score-history")
     assert r.status_code == 404, r.text
+
+
+# =====================================================================
+# One owner, one salon (tester bugs #4, #5, #6)
+# =====================================================================
+# Nothing used to stop an RM submitting the same owner twice, or submitting a
+# salon under their own login's email. Both were approvable, and the collision
+# only surfaced as a 500 on the owner's registration page, because
+# complete_registration creates a fresh Supabase user from owner_email.
+
+def test_submission_rejects_an_email_that_already_has_an_account(rm):
+    """Tester bug #4: a salon under the RM's own email."""
+    rm_id = rm.seed_rm(is_active=True, email="rm.person@example.com")
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_email="rm.person@example.com"))
+
+    assert r.status_code == 409, r.text
+    assert "relationship manager account" in r.text
+    assert rm.db.table("vendor_join_requests").rows == []
+
+
+def test_submission_rejects_an_account_email_whatever_the_case(rm):
+    rm_id = rm.seed_rm(is_active=True, email="Owner.Person@Example.com")
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_email="owner.person@example.com"))
+    assert r.status_code == 409, r.text
+
+
+def test_submission_rejects_a_second_salon_on_one_email(rm):
+    """Tester bugs #5 and #6: the same owner email twice."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    rm.seed_vendor_request(rm_id, status="pending", business_name="First Salon",
+                           owner_email="owner@example.com", owner_phone="9111111111")
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_email="owner@example.com"))
+
+    assert r.status_code == 409, r.text
+    assert "First Salon" in r.text, "the RM needs to know which submission it clashes with"
+    assert len(rm.db.table("vendor_join_requests").rows) == 1
+
+
+def test_submission_rejects_a_second_salon_on_one_phone(rm):
+    """Tester bug #6: a different email but the same owner phone."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    rm.seed_vendor_request(rm_id, status="approved", business_name="First Salon",
+                           owner_email="first@example.com", owner_phone="9876543210")
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_email="second@example.com"))
+
+    assert r.status_code == 409, r.text
+    assert "9876543210" in r.text
+
+
+def test_submission_matches_a_legacy_e164_phone(rm):
+    """Older rows stored the owner phone as +91..., which is the same number."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    rm.seed_vendor_request(rm_id, status="pending", owner_email="first@example.com",
+                           owner_phone="+919876543210")
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_email="second@example.com"))
+    assert r.status_code == 409, r.text
+
+
+def test_submission_allows_an_owner_whose_earlier_request_was_rejected(rm):
+    """A rejection is history: the RM must be able to resubmit the same owner."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    rm.seed_vendor_request(rm_id, status="rejected", owner_email="owner@example.com",
+                           owner_phone="9876543210")
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload())
+    assert r.status_code == 200, r.text
+
+
+def test_editing_a_draft_does_not_clash_with_itself(rm):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    draft = rm.seed_vendor_request(rm_id, status="draft", owner_email="owner@example.com",
+                                   owner_phone="9876543210")
+
+    r = rm.client.put(f"{RM}/vendor-requests/{draft['id']}", json=_vr_payload(business_name="Renamed"))
+    assert r.status_code == 200, r.text
+
+
+def test_submitting_a_draft_still_clashes_with_a_different_request(rm):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    draft = rm.seed_vendor_request(rm_id, status="draft", owner_email="owner@example.com")
+    rm.seed_vendor_request(rm_id, status="pending", business_name="Other Salon",
+                           owner_email="owner@example.com")
+
+    r = rm.client.put(f"{RM}/vendor-requests/{draft['id']}", json=_vr_payload())
+    assert r.status_code == 409, r.text
+    assert "Other Salon" in r.text
+
+
+# =====================================================================
+# Pincode and phone rules on the RM salon form (tester bugs #1 and #3)
+# =====================================================================
+@pytest.mark.parametrize("pincode", ["1234567890", "12345", "abcdef", "56000"])
+def test_submission_rejects_a_pincode_that_is_not_six_digits(rm, pincode):
+    """The 10-digit form was an accident of the old varchar(6)/varchar(10) bug."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(pincode=pincode))
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.parametrize("phone", ["98765432101", "12345", "1234567890"])
+def test_submission_rejects_an_owner_phone_that_is_not_a_mobile(rm, phone):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_phone=phone))
+    assert r.status_code == 422, r.text
+
+
+def test_submission_keeps_the_owner_phone_as_ten_digits(rm):
+    """Salon numbers are shown publicly and sent to WhatsApp, so they are not
+    rewritten into E.164 the way profile numbers are - only validated."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload(owner_phone="+91 98765 43210"))
+    assert r.status_code == 200, r.text
+    assert rm.db.table("vendor_join_requests").rows[0]["owner_phone"] == "9876543210"

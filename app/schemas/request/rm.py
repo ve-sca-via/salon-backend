@@ -4,7 +4,7 @@ Request schemas for RM endpoints
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
-from .base import PartialUpdateModel
+from .base import IndianMobile, PartialUpdateModel
 
 
 class RMProfileUpdate(PartialUpdateModel):
@@ -12,7 +12,7 @@ class RMProfileUpdate(PartialUpdateModel):
     RM-specific fields update rm_profiles table."""
     # Profile table fields (will be routed to profiles table)
     full_name: Optional[str] = Field(None, min_length=2, max_length=255, description="Updates profiles.full_name")
-    phone: Optional[str] = Field(None, max_length=20, description="Updates profiles.phone")
+    phone: IndianMobile = Field(None, description="Updates profiles.phone (stored E.164)")
     email: Optional[str] = Field(None, description="Updates profiles.email")
     is_active: Optional[bool] = Field(None, description="Updates profiles.is_active")
     

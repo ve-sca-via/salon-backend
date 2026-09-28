@@ -28,7 +28,7 @@ MALFORMED = "not-a-uuid"
 # the blog/product slugs are text columns, and document_type is a label.
 # Anything else named like an id must be UUID-validated -- see
 # test_every_id_path_param_is_uuid_validated.
-TEXT_KEY_PARAMS = {"config_key", "slug", "document_type", "key"}
+TEXT_KEY_PARAMS = {"config_key", "slug", "document_type", "key", "pincode"}
 
 
 def _id_routes(app):

@@ -7,7 +7,13 @@ from typing import Optional, Dict, Any, List
 from datetime import time
 from ..domain.common import BusinessType, RequestStatus, OutletType
 from app.core.validators import BlankableUUIDStr
-from .base import PartialUpdateModel
+from .base import (
+    IndianMobileDigits,
+    OptionalIndianMobileDigits,
+    OptionalPincode,
+    PartialUpdateModel,
+    Pincode,
+)
 
 
 # =====================================================
@@ -30,13 +36,13 @@ class VendorJoinRequestBase(BaseModel):
     business_type: BusinessType = Field(..., description="Type of business: salon, spa, clinic, unisex_salon, barber_shop, beauty_parlor, retail_shop, wholesale_buyer")
     owner_name: str = Field(..., min_length=2, max_length=255)
     owner_email: EmailStr
-    owner_phone: str = Field(..., max_length=20)
+    owner_phone: IndianMobileDigits
     
     # Location
     business_address: str = Field(..., min_length=10, description="Full business address (minimum 10 characters)")
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
+    pincode: Pincode
     latitude: Optional[float] = Field(None, ge=-90, le=90)
     longitude: Optional[float] = Field(None, ge=-180, le=180)
     
@@ -86,12 +92,12 @@ class VendorRejectionRequest(BaseModel):
 class SalonBase(BaseModel):
     business_name: str = Field(..., min_length=2, max_length=255)
     description: Optional[str] = None
-    phone: str = Field(..., max_length=20)
+    phone: IndianMobileDigits
     email: Optional[EmailStr] = None
     address: str
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)
-    pincode: str = Field(..., pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
+    pincode: Pincode
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     outlet: Optional[OutletType] = Field(None, description="Type of outlet: franchisee or Company owned")
@@ -111,12 +117,12 @@ class SalonCreate(SalonBase):
 class SalonUpdate(PartialUpdateModel):
     business_name: Optional[str] = Field(None, min_length=2, max_length=255)
     description: Optional[str] = None
-    phone: Optional[str] = Field(None, max_length=20)
+    phone: OptionalIndianMobileDigits = None
     email: Optional[EmailStr] = None
     address: Optional[str] = None
     city: Optional[str] = Field(None, max_length=100)
     state: Optional[str] = Field(None, max_length=100)
-    pincode: Optional[str] = Field(None, pattern=r'^\d{6}$|^\d{10}$', description="6 or 10 digit pincode")
+    pincode: OptionalPincode = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     outlet: Optional[OutletType] = Field(None, description="Type of outlet: franchisee or Company owned")

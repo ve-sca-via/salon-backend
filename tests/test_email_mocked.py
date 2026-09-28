@@ -434,3 +434,77 @@ def test_render_injects_shared_context_without_call_sites_passing_it(mail):
         "booking_cancellation.html", customer_name="C", support_email="x@y.z"
     )
     assert "x@y.z" in overridden
+
+
+# =====================================================================
+# Vendor links survive however VENDOR_PORTAL_URL is set (tester bug #7)
+# =====================================================================
+# The approval email built "{VENDOR_PORTAL_URL}/complete-registration", so a
+# deployment whose env var was the bare origin sent approved owners to
+# https://host/complete-registration - a page that exists in neither frontend.
+# Every vendor link is now built from the origin plus a canonical path.
+
+VENDOR_URL_SHAPES = [
+    "https://www.lubist.com/vendor",     # documented form
+    "https://www.lubist.com",            # the bare origin that caused the 404
+    "https://www.lubist.com/",
+    "www.lubist.com/vendor",             # no scheme
+    "https://www.lubist.com/vendor-login",
+]
+
+
+@pytest.mark.parametrize("portal_url", VENDOR_URL_SHAPES)
+def test_registration_link_always_points_at_the_real_page(mail, monkeypatch, portal_url):
+    monkeypatch.setattr(email_module.settings, "VENDOR_PORTAL_URL", portal_url)
+
+    ok = run(mail.service.send_vendor_approval_email(
+        to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
+        registration_token="tok123", registration_fee=999.0, salon_id="salon-1",
+    ))
+
+    assert ok is True
+    html = mail.last_html()
+    assert "https://www.lubist.com/vendor/complete-registration?token=tok123" in html
+    assert "lubist.com/complete-registration" not in html
+
+
+@pytest.mark.parametrize("portal_url", VENDOR_URL_SHAPES)
+def test_vendor_login_link_always_points_at_the_real_page(mail, monkeypatch, portal_url):
+    monkeypatch.setattr(email_module.settings, "VENDOR_PORTAL_URL", portal_url)
+
+    ok = run(mail.service.send_payment_reminder_email(
+        to_email="vendor@example.com", salon_name="Glow Salon",
+        registration_fee=999.0, salon_id="salon-1",
+    ))
+
+    assert ok is True
+    assert "https://www.lubist.com/vendor-login" in mail.last_html()
+
+
+@pytest.mark.parametrize("portal_url", ["https://www.lubist.com/vendor", "https://www.lubist.com"])
+def test_vendor_dashboard_link_in_booking_emails_keeps_the_vendor_segment(mail, monkeypatch, portal_url):
+    """`{{ vendor_portal_url }}/bookings` had the same flaw as the approval link."""
+    monkeypatch.setattr(email_module.settings, "VENDOR_PORTAL_URL", portal_url)
+
+    ok = run(mail.service.send_new_booking_notification_to_vendor(
+        vendor_email="vendor@example.com", salon_name="Glow Salon",
+        customer_name="Cust", customer_phone="+919999999999", booking_number="B-100",
+        booking_date="2026-06-12", booking_time="10:00", services=_services(),
+        service_price=300.0, booking_id="bk-1",
+    ))
+
+    assert ok is True
+    assert "https://www.lubist.com/vendor/bookings" in mail.last_html()
+
+
+def test_a_sub_path_deployment_keeps_its_prefix(mail, monkeypatch):
+    """`https://host/app/vendor` is still served under /app after normalisation."""
+    monkeypatch.setattr(email_module.settings, "VENDOR_PORTAL_URL", "https://host/app/vendor")
+
+    ok = run(mail.service.send_vendor_approval_email(
+        to_email="owner@example.com", owner_name="Owner", salon_name="Glow Salon",
+        registration_token="tok", registration_fee=1.0, salon_id="salon-1",
+    ))
+
+    assert ok is True
+    assert "https://host/app/vendor/complete-registration?token=tok" in mail.last_html()
