@@ -123,6 +123,9 @@ class _Query:
     def execute(self):
         op, payload = self._op
         rows = self._table.rows
+        # Round-trip log: Phase 1 of the payment audit is about *how many* reads
+        # the post-charge path makes, so the fake records every one.
+        self._table.log(op)
 
         if op == "select":
             matched = [dict(r) for r in rows if self._match(r)]
@@ -172,8 +175,13 @@ class _Query:
 
 
 class _Table:
-    def __init__(self):
+    def __init__(self, name="", queries=None):
         self.rows = []
+        self._name = name
+        self._queries = queries if queries is not None else []
+
+    def log(self, op):
+        self._queries.append((self._name, op))
 
     def select(self, cols="*", count=None):
         return _Query(self).select(cols, count=count)
@@ -191,9 +199,17 @@ class _Table:
 class FakeSupabase:
     def __init__(self):
         self._tables = {}
+        # (table_name, op) for every .execute() the app made, in order.
+        self.queries = []
 
     def table(self, name):
-        return self._tables.setdefault(name, _Table())
+        if name not in self._tables:
+            self._tables[name] = _Table(name, self.queries)
+        return self._tables[name]
+
+    def count_queries(self, table, op="select"):
+        """How many `op` round trips the app made against `table`."""
+        return sum(1 for t, o in self.queries if t == table and o == op)
 
     # booking_service reads the admin list from a view via .from_()
     def from_(self, name):
@@ -435,6 +451,146 @@ def test_create_booking_idempotent_on_payment_id(bk):
     assert result["id"] == existing["id"]
     # No new booking row was inserted (still just the seeded one).
     assert len(bk.db.table("bookings").rows) == 1
+
+
+# =====================================================================
+# create_booking — round trips removed in Phase 1 of the payment audit
+#
+# These assert *counts*, not just results. The whole point of Phase 1 is that
+# the request the customer waits on after being charged stops repeating reads
+# the caller already made, and a count is the only thing that notices if a
+# later change quietly puts one back.
+# =====================================================================
+def test_create_booking_reuses_prefetched_salon_fee_and_idempotency(bk):
+    """
+    Given the salon row, the fee percentage and an already-done idempotency
+    check, create_booking must not read any of the three again (M-2/M-3/M-4).
+    """
+    customer = bk.seed_profile()
+    vendor = bk.seed_profile(user_role="vendor")
+    salon = bk.seed_salon(vendor_id=vendor["id"])
+    service = bk.seed_service(salon["id"], price=500.0)
+    bk.seed_fee_config("6")
+
+    bk.db.queries.clear()
+    booking = asyncio.run(bk.service().create_booking(
+        _make_booking_create(salon["id"], service["id"],
+                             payment_status="paid",
+                             razorpay_payment_id="pay_PREFETCH",
+                             razorpay_order_id="order_PREFETCH"),
+        current_user_id=customer["id"],
+        salon_data=dict(salon),
+        convenience_fee_percentage=6.0,
+        idempotency_checked=True,
+    ))
+
+    assert booking["convenience_fee"] == 30.0          # 6% of 500, from the passed value
+    assert bk.db.count_queries("salons") == 0          # M-4
+    assert bk.db.count_queries("system_config") == 0   # M-2
+    assert bk.db.count_queries("bookings", "select") == 0  # M-3
+
+
+def test_create_booking_without_prefetch_still_reads_what_it_needs(bk):
+    """The prefetch arguments are optional: direct callers behave as before."""
+    customer = bk.seed_profile()
+    salon = bk.seed_salon()
+    service = bk.seed_service(salon["id"], price=500.0)
+    bk.seed_fee_config("6")
+
+    bk.db.queries.clear()
+    booking = asyncio.run(bk.service().create_booking(
+        _make_booking_create(salon["id"], service["id"]),
+        current_user_id=customer["id"],
+    ))
+
+    assert booking["convenience_fee"] == 30.0
+    assert bk.db.count_queries("salons") == 1
+    assert bk.db.count_queries("system_config") == 1
+
+
+def test_create_booking_does_not_read_profiles_when_emails_are_deferred(bk):
+    """
+    The customer profile and the vendor email are only needed by the two
+    confirmation emails, so with a BackgroundTasks they must be read behind the
+    response, not in front of it.
+    """
+    from fastapi import BackgroundTasks
+
+    customer = bk.seed_profile()
+    vendor = bk.seed_profile(user_role="vendor")
+    salon = bk.seed_salon(vendor_id=vendor["id"])
+    service = bk.seed_service(salon["id"], price=500.0)
+    bk.seed_fee_config("6")
+
+    tasks = BackgroundTasks()
+    bk.db.queries.clear()
+    asyncio.run(bk.service().create_booking(
+        _make_booking_create(salon["id"], service["id"]),
+        current_user_id=customer["id"],
+        background_tasks=tasks,
+    ))
+
+    # Nothing read a profile while the customer was waiting...
+    assert bk.db.count_queries("profiles") == 0
+    # ...and the queued task is the one that will.
+    assert len(tasks.tasks) == 1
+    asyncio.run(tasks())
+    assert bk.db.count_queries("profiles") == 2  # customer + vendor
+
+
+def test_create_booking_writes_both_ledger_rows_in_one_insert(bk):
+    """
+    The convenience-fee and service-payment rows go in as a single statement, so
+    they cannot land half-written (M-10).
+    """
+    customer = bk.seed_profile()
+    salon = bk.seed_salon()
+    service = bk.seed_service(salon["id"], price=500.0)
+    bk.seed_fee_config("6")
+
+    bk.db.queries.clear()
+    booking = asyncio.run(bk.service().create_booking(
+        _make_booking_create(salon["id"], service["id"],
+                             payment_status="paid",
+                             razorpay_payment_id="pay_LEDGER",
+                             razorpay_order_id="order_LEDGER"),
+        current_user_id=customer["id"],
+    ))
+
+    assert bk.db.count_queries("payments", "insert") == 1
+    rows = bk.db.table("payments").rows
+    assert {r["payment_type"] for r in rows} == {"convenience_fee", "service_payment"}
+    assert all(r["booking_id"] == booking["id"] for r in rows)
+
+
+def test_create_booking_survives_a_failed_ledger_insert(bk, monkeypatch):
+    """A ledger write failure must not fail a booking the customer has paid for."""
+    customer = bk.seed_profile()
+    salon = bk.seed_salon()
+    service = bk.seed_service(salon["id"], price=500.0)
+    bk.seed_fee_config("6")
+
+    real_table = bk.db.table
+
+    def _explode_on_payments(name):
+        table = real_table(name)
+        if name == "payments":
+            def _boom(payload):
+                raise Exception("payments insert refused")
+            table.insert = _boom
+        return table
+
+    monkeypatch.setattr(bk.db, "table", _explode_on_payments)
+
+    booking = asyncio.run(bk.service().create_booking(
+        _make_booking_create(salon["id"], service["id"],
+                             payment_status="paid",
+                             razorpay_payment_id="pay_NOLEDGER"),
+        current_user_id=customer["id"],
+    ))
+
+    assert booking["status"] == "confirmed"
+    assert booking["total_amount"] == 530.0
 
 
 # =====================================================================

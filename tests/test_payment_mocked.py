@@ -50,6 +50,7 @@ class _Query:
         self._filters = []
         self._op = ("select", "*")
         self._single = False
+        self._maybe_single = False
         self._order = []
 
     def select(self, cols="*", count=None):
@@ -84,6 +85,11 @@ class _Query:
         self._single = True
         return self
 
+    def maybe_single(self):
+        # Like the real client: one row or None, never a PGRST116 raise on 0 rows.
+        self._maybe_single = True
+        return self
+
     def _match(self, row):
         for op, c, v in self._filters:
             if op == "eq" and row.get(c) != v:
@@ -93,6 +99,9 @@ class _Query:
     def execute(self):
         op, payload = self._op
         rows = self._table.rows
+        # Round-trip log — Phase 1 of the payment audit is about how many reads
+        # the payment paths make, so the fake records every one.
+        self._table.log(op)
 
         if op == "select":
             matched = [dict(r) for r in rows if self._match(r)]
@@ -102,6 +111,8 @@ class _Query:
                 if len(matched) != 1:
                     raise Exception("PGRST116: results contain 0 or multiple rows")
                 return _Resp(matched[0])
+            if self._maybe_single:
+                return _Resp(matched[0] if matched else None)
             return _Resp(matched)
 
         if op == "insert":
@@ -132,8 +143,13 @@ class _Query:
 
 
 class _Table:
-    def __init__(self):
+    def __init__(self, name="", queries=None):
         self.rows = []
+        self._name = name
+        self._queries = queries if queries is not None else []
+
+    def log(self, op):
+        self._queries.append((self._name, op))
 
     def select(self, cols="*", count=None):
         return _Query(self).select(cols, count=count)
@@ -151,9 +167,17 @@ class _Table:
 class FakeSupabase:
     def __init__(self):
         self._tables = {}
+        # (table_name, op) for every .execute() the app made, in order.
+        self.queries = []
 
     def table(self, name):
-        return self._tables.setdefault(name, _Table())
+        if name not in self._tables:
+            self._tables[name] = _Table(name, self.queries)
+        return self._tables[name]
+
+    def count_queries(self, table, op="select"):
+        """How many `op` round trips the app made against `table`."""
+        return sum(1 for t, o in self.queries if t == table and o == op)
 
 
 # =====================================================================
@@ -161,8 +185,14 @@ class FakeSupabase:
 # =====================================================================
 class FakeRazorpay:
     valid = True  # class-level switch flipped by individual tests
+    # Every create_order call, so tests can assert what we send Razorpay — since
+    # Phase 2 the notes carry scalars only, not the snapshot blobs.
+    orders_created = []
 
-    def create_order(self, amount, currency="INR", receipt=None, notes=None):
+    # Async to match the real RazorpayService, whose blocking `requests` call to
+    # Razorpay now goes through the threadpool (payment audit C-4).
+    async def create_order(self, amount, currency="INR", receipt=None, notes=None):
+        FakeRazorpay.orders_created.append({"amount": amount, "notes": dict(notes or {})})
         return {
             "order_id": f"order_{uuid.uuid4().hex[:12]}",
             "amount": amount,
@@ -187,10 +217,13 @@ class Handle:
         self.sent_emails = []
 
     # ---- seeding helpers ----
-    def seed_config(self, key, value, config_type="number"):
+    def seed_config(self, key, value, config_type="number", is_active=True):
+        # is_active mirrors the real table's default (true); the fee accessor
+        # filters on it, so the fake has to carry it.
         self.db.table("system_config").rows.append(
             {"id": str(uuid.uuid4()), "config_key": key,
-             "config_value": value, "config_type": config_type}
+             "config_value": value, "config_type": config_type,
+             "is_active": is_active}
         )
 
     def seed_cart_item(self, user_id="u1", price=1000.0, discounted_price=None,
@@ -258,6 +291,7 @@ def pm(app, monkeypatch):
 
     # Stub Razorpay init: no network, no credential/config/encryption path.
     FakeRazorpay.valid = True
+    FakeRazorpay.orders_created = []
 
     async def _fake_init(self):
         self.razorpay = FakeRazorpay()
@@ -330,6 +364,205 @@ def test_cart_create_order_missing_fee_config_is_500(pm):
 def test_cart_create_order_requires_auth(pm):
     r = pm.client.post(f"{PAYMENTS}/cart/create-order")
     assert r.status_code in (401, 403), r.text
+
+
+def test_cart_create_order_reads_the_cart_and_the_fee_once_each(pm):
+    """
+    Order creation is what the customer stares at a disabled Pay button through,
+    so it gets the same round-trip budget treatment as checkout. (Razorpay
+    initialisation is stubbed by the fixture; its credential reads have their
+    own test below.)
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0, quantity=1)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    pm.db.queries.clear()
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order")
+    assert r.status_code == 200, r.text
+
+    assert pm.db.count_queries("cart_items") == 1
+    assert pm.db.count_queries("system_config") == 1
+
+
+# =====================================================================
+# The payment intent written alongside the Razorpay order (audit H-2 / C-3)
+# =====================================================================
+def test_cart_create_order_pins_the_snapshot_in_our_own_table(pm):
+    """
+    The pinned breakdown and cart snapshot are what make recorded == charged.
+    They now live in `payment_intents`, so checkout reads them locally instead of
+    paying for a Razorpay `orders.fetch` after the customer has been charged.
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0, quantity=2,
+                      salon_id="salon-1", service_id="svc-1")
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order")
+    assert r.status_code == 200, r.text
+
+    intents = pm.db.table("payment_intents").rows
+    assert len(intents) == 1
+    intent = intents[0]
+    assert intent["razorpay_order_id"] == r.json()["order_id"]
+    assert intent["customer_id"] == "u1"
+    assert intent["salon_id"] == "salon-1"
+    assert intent["status"] == "created"
+    # 10% of 2000
+    assert intent["amount"] == 200.0
+    assert intent["pricing"]["convenience_fee_due"] == 200.0
+    assert intent["pricing"]["total_amount"] == 2200.0
+    assert intent["cart_snapshot"] == [
+        {"service_id": "svc-1", "quantity": 2, "unit_price": 1000.0}
+    ]
+
+
+def test_cart_create_order_pins_the_appointment_for_webhook_recovery(pm):
+    """
+    The date and slots are not priced or validated here — they exist so the
+    `payment.captured` webhook can finish the booking if the browser never comes
+    back (audit C-3).
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order", json={
+        "booking_date": "2099-03-04",
+        "time_slots": ["10:00 AM", "10:15 AM"],
+    })
+    assert r.status_code == 200, r.text
+
+    intent = pm.db.table("payment_intents").rows[0]
+    assert intent["booking_date"] == "2099-03-04"
+    assert intent["time_slots"] == ["10:00 AM", "10:15 AM"]
+
+
+def test_cart_create_order_without_an_appointment_still_works(pm):
+    """Both fields are optional: a client that omits them gets a normal order."""
+    pm.seed_cart_item(user_id="u1", price=1000.0)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order", json={"coupon_code": None})
+    assert r.status_code == 200, r.text
+
+    intent = pm.db.table("payment_intents").rows[0]
+    assert intent["booking_date"] is None
+    assert intent["time_slots"] is None
+
+
+def test_cart_create_order_rejects_a_malformed_date(pm):
+    pm.seed_cart_item(user_id="u1", price=1000.0)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order",
+                       json={"booking_date": "04-03-2099"})
+    assert r.status_code == 422, r.text
+    assert pm.db.table("payment_intents").rows == []
+
+
+def test_cart_create_order_no_longer_puts_the_snapshot_in_razorpay_notes(pm):
+    """
+    Razorpay caps a note value at 256 characters, so a cart of a few services
+    could truncate the snapshot it used to hold. The scalars stay — they are what
+    makes the Razorpay dashboard readable — but the blobs are ours now.
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0, salon_id="salon-1")
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    r = pm.client.post(f"{PAYMENTS}/cart/create-order")
+    assert r.status_code == 200, r.text
+
+    notes = FakeRazorpay.orders_created[-1]["notes"]
+    assert "pricing" not in notes
+    assert "cart_snapshot" not in notes
+    assert notes["customer_id"] == "u1"
+    assert notes["salon_id"] == "salon-1"
+    assert notes["type"] == "cart_checkout"
+    assert notes["cart_item_count"] == 1
+
+
+def test_an_error_escaping_the_intent_service_still_fails_the_order(pm, monkeypatch):
+    """
+    Where the tolerance ends. `create_cart_intent` swallows *database* failures
+    itself (next test), but anything escaping it reaches create_cart_payment_order's
+    handler and the customer gets a 500 rather than an order we know nothing about.
+
+    Documented, not desired: the Razorpay order already exists at that point, so a
+    retry leaves an orphan order behind — the same data-hygiene issue as audit M-9.
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    from app.services.payment_intent_service import PaymentIntentService
+    original = PaymentIntentService.create_cart_intent
+
+    async def _boom(self, **kwargs):
+        raise RuntimeError("payment_intents unavailable")
+
+    monkeypatch.setattr(PaymentIntentService, "create_cart_intent", _boom)
+    try:
+        r = pm.client.post(f"{PAYMENTS}/cart/create-order")
+    finally:
+        monkeypatch.setattr(PaymentIntentService, "create_cart_intent", original)
+
+    assert r.status_code == 500, r.text
+
+
+def test_cart_create_order_tolerates_an_unwritable_intent_table(pm, monkeypatch, caplog):
+    """
+    The same tolerance one level down, where it actually lives: a DB error on the
+    insert is swallowed by the intent service and logged at ERROR, and the order
+    is still returned.
+    """
+    pm.seed_cart_item(user_id="u1", price=1000.0)
+    pm.seed_config("convenience_fee_percentage", "10")
+    pm.login_as("u1")
+
+    real_table = pm.db.table
+
+    def _explode(name):
+        if name == "payment_intents":
+            raise RuntimeError("payment_intents unavailable")
+        return real_table(name)
+
+    monkeypatch.setattr(pm.db, "table", _explode)
+
+    with caplog.at_level("ERROR"):
+        r = pm.client.post(f"{PAYMENTS}/cart/create-order")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["order_id"].startswith("order_")
+    assert any("Failed to record payment intent" in rec.message for rec in caplog.records)
+
+
+def test_razorpay_credentials_come_from_one_pair_of_reads(pm):
+    """
+    The two credentials are Fernet-decrypted reads that ran FOUR times in a
+    single cart checkout: twice per PaymentService, and checkout constructed two
+    of them (payment audit H-3 + 10.3). Cached, a second resolve — even from a
+    different ConfigService — costs nothing.
+    """
+    import asyncio
+    from app.services.config_service import ConfigService
+    from app.services.payment import resolve_razorpay_credentials
+
+    pm.seed_config("razorpay_key_id", "rzp_test_abc", config_type="string")
+    pm.seed_config("razorpay_key_secret", "secret_abc", config_type="string")
+
+    pm.db.queries.clear()
+    first = asyncio.run(resolve_razorpay_credentials(ConfigService(pm.db)))
+    reads_after_first = pm.db.count_queries("system_config")
+    second = asyncio.run(resolve_razorpay_credentials(ConfigService(pm.db)))
+
+    assert first == second == ("rzp_test_abc", "secret_abc")
+    assert reads_after_first == 2, "one read per credential, the first time"
+    assert pm.db.count_queries("system_config") == 2, "the second resolve should be free"
 
 
 # =====================================================================
@@ -460,6 +693,51 @@ def test_registration_verify_idempotent_when_already_success(pm):
     assert body["success"] is True
     assert "already verified" in body["message"].lower()
     assert body["payment_id"] == "pay_old"
+
+
+def test_registration_verify_retries_activation_when_salon_was_missing(pm):
+    # Audit H-6: a payment recorded as `success` before its salon row existed used
+    # to be unrecoverable — verify returned early on the idempotency check and
+    # create-order refused a second attempt, so the vendor stayed paid-but-inactive
+    # forever. A repeat verify must now complete the activation.
+    pm.seed_reg_payment(razorpay_order_id="order_reg", status="success",
+                        razorpay_payment_id="pay_old", salon_id=None,
+                        vendor_request_id="vr1")
+    pm.seed_vendor_request("vr1", status="approved")
+    pm.seed_salon("s1", join_request_id="vr1", is_active=False,
+                  registration_fee_paid=False)
+    pm.login_as("u1", role="vendor")
+    FakeRazorpay.valid = True
+
+    r = pm.client.post(f"{PAYMENTS}/registration/verify", json=_verify_payload("order_reg"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["activated"] is True
+    assert body["salon_id"] == "s1"
+
+    salon = next(s for s in pm.db.table("salons").rows if s["id"] == "s1")
+    assert salon["is_active"] is True
+    assert salon["registration_fee_paid"] is True
+    # And the payment row is now linked, so the next verify short-circuits.
+    payment = pm.db.table("vendor_registration_payments").rows[0]
+    assert payment["salon_id"] == "s1"
+
+
+def test_registration_verify_reports_not_activated_when_no_salon_exists(pm):
+    # Paid, but nothing to activate yet: `success` must not imply a live account,
+    # or the client promises the vendor a dashboard that bounces them straight back.
+    pm.seed_reg_payment(razorpay_order_id="order_reg", status="pending",
+                        vendor_request_id="vr1")
+    pm.seed_vendor_request("vr1", status="approved")
+    pm.login_as("u1", role="vendor")
+    FakeRazorpay.valid = True
+
+    r = pm.client.post(f"{PAYMENTS}/registration/verify", json=_verify_payload("order_reg"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["activated"] is False
+    assert body["salon_id"] is None
 
 
 def test_registration_verify_requires_auth(pm):

@@ -6,10 +6,11 @@ import logging
 import random
 from typing import Dict, Any, Optional, List
 from datetime import datetime, date
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 
 from app.core.auth import create_review_feedback_token
 from app.core.config import settings
+from app.core.database import db_exec
 from app.schemas import BookingCreate
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
@@ -80,9 +81,9 @@ class BookingService:
                 query = query.lte("booking_date", date_to)
             
             # Execute query with pagination - order and limit
-            response = query.order("booking_date", desc=True).order(
+            response = await db_exec(query.order("booking_date", desc=True).order(
                 "created_at", desc=True
-            ).range(offset, offset + limit).execute()
+            ).range(offset, offset + limit))
             
             bookings = response.data or []
             
@@ -136,11 +137,102 @@ class BookingService:
     # BOOKING CREATION
     # =====================================================
     
+    async def _send_booking_created_emails(
+        self,
+        customer_id: str,
+        salon_data: Dict[str, Any],
+        booking_number: str,
+        booking_date: str,
+        booking_time: str,
+        processed_services: List[Dict[str, Any]],
+        totals: Dict[str, Any],
+        total_service_price: float,
+        pricing: Dict[str, Any],
+        booking_id: str,
+    ) -> None:
+        """
+        Send the customer confirmation and the vendor notification for a new
+        booking. Never raises: an email failure must not look like a booking
+        failure, and when this runs as a background task there is no longer a
+        response to fail.
+
+        The two profile reads this needs — the customer's name/email/phone and
+        the vendor's email — happen here rather than in create_booking, because
+        nothing else in the booking needs them. Inline they were two round trips
+        in front of a response the customer waits on after being charged; here
+        they are behind it (payment audit, Phase 1).
+        """
+        services = [{
+            "name": svc.get("service_details", {}).get("name", "Service"),
+            "price": svc["unit_price"],
+            "quantity": svc["quantity"],
+        } for svc in processed_services]
+
+        try:
+            customer_data = await self._get_customer_profile(customer_id)
+        except Exception as profile_error:
+            # No recipient and no caller to tell: there is no response left to
+            # fail, and the booking itself is already recorded.
+            logger.error(
+                f"Booking {booking_number}: cannot send confirmation emails, "
+                f"customer profile {customer_id} unreadable: {profile_error}"
+            )
+            return
+
+        try:
+            await email_service.send_booking_confirmation_to_customer(
+                customer_email=customer_data["email"],
+                customer_name=customer_data["full_name"],
+                salon_name=salon_data["business_name"],
+                booking_number=booking_number,
+                booking_date=booking_date,
+                booking_time=booking_time,
+                services=services,
+                total_amount=totals["total_amount"],
+                convenience_fee=totals["convenience_fee"],
+                service_price=total_service_price,
+                subtotal_service_price=pricing.get("subtotal_service_price"),
+                discount_amount=pricing.get("discount_amount", 0) or 0,
+                convenience_fee_discount=pricing.get("convenience_fee_discount", 0) or 0,
+                coupon_code=pricing.get("coupon_code"),
+                booking_id=booking_id,
+            )
+            logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
+        except Exception as email_error:
+            logger.error(f"Failed to send booking confirmation to customer: {email_error}")
+
+        # Sent independently of the customer's: one failing must not skip the other.
+        vendor_email = salon_data.get("vendor_email") or await self._get_vendor_email(salon_data)
+        if not vendor_email:
+            logger.warning(f"Vendor email not found for salon {salon_data.get('id')}")
+            return
+
+        try:
+            await email_service.send_new_booking_notification_to_vendor(
+                vendor_email=vendor_email,
+                salon_name=salon_data["business_name"],
+                customer_name=customer_data["full_name"],
+                customer_phone=customer_data.get("phone", "N/A"),
+                booking_number=booking_number,
+                booking_date=booking_date,
+                booking_time=booking_time,
+                services=services,
+                service_price=total_service_price,
+                booking_id=booking_id,
+            )
+            logger.info(f"Booking notification email sent to vendor {vendor_email}")
+        except Exception as email_error:
+            logger.error(f"Failed to send booking notification to vendor: {email_error}")
+
     async def create_booking(
         self,
         booking: BookingCreate,
         current_user_id: str,
         pinned_pricing: Optional[Dict[str, Any]] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
+        salon_data: Optional[Dict[str, Any]] = None,
+        convenience_fee_percentage: Optional[float] = None,
+        idempotency_checked: bool = False,
     ) -> Dict[str, Any]:
         """
         Create new booking with multiple services support.
@@ -153,6 +245,23 @@ class BookingService:
                 provided, the booking records these exact amounts instead of
                 recomputing, guaranteeing recorded == charged (audit C1 / D4).
                 When None, pricing is recomputed server-side.
+            background_tasks: When supplied, the confirmation emails are queued to
+                run after the response is sent instead of being awaited inline
+                (audit C-1). Omit it and they are awaited, as before.
+            salon_data: The salon row, when the caller has already read it. Must
+                carry the scheduling columns `_validate_booking_datetime` needs
+                (opening_time, closing_time, working_days, business_hours) plus
+                business_name and vendor_id. Omit it and it is read here.
+            convenience_fee_percentage: The platform fee percentage, when the
+                caller has already read it. Omit it and it is read here.
+            idempotency_checked: True when the caller has already short-circuited
+                on `razorpay_payment_id`, so the same lookup is not repeated.
+                The DB constraint from
+                20260122000000_add_razorpay_payment_id_idempotency.sql remains the
+                actual guarantee either way.
+
+            The last three exist because the cart checkout path had already done
+            all three reads before calling this method (payment audit M-2/M-3/M-4).
 
         Returns:
             Created booking data
@@ -162,25 +271,23 @@ class BookingService:
         """
         try:
             # IDEMPOTENCY CHECK: Check if payment already used for a booking
-            if booking.razorpay_payment_id:
-                existing_booking = self.db.table("bookings").select(
+            if booking.razorpay_payment_id and not idempotency_checked:
+                existing_booking = await db_exec(self.db.table("bookings").select(
                     "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
-                ).eq("razorpay_payment_id", booking.razorpay_payment_id).execute()
-                
+                ).eq("razorpay_payment_id", booking.razorpay_payment_id))
+
                 if existing_booking.data:
                     logger.warning(f"Payment {booking.razorpay_payment_id} already used for booking. Returning existing booking (idempotent).")
                     return existing_booking.data[0]
-            
+
             # Validate services array
             if not booking.services or len(booking.services) == 0:
                 from app.core.exceptions import ValidationError
                 raise ValidationError("At least one service is required", "services")
 
-            # Get customer details
-            customer_data = await self._get_customer_profile(current_user_id)
-
             # Get salon details
-            salon_data = await self._get_salon_details(booking.salon_id)
+            if salon_data is None:
+                salon_data = await self._get_salon_details(booking.salon_id)
 
             # Guard: reject past-dated / past-time / closed-day bookings server-side.
             # The slots endpoint already hides these, but a stale or tampered
@@ -250,20 +357,16 @@ class BookingService:
                 line_items.append(LineItem(original_unit_price, unit_price, quantity))
 
             # Get convenience fee percentage from system config (admin-managed; required, no silent default)
-            try:
-                fee_config_response = self.db.table("system_config")\
-                    .select("config_value")\
-                    .eq("config_key", "convenience_fee_percentage")\
-                    .eq("is_active", True)\
-                    .single()\
-                    .execute()
-                convenience_fee_percentage = float(fee_config_response.data["config_value"])
-            except Exception as e:
-                logger.error(f"convenience_fee_percentage config missing or invalid: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Payment configuration not available. Please contact support."
-                )
+            if convenience_fee_percentage is None:
+                from app.services.config_service import ConfigService
+                try:
+                    convenience_fee_percentage = await ConfigService(self.db).get_convenience_fee_percentage()
+                except Exception as e:
+                    logger.error(f"convenience_fee_percentage config missing or invalid: {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Payment configuration not available. Please contact support."
+                    )
             
             # Pricing: prefer the pinned breakdown captured at payment-order time
             # (authoritative — recorded == charged). Only recompute when it is
@@ -352,7 +455,7 @@ class BookingService:
 
             # Create booking within transaction
             try:
-                response = self.db.table("bookings").insert(db_booking_data).execute()
+                response = await db_exec(self.db.table("bookings").insert(db_booking_data))
                 created_booking = response.data[0] if response.data else None
             except Exception as insert_exc:
                 # Log error and re-raise
@@ -398,9 +501,24 @@ class BookingService:
                     f"{pricing['coupon_id']} redemption deferred until payment."
                 )
 
-            # 1. Create convenience fee payment record (online payment)
+            # Ledger rows for this booking, written as ONE insert.
+            #
+            # These were two separate inserts, each with its own swallowed
+            # except, so a failure could leave the booking with one ledger row,
+            # the other, or neither — and nothing said which (payment audit
+            # M-10). One multi-row insert is a single statement: both rows land
+            # or neither does, in one round trip instead of two.
+            #
+            # A failure still does not fail the booking — the customer has been
+            # charged and the booking's own payment columns are authoritative —
+            # but it is now logged as a single ERROR naming the booking and the
+            # amounts, which is enough to replay the rows by hand and enough for
+            # a Better Stack alert to fire on.
+            payment_rows = []
+
+            # 1. Convenience fee payment (paid online, now)
             if booking.razorpay_order_id or booking.razorpay_payment_id:
-                convenience_payment_data = {
+                payment_rows.append({
                     "booking_id": booking_id,
                     "customer_id": current_user_id,
                     "payment_type": "convenience_fee",
@@ -413,88 +531,63 @@ class BookingService:
                     "payment_method": booking.payment_method or "razorpay",
                     "paid_at": datetime.utcnow().isoformat() if booking.razorpay_payment_id else None,
                     "created_by": current_user_id
-                }
-                
-                try:
-                    self.db.table("payments").insert(convenience_payment_data).execute()
-                    logger.info(f"Created convenience_fee payment record for booking {booking_id}")
-                except Exception as payment_exc:
-                    logger.error(f"Failed to create convenience_fee payment: {payment_exc}")
-                    # Don't fail booking creation, payment flags are set on booking
-            
-            # 2. Create service payment record (to be paid at salon)
+                })
+
+            # 2. Service payment (to be paid at the salon)
+            payment_rows.append({
+                "booking_id": booking_id,
+                "customer_id": current_user_id,
+                "payment_type": "service_payment",
+                "amount": total_service_price,
+                "currency": "INR",
+                "status": "pending",
+                "payment_method": None,
+                "notes": f"Service payment for {len(processed_services)} service(s)",
+                "created_by": current_user_id
+            })
+
             try:
-                service_payment_data = {
-                    "booking_id": booking_id,
-                    "customer_id": current_user_id,
-                    "payment_type": "service_payment",
-                    "amount": total_service_price,
-                    "currency": "INR",
-                    "status": "pending",
-                    "payment_method": None,
-                    "notes": f"Service payment for {len(processed_services)} service(s)",
-                    "created_by": current_user_id
-                }
-                
-                self.db.table("payments").insert(service_payment_data).execute()
-                logger.info(f"Created service_payment record for booking {booking_id} (pending)")
-            except Exception as service_payment_exc:
-                logger.error(f"Failed to create service_payment record: {service_payment_exc}")
-                # Don't fail booking creation
-            
-            # Send confirmation emails to customer and vendor
-            try:
-                # 1. Send confirmation to customer
-                await email_service.send_booking_confirmation_to_customer(
-                    customer_email=customer_data["email"],
-                    customer_name=customer_data["full_name"],
-                    salon_name=salon_data["business_name"],
-                    booking_number=booking_number,
-                    booking_date=str(booking.booking_date),
-                    booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
-                    services=[{
-                        "name": svc.get("service_details", {}).get("name", "Service"),
-                        "price": svc["unit_price"],
-                        "quantity": svc["quantity"],
-                    } for svc in processed_services],
-                    total_amount=totals["total_amount"],
-                    convenience_fee=totals["convenience_fee"],
-                    service_price=total_service_price,
-                    subtotal_service_price=pricing.get("subtotal_service_price"),
-                    discount_amount=pricing.get("discount_amount", 0) or 0,
-                    convenience_fee_discount=pricing.get("convenience_fee_discount", 0) or 0,
-                    coupon_code=pricing.get("coupon_code"),
-                    booking_id=booking_id,
+                await db_exec(self.db.table("payments").insert(payment_rows))
+                logger.info(
+                    f"Created {len(payment_rows)} payment record(s) for booking {booking_id}"
                 )
-                logger.info(f"Booking confirmation email sent to customer {customer_data['email']}")
-                
-                # 2. Send notification to vendor
-                # Use vendor email from salon_data (already fetched with salon)
-                vendor_email = salon_data.get("vendor_email")
-                if vendor_email:
-                    await email_service.send_new_booking_notification_to_vendor(
-                            vendor_email=vendor_email,
-                            salon_name=salon_data["business_name"],
-                            customer_name=customer_data["full_name"],
-                            customer_phone=customer_data.get("phone", "N/A"),
-                            booking_number=booking_number,
-                            booking_date=str(booking.booking_date),
-                            booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
-                            services=[{
-                                "name": svc.get("service_details", {}).get("name", "Service"),
-                                "price": svc["unit_price"],
-                                "quantity": svc["quantity"],
-                            } for svc in processed_services],
-                            service_price=total_service_price,
-                            booking_id=created_booking.get("id", "")
-                        )
-                    logger.info(f"Booking notification email sent to vendor {vendor_email}")
-                else:
-                    logger.warning(f"Vendor email not found for salon {booking.salon_id}")
-                    
-            except Exception as email_error:
-                # Don't fail booking if email fails
-                logger.error(f"Failed to send booking notification emails: {str(email_error)}")
+            except Exception as payment_exc:
+                logger.error(
+                    "Payment ledger rows missing for booking %s (booking is valid, "
+                    "its payment columns stand): %s | rows=%s",
+                    booking_id,
+                    payment_exc,
+                    [
+                        {"payment_type": r["payment_type"], "amount": r["amount"],
+                         "status": r["status"]}
+                        for r in payment_rows
+                    ],
+                )
+            
+            # Confirmation emails. These are two Resend round trips, each retried
+            # up to four times with backoff (see EmailService._send_email), so
+            # awaiting them here added as much as a minute to a request the
+            # customer makes AFTER being charged — long enough for the web
+            # client's 30 s timeout or the platform's function limit to kill it
+            # and report a failure for a booking that exists (audit C-1).
+            # When the caller hands us a BackgroundTasks they run after the
+            # response is flushed; direct callers (and the tests) still await.
+            email_args = dict(
+                customer_id=current_user_id,
+                salon_data=salon_data,
+                booking_number=booking_number,
+                booking_date=str(booking.booking_date),
+                booking_time=booking.time_slots[0] if booking.time_slots else "N/A",
+                processed_services=processed_services,
+                totals=totals,
+                total_service_price=total_service_price,
+                pricing=pricing,
+                booking_id=booking_id,
+            )
+            if background_tasks is not None:
+                background_tasks.add_task(self._send_booking_created_emails, **email_args)
+            else:
+                await self._send_booking_created_emails(**email_args)
 
             logger.info(f"Booking created: {booking_number} for customer {current_user_id} with {len(processed_services)} services")
 
@@ -536,7 +629,7 @@ class BookingService:
         try:
             # maybe_single(): a missing booking returns empty data and hits the
             # explicit 404 below, instead of raising PGRST116 and being masked as a 500.
-            booking_response = self.db.table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
+            booking_response = await db_exec(self.db.table("bookings").select("*").eq("id", booking_id).maybe_single())
 
             if not booking_response or not booking_response.data:
                 raise HTTPException(
@@ -573,18 +666,18 @@ class BookingService:
 
             # Load related profile and salon for notification emails
             try:
-                profile_response = self.db.table("profiles").select(
+                profile_response = await db_exec(self.db.table("profiles").select(
                     "email, full_name, phone"
-                ).eq("id", booking_data["customer_id"]).single().execute()
+                ).eq("id", booking_data["customer_id"]).single())
                 booking_data["profiles"] = profile_response.data or {}
             except Exception as profile_error:
                 logger.warning(f"Could not load customer profile for booking {booking_id}: {profile_error}")
                 booking_data["profiles"] = {}
 
             try:
-                salon_response = self.db.table("salons").select(
+                salon_response = await db_exec(self.db.table("salons").select(
                     "id, business_name, vendor_id"
-                ).eq("id", booking_data["salon_id"]).single().execute()
+                ).eq("id", booking_data["salon_id"]).single())
                 booking_data["salons"] = salon_response.data or {}
             except Exception as salon_error:
                 logger.warning(f"Could not load salon for booking {booking_id}: {salon_error}")
@@ -598,16 +691,15 @@ class BookingService:
                 "updated_by": current_user_id,
             }
             response = (
-                self.db.table("bookings")
+                await db_exec(self.db.table("bookings")
                 .update(update_data)
-                .eq("id", booking_id)
-                .execute()
+                .eq("id", booking_id))
             )
             
             cancelled_booking = response.data[0] if response.data else None
             if not cancelled_booking:
                 # Re-fetch in case client returned no rows (should not happen with service role)
-                refetch = self.db.table("bookings").select("*").eq("id", booking_id).single().execute()
+                refetch = await db_exec(self.db.table("bookings").select("*").eq("id", booking_id).single())
                 cancelled_booking = refetch.data
                 if not cancelled_booking or cancelled_booking.get("status") != "cancelled":
                     raise HTTPException(
@@ -660,9 +752,9 @@ class BookingService:
     
     async def _get_customer_profile(self, user_id: str) -> Dict[str, Any]:
         """Get customer profile data."""
-        response = self.db.table("profiles").select("email, full_name, phone").eq(
+        response = await db_exec(self.db.table("profiles").select("email, full_name, phone").eq(
             "id", user_id
-        ).single().execute()
+        ).single())
         
         if not response.data:
             raise HTTPException(
@@ -678,10 +770,10 @@ class BookingService:
 
     async def _send_review_request_email(self, booking_id: str) -> None:
         """Send a review invitation email for a completed booking."""
-        booking_response = self.db.table("bookings").select(
+        booking_response = await db_exec(self.db.table("bookings").select(
             "id, booking_number, booking_date, customer_id, salon_id, "
             "profiles!customer_id(full_name, email), salons(business_name)"
-        ).eq("id", booking_id).single().execute()
+        ).eq("id", booking_id).single())
 
         booking = booking_response.data
         if not booking:
@@ -734,40 +826,29 @@ class BookingService:
                 raise ValidationError(reason, "time_slots")
 
     async def _get_salon_details(self, salon_id: int) -> Dict[str, Any]:
-        """Get salon details with vendor email."""
+        """
+        Get salon details for booking creation.
+
+        Does NOT resolve the vendor email — only the confirmation emails need
+        that, and they now run after the response, so `_get_vendor_email` is
+        called from there instead (payment audit, Phase 1).
+        """
         try:
-            # Get salon details first (include scheduling fields so booking
-            # creation can enforce closed-day / working-hours rules server-side)
-            response = self.db.table("salons").select(
+            # Include scheduling fields so booking creation can enforce
+            # closed-day / working-hours rules server-side.
+            response = await db_exec(self.db.table("salons").select(
                 "id, business_name, vendor_id, opening_time, closing_time, "
                 "working_days, business_hours"
-            ).eq("id", salon_id).execute()
-            
+            ).eq("id", salon_id))
+
             if not response.data or len(response.data) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Salon not found"
                 )
-            
-            salon = response.data[0]
-            
-            # Get vendor email separately if vendor_id exists
-            vendor_email = None
-            if salon.get("vendor_id"):
-                try:
-                    vendor_response = self.db.table("profiles").select(
-                        "email"
-                    ).eq("id", salon["vendor_id"]).execute()
-                    
-                    if vendor_response.data and len(vendor_response.data) > 0:
-                        vendor_email = vendor_response.data[0].get("email")
-                except Exception as vendor_error:
-                    logger.warning(f"Could not fetch vendor email for salon {salon_id}: {vendor_error}")
-            
-            salon["vendor_email"] = vendor_email
-            
-            return salon
-            
+
+            return response.data[0]
+
         except HTTPException:
             raise
         except Exception as e:
@@ -776,6 +857,31 @@ class BookingService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to fetch salon details"
             )
+
+    async def _get_vendor_email(self, salon_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Resolve the salon owner's email for the vendor notification.
+
+        Returns None (and logs) rather than raising: a missing vendor email
+        means one email is skipped, never a failed booking.
+        """
+        vendor_id = salon_data.get("vendor_id")
+        if not vendor_id:
+            return None
+
+        try:
+            vendor_response = await db_exec(self.db.table("profiles").select(
+                "email"
+            ).eq("id", vendor_id))
+
+            if vendor_response.data and len(vendor_response.data) > 0:
+                return vendor_response.data[0].get("email")
+        except Exception as vendor_error:
+            logger.warning(
+                f"Could not fetch vendor email for salon {salon_data.get('id')}: {vendor_error}"
+            )
+
+        return None
     
     async def _get_services_batch(self, service_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
@@ -793,7 +899,7 @@ class BookingService:
         if not service_ids:
             return {}
             
-        response = self.db.table("services").select("*").in_("id", service_ids).execute()
+        response = await db_exec(self.db.table("services").select("*").in_("id", service_ids))
         
         if not response.data:
             from app.core.exceptions import NotFoundError
@@ -889,7 +995,7 @@ class BookingService:
         vendor_id = salon.get("vendor_id")
         if vendor_id:
             try:
-                vendor_response = self.db.table("profiles").select("email").eq("id", vendor_id).execute()
+                vendor_response = await db_exec(self.db.table("profiles").select("email").eq("id", vendor_id))
                 if vendor_response.data:
                     vendor_email = vendor_response.data[0].get("email")
             except Exception as vendor_error:
