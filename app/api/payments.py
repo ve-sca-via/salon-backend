@@ -7,7 +7,7 @@ Handles Razorpay payment routing:
 
 All business logic in PaymentService (service layer pattern)
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 
 from app.core.auth import get_current_user_id, TokenData, get_current_user
 from app.core.database import get_db_client
@@ -52,10 +52,18 @@ async def create_cart_payment_order(
     Note: This does NOT create a booking. It only initiates the payment.
     The booking is created in /customers/cart/checkout after payment verification.
 
-    Optional body: {"coupon_code": "SAVE20"} to apply a coupon to this order.
+    Optional body: {"coupon_code": "SAVE20"} to apply a coupon to this order,
+    and `booking_date` / `time_slots` for the appointment already chosen on the
+    page. The appointment is not priced or validated here — it is pinned onto the
+    payment intent so the `payment.captured` webhook can finish the booking if
+    the browser never returns with the success callback (audit C-3).
     """
-    coupon_code = body.coupon_code if body else None
-    return await payment_service.create_cart_payment_order(current_user.user_id, coupon_code=coupon_code)
+    return await payment_service.create_cart_payment_order(
+        current_user.user_id,
+        coupon_code=body.coupon_code if body else None,
+        booking_date=body.booking_date if body else None,
+        time_slots=body.time_slots if body else None,
+    )
 
 
 # =====================================================
@@ -75,13 +83,21 @@ async def create_vendor_registration_order(
 @router.post("/registration/verify", response_model=VendorRegistrationVerificationResponse)
 async def verify_vendor_registration_payment(
     payment: PaymentVerification,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
     payment_service: PaymentService = Depends(get_payment_service)
 ):
-    """Verify vendor registration payment and activate salon"""
+    """
+    Verify vendor registration payment and activate salon.
+
+    Safe to call again: activation is idempotent and a repeat call will complete
+    an activation that a previous one couldn't (audit H-6). The receipt email is
+    queued, not awaited — the vendor has already paid.
+    """
     return await payment_service.verify_vendor_registration_payment(
         razorpay_order_id=payment.razorpay_order_id,
         razorpay_payment_id=payment.razorpay_payment_id,
         razorpay_signature=payment.razorpay_signature,
-        user_id=user_id
+        user_id=user_id,
+        background_tasks=background_tasks
     )

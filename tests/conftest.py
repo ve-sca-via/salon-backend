@@ -47,6 +47,21 @@ def _disable_app_rate_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _clear_config_cache():
+    """
+    Drop ConfigService's short-lived config cache around every test.
+
+    The cache is process-level by design (see ConfigService.CONFIG_CACHE_TTL_SECONDS),
+    so without this one test's seeded convenience fee or Razorpay key would be
+    served to the next one from a different fake database.
+    """
+    from app.services.config_service import clear_config_cache
+    clear_config_cache()
+    yield
+    clear_config_cache()
+
+
 # =====================================================================
 # SMOKE TIER (no running stack required)
 # =====================================================================

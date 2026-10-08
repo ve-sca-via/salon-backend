@@ -6,7 +6,7 @@ from fastapi import HTTPException, Security, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
 from app.core.config import settings
 from app.core.database import get_db_client
@@ -44,6 +44,10 @@ class TokenPayload(BaseModel):
     user_role: str
     jti: str  # JWT ID for token revocation
     exp: int
+    # The profile row verify_token() already had to read, passed on so callers
+    # do not read the same row again (payment audit M-1). None when the caller
+    # did not go through verify_token.
+    profile: Optional[Dict[str, Any]] = None
 
 
 # =====================================================
@@ -160,8 +164,12 @@ def verify_token(token: str, db) -> TokenPayload:
         # Load the user's profile to validate account state and logout_all timestamp.
         # Use maybe_single() so a deleted profile returns empty data instead of raising
         # PGRST116 ("Cannot coerce the result to a single JSON object") -> 500 crash.
+        #
+        # Selects the union of what this function checks and what get_current_user /
+        # get_optional_user need, and returns it on the TokenPayload, so the same
+        # profiles row is read once per request instead of twice (payment audit M-1).
         profile_response = db.table("profiles").select(
-            "token_valid_after, is_active"
+            "id, email, user_role, token_valid_after, is_active, is_internal"
         ).eq("id", user_id).maybe_single().execute()
 
         profile = getattr(profile_response, "data", None)
@@ -218,7 +226,10 @@ def verify_token(token: str, db) -> TokenPayload:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
         
-        return TokenPayload(sub=user_id, email=email, user_role=user_role, jti=jti, exp=payload.get("exp"))
+        return TokenPayload(
+            sub=user_id, email=email, user_role=user_role, jti=jti,
+            exp=payload.get("exp"), profile=profile,
+        )
     
     except JWTError as e:
         logger.error(f"JWT verification failed: {str(e)}")
@@ -509,21 +520,26 @@ async def get_current_user(
         )
     token = credentials.credentials
     token_data = verify_token(token, db)
-    
+
     # Verify user exists and is active
     try:
-        user_response = db.table("profiles").select(
-            "id, email, user_role, is_active, is_internal"
-        ).eq("id", token_data.sub).maybe_single().execute()
+        # verify_token already read this row (and already rejected a missing or
+        # inactive profile); reuse it rather than reading it again. The fallback
+        # read keeps this working for any caller that hands us a TokenPayload
+        # built elsewhere.
+        user = token_data.profile
+        if user is None:
+            user_response = db.table("profiles").select(
+                "id, email, user_role, is_active, is_internal"
+            ).eq("id", token_data.sub).maybe_single().execute()
+            user = getattr(user_response, "data", None)
 
-        if not getattr(user_response, "data", None):
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Account no longer exists",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-
-        user = user_response.data
 
         if not user.get("is_active", False):
             # 401 (not 403) so the client clears the session and forces re-login
@@ -567,14 +583,17 @@ async def get_optional_user(
         token = credentials.credentials
         token_data = verify_token(token, db)
 
-        user_response = db.table("profiles").select(
-            "id, email, user_role, is_active, is_internal"
-        ).eq("id", token_data.sub).maybe_single().execute()
+        # Reuse the profile verify_token already read (payment audit M-1).
+        user = token_data.profile
+        if user is None:
+            user_response = db.table("profiles").select(
+                "id, email, user_role, is_active, is_internal"
+            ).eq("id", token_data.sub).maybe_single().execute()
+            user = getattr(user_response, "data", None)
 
-        if not getattr(user_response, "data", None):
+        if not user:
             return None
 
-        user = user_response.data
         if not user.get("is_active", False):
             return None
 

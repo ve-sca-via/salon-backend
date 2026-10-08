@@ -2,7 +2,8 @@
 Config Service
 Handles system configuration CRUD operations
 """
-from typing import List, Dict, Any, Optional
+from time import monotonic
+from typing import List, Dict, Any, Optional, Tuple
 from app.schemas.request.admin import SystemConfigUpdate
 from app.core.encryption import get_encryption_service
 from app.core.config import settings
@@ -17,6 +18,75 @@ SENSITIVE_CONFIG_KEYS = {
     'razorpay_webhook_secret',
     'resend_api_key',
 }
+
+# =====================================================
+# SHORT-LIVED VALUE CACHE
+# =====================================================
+# The payment paths read the same handful of config keys several times per
+# request — Razorpay's key_id/key_secret are read (and Fernet-decrypted) once
+# per PaymentService and convenience_fee_percentage once per pricing pass, which
+# cost four decrypted round trips and two config reads inside a single cart
+# checkout (payment audit 10.3 / H-3 / M-2).
+#
+# Only the keys below are cached, and only for CONFIG_CACHE_TTL_SECONDS. Every
+# write through this service drops the key, so a change made in the admin panel
+# still takes effect immediately — the TTL only bounds staleness from a change
+# made directly in the database. Values live in a process-local dict; the
+# decrypted secrets they hold are no more exposed than the RazorpayService
+# instance that already holds them for the life of a request.
+CONFIG_CACHE_TTL_SECONDS = 60
+
+CACHEABLE_CONFIG_KEYS = {
+    'razorpay_key_id',
+    'razorpay_key_secret',
+    'razorpay_webhook_secret',
+    'convenience_fee_percentage',
+}
+
+CONVENIENCE_FEE_CONFIG_KEY = 'convenience_fee_percentage'
+
+# config_key -> (expires_at_monotonic, value)
+_config_cache: Dict[str, Tuple[float, Any]] = {}
+
+
+def clear_config_cache(config_key: Optional[str] = None) -> None:
+    """
+    Drop cached config values.
+
+    Called on every write through ConfigService so an admin edit is visible at
+    once. Tests use the no-argument form to keep a process-level cache from
+    leaking one test's seeded config into the next.
+    """
+    if config_key is None:
+        _config_cache.clear()
+    else:
+        _config_cache.pop(config_key, None)
+
+
+def _cache_read(config_key: str) -> Any:
+    """Return the cached value for a key, or None if absent/expired."""
+    entry = _config_cache.get(config_key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if expires_at <= monotonic():
+        _config_cache.pop(config_key, None)
+        return None
+    return value
+
+
+def _cache_write(config_key: str, value: Any) -> None:
+    """
+    Cache a config value, if the key is cacheable and the value is real.
+
+    A None is never cached: ConfigService swallows read failures and returns the
+    caller's default, so caching one would turn a single transient DB blip into
+    a full minute of "payment service not configured".
+    """
+    if value is None or config_key not in CACHEABLE_CONFIG_KEYS:
+        return
+    _config_cache[config_key] = (monotonic() + CONFIG_CACHE_TTL_SECONDS, value)
+
 
 # Predefined platform-native configuration schema available for admins to set
 AVAILABLE_SYSTEM_CONFIGS = [
@@ -67,6 +137,12 @@ AVAILABLE_SYSTEM_CONFIGS = [
         "label": "Razorpay Key Secret",
         "config_type": "string",
         "description": "Private Key Secret for Razorpay signature verification. Protected and encrypted."
+    },
+    {
+        "config_key": "razorpay_webhook_secret",
+        "label": "Razorpay Webhook Secret",
+        "config_type": "string",
+        "description": "Secret from the Razorpay webhook settings, used to authenticate payment.captured deliveries. Without it, a payment whose browser callback is lost never becomes a booking. Protected and encrypted."
     }
 ]
 
@@ -250,8 +326,11 @@ class ConfigService:
                 except Exception as e:
                     logger.error(f"Failed to decrypt response for {config_key}: {e}")
             
+            # An admin edit must be visible on the next request, not after the TTL.
+            clear_config_cache(config_key)
+
             logger.info(f"Updated configuration: {config_key}")
-            
+
             return updated_config
             
         except ValueError:
@@ -333,6 +412,8 @@ class ConfigService:
                 except Exception:
                     logger.debug(f"Failed to decrypt created config {config_key}")
 
+            clear_config_cache(config_key)
+
             logger.info(f"Created new configuration: {config_key}")
 
             return created_config
@@ -368,7 +449,9 @@ class ConfigService:
             
             # Delete config
             self.db.table("system_config").delete().eq("config_key", config_key).execute()
-            
+
+            clear_config_cache(config_key)
+
             logger.info(f"Deleted configuration: {config_key}")
             
             return True
@@ -404,6 +487,73 @@ class ConfigService:
             logger.error(f"Error getting config value for {config_key}: {str(e)}")
             return default
     
+    async def get_cached_config_value(self, config_key: str, default: Any = None) -> Any:
+        """
+        Get a configuration value, served from the short-lived cache when the key
+        is one of CACHEABLE_CONFIG_KEYS.
+
+        Same contract as get_config_value (missing/unreadable -> default), so it
+        is a drop-in for the hot payment reads. Uncacheable keys pass straight
+        through, which keeps the call sites free of per-key special cases.
+        """
+        cached = _cache_read(config_key)
+        if cached is not None:
+            return cached
+
+        value = await self.get_config_value(config_key, default)
+        _cache_write(config_key, value)
+        return value
+
+    async def get_convenience_fee_percentage(self) -> float:
+        """
+        The admin-managed convenience fee percentage, cached for
+        CONFIG_CACHE_TTL_SECONDS.
+
+        Single accessor for a value that was read twice per cart checkout —
+        once in CustomerService.checkout_cart and again in
+        BookingService.create_booking — with *different* filters: only the
+        booking-side read honoured `is_active`. This honours it, which is the
+        stricter of the two and the only reading that respects the admin's
+        toggle. (A row with is_active false would already have failed the
+        booking-side read, so no working configuration changes meaning.)
+
+        Raises:
+            ValueError: config row missing, inactive, or not a number. Every
+                caller already refuses to guess a default here — a wrong
+                platform fee is worse than a failed request — so each maps this
+                to its own 500 message.
+        """
+        cached = _cache_read(CONVENIENCE_FEE_CONFIG_KEY)
+        if cached is not None:
+            return cached
+
+        # maybe_single(): a missing row comes back empty instead of raising
+        # PGRST116, so "not configured" stays a value check, not an exception.
+        response = self.db.table("system_config")\
+            .select("config_value")\
+            .eq("config_key", CONVENIENCE_FEE_CONFIG_KEY)\
+            .eq("is_active", True)\
+            .maybe_single()\
+            .execute()
+
+        row = getattr(response, "data", None)
+        raw_value = row.get("config_value") if row else None
+        if raw_value is None or raw_value == "":
+            raise ValueError(
+                f"Configuration '{CONVENIENCE_FEE_CONFIG_KEY}' is missing or inactive"
+            )
+
+        try:
+            percentage = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Configuration '{CONVENIENCE_FEE_CONFIG_KEY}' is not a number: {raw_value!r}"
+            )
+
+        _cache_write(CONVENIENCE_FEE_CONFIG_KEY, percentage)
+        logger.info(f"Using convenience_fee_percentage from config: {percentage}%")
+        return percentage
+
     async def get_configs_by_type(self, config_type: str) -> List[Dict[str, Any]]:
         """
         Get all configurations of a specific type

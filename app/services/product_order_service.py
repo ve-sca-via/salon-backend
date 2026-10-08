@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import HTTPException, status
 import uuid
 import datetime
@@ -71,9 +71,13 @@ class ProductOrderService:
                 "image_url": product.get('image_urls', [None])[0] if product.get('image_urls') else None
             })
 
-        discount_total = order_data.get('discount_total', 0.0)
-        total_amount = subtotal - discount_total
-        
+        # Product orders have no discount/coupon flow, so the total IS the
+        # server-computed subtotal. This used to subtract a client-supplied
+        # `discount_total`, which made every order payable for ₹1 (audit C-5).
+        # The column is kept at 0 so the row shape is unchanged.
+        discount_total = 0.0
+        total_amount = subtotal
+
         if total_amount < 1: # Razorpay minimum
             total_amount = 1.0
 
@@ -247,6 +251,70 @@ class ProductOrderService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to verify payment"
             )
+
+    async def mark_order_paid_from_webhook(
+        self, razorpay_order_id: str, razorpay_payment_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mark a product order paid from the `payment.captured` webhook.
+
+        The browser path (`verify_payment`) proves the payment with an
+        order|payment signature and scopes the update to the signed-in user. A
+        webhook has neither: its proof is the HMAC over the webhook body, already
+        verified by the caller, and there is no session to scope to — so the order
+        id alone identifies the row.
+
+        Guarded on `payment_status = 'pending'`, which also means a webhook cannot
+        resurrect an order someone has since cancelled.
+
+        Returns the updated order, or None when there was nothing pending to
+        update (already paid, cancelled, or no such order).
+        """
+        try:
+            result = self.db.table("product_orders").update({
+                "status": "paid",
+                "payment_status": "completed",
+                "razorpay_payment_id": razorpay_payment_id,
+                "updated_at": datetime.datetime.now().isoformat()
+            })\
+                .eq("razorpay_order_id", razorpay_order_id)\
+                .eq("payment_status", "pending")\
+                .execute()
+
+            if not result.data:
+                return None
+
+            order = result.data[0]
+            logger.info(
+                f"Product order {order.get('order_number')} marked paid by webhook "
+                f"(payment {razorpay_payment_id})"
+            )
+            return order
+        except Exception as e:
+            logger.error(
+                f"Failed to mark product order paid from webhook for order "
+                f"{razorpay_order_id}: {e}"
+            )
+            raise
+
+    async def find_by_razorpay_order_id(self, razorpay_order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        The product order behind a Razorpay order, or None.
+
+        Used by the webhook to decide which flow a captured payment belongs to.
+        """
+        try:
+            response = self.db.table("product_orders")\
+                .select("id, order_number, user_id, status, payment_status, razorpay_payment_id")\
+                .eq("razorpay_order_id", razorpay_order_id)\
+                .maybe_single()\
+                .execute()
+            return getattr(response, "data", None) or None
+        except Exception as e:
+            logger.warning(
+                f"Could not look up product order for Razorpay order {razorpay_order_id}: {e}"
+            )
+            return None
 
     async def get_user_orders(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all product orders for a user"""

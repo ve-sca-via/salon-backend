@@ -32,8 +32,12 @@ async def resolve_razorpay_credentials(config_service, *, allow_env_fallback: bo
     Returns:
         Tuple of (key_id, key_secret); either may be None if unresolved.
     """
-    key_id = await config_service.get_config_value("razorpay_key_id")
-    key_secret = await config_service.get_config_value("razorpay_key_secret")
+    # Cached for ConfigService.CONFIG_CACHE_TTL_SECONDS and dropped on every
+    # admin write, so a credential rotation still applies on the next request.
+    # Uncached, these two Fernet-decrypted reads ran up to four times in one
+    # cart checkout (payment audit 10.3).
+    key_id = await config_service.get_cached_config_value("razorpay_key_id")
+    key_secret = await config_service.get_cached_config_value("razorpay_key_secret")
 
     if allow_env_fallback:
         key_id = key_id or settings.RAZORPAY_KEY_ID

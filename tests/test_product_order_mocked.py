@@ -261,11 +261,11 @@ def od(app, monkeypatch):
     app.dependency_overrides.pop(get_db_client, None)
 
 
-def _order_payload(product_id, quantity=2, discount_total=0.0):
+def _order_payload(product_id, quantity=2, **extra):
     return {
         "shipping_address": {"line1": "1 Test St", "city": "Testville", "pincode": "560001"},
-        "discount_total": discount_total,
         "items": [{"product_id": product_id, "quantity": quantity}],
+        **extra,
     }
 
 
@@ -311,14 +311,30 @@ def test_create_order_b2b_price_for_vendor(od):
     assert r.json()["order"]["user_type"] == "vendor"
 
 
-def test_create_order_applies_discount_total(od):
+def test_create_order_ignores_client_supplied_discount(od):
+    # Regression for audit C-5: `discount_total` used to be read off the request
+    # and subtracted from the server-computed subtotal, with the result floored at
+    # the ₹1 gateway minimum — so any caller could buy any order for ₹1. There is
+    # no coupon flow for product orders, so the field is now ignored entirely.
     od.seed_profile("u1")
     p = od.seed_product(price=1000.0)
     od.login_as("u1")
 
-    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1, discount_total=200.0))
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=1, discount_total=999999.0),
+    )
     assert r.status_code == 200, r.text
-    assert r.json()["order"]["total_amount"] == 800.0
+    assert r.json()["order"]["total_amount"] == 1000.0
+    assert r.json()["order"]["discount_total"] == 0.0
+
+    # A negative "discount" must not inflate the charge either.
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=1, discount_total=-500.0),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["order"]["total_amount"] == 1000.0
 
 
 def test_create_order_unknown_product_is_400(od):

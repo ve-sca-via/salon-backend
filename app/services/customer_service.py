@@ -7,14 +7,34 @@ import logging
 from typing import Dict, Any, Optional, List
 from app.schemas.request.customer import CartItemCreate, ReviewCreate, ReviewUpdate
 from datetime import datetime
-from fastapi import HTTPException, status
+from fastapi import BackgroundTasks, HTTPException, status
 
 from app.core.auth import verify_review_feedback_token
 from app.schemas.response.vendor import SalonListResponse
+from app.services.payment_intent_service import PaymentIntentService
 from app.services.salon_service import SalonService
 from app.services.pricing_service import effective_service_price
 
 logger = logging.getLogger(__name__)
+
+
+def _cart_comparison_key(items: List[Dict[str, Any]]) -> Dict[str, tuple]:
+    """
+    Reduce a cart (live, or a snapshot taken when the order was created) to the
+    shape that decides whether it is still the cart that was paid for.
+
+    Service id, quantity and unit price: a price change between the order and
+    checkout invalidates the amount charged just as surely as an added item, so
+    all three are compared. Shared by checkout and by the webhook, which has to
+    make the same judgement without a browser.
+    """
+    return {
+        item["service_id"]: (
+            item["quantity"],
+            round(float(item.get("unit_price", 0) or 0), 2),
+        )
+        for item in items
+    }
 
 
 class CustomerService:
@@ -485,19 +505,16 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            # Count items before deletion
-            count_response = self.db.table("cart_items")\
-                .select("id", count="exact")\
-                .eq("user_id", customer_id)\
-                .execute()
-
-            # Delete all cart items for user
-            self.db.table("cart_items")\
+            # The delete returns the rows it removed, so counting them needs no
+            # second round trip — and cannot miss an item added between a count
+            # and the delete. This runs inside checkout, after the customer has
+            # been charged, so the round trip is worth not spending.
+            delete_response = self.db.table("cart_items")\
                 .delete()\
                 .eq("user_id", customer_id)\
                 .execute()
 
-            deleted_count = count_response.count if count_response.count else 0
+            deleted_count = len(delete_response.data) if delete_response.data else 0
 
             logger.info(f"Cleared cart for customer {customer_id}: {deleted_count} items")
 
@@ -514,10 +531,229 @@ class CustomerService:
                 detail="Failed to clear cart"
             )
     
+    async def create_booking_from_intent(
+        self,
+        intent: Dict[str, Any],
+        razorpay_payment_id: str,
+        background_tasks: Optional[BackgroundTasks] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Turn a captured cart payment into a booking without a browser.
+
+        This is the path the `payment.captured` webhook takes when the customer's
+        success callback never arrived — the case that used to mean captured money,
+        no booking, and no record of it anywhere but Razorpay's dashboard (audit
+        C-3). Everything it needs is on the intent row: the salon, the appointment
+        the customer had chosen, the pinned amounts and the coupon.
+
+        Deliberately more permissive than `checkout_cart` in one respect: a salon
+        that has since gone inactive or stopped accepting bookings does **not**
+        stop the booking being recorded. The browser path refuses before any money
+        moves; here the money is already taken, and recording what it bought is
+        strictly better than dropping it on the floor for a human to find. The
+        discrepancy is logged so it can be acted on.
+
+        Returns the booking, or None when it genuinely cannot be created — each
+        such case logs at ERROR with the payment id, because it is money that now
+        needs a person.
+        """
+        order_id = intent.get("razorpay_order_id")
+        customer_id = intent.get("customer_id")
+
+        # Idempotency first: if the browser got there after all (or an earlier
+        # webhook delivery did), this payment already has its booking.
+        existing = self.db.table("bookings").select(
+            "id, booking_number, status, booking_date, time_slots, total_amount, salon_id"
+        ).eq("razorpay_payment_id", razorpay_payment_id).execute()
+        if existing.data:
+            logger.info(
+                f"Webhook: payment {razorpay_payment_id} already has booking "
+                f"{existing.data[0].get('booking_number')}; nothing to do"
+            )
+            return existing.data[0]
+
+        booking_date = intent.get("booking_date")
+        time_slots = intent.get("time_slots")
+        if not booking_date or not time_slots:
+            # The client that created this order did not send the appointment, so
+            # there is nothing to book — only the browser knew the date and slots.
+            logger.error(
+                f"Webhook: captured payment {razorpay_payment_id} (order {order_id}) "
+                f"has no appointment pinned on its intent, so no booking can be "
+                f"created for customer {customer_id}. Needs manual follow-up."
+            )
+            return None
+
+        # `bookings` refuses a past date (valid_booking_datetime), so a webhook
+        # arriving after the appointment has already gone by cannot be completed.
+        try:
+            if datetime.strptime(booking_date, "%Y-%m-%d").date() < datetime.now().date():
+                logger.error(
+                    f"Webhook: captured payment {razorpay_payment_id} is for "
+                    f"{booking_date}, which has passed; no booking created for "
+                    f"customer {customer_id}. Needs manual follow-up."
+                )
+                return None
+        except (TypeError, ValueError):
+            logger.error(
+                f"Webhook: intent for payment {razorpay_payment_id} has an "
+                f"unparseable booking_date {booking_date!r}; no booking created."
+            )
+            return None
+
+        cart_snapshot = intent.get("cart_snapshot")
+        if not isinstance(cart_snapshot, list) or not cart_snapshot:
+            logger.error(
+                f"Webhook: intent for payment {razorpay_payment_id} has no usable "
+                f"cart snapshot; no booking created for customer {customer_id}."
+            )
+            return None
+
+        # The salon row, with the columns create_booking needs.
+        salon_response = self.db.table("salons")\
+            .select(
+                "id, business_name, accepting_bookings, is_active, vendor_id, "
+                "opening_time, closing_time, working_days, business_hours"
+            )\
+            .eq("id", intent.get("salon_id"))\
+            .maybe_single()\
+            .execute()
+        salon = getattr(salon_response, "data", None)
+        if not salon:
+            logger.error(
+                f"Webhook: salon {intent.get('salon_id')} behind captured payment "
+                f"{razorpay_payment_id} no longer exists; no booking created."
+            )
+            return None
+
+        if not salon.get("is_active") or not salon.get("accepting_bookings", True):
+            logger.warning(
+                f"Webhook: recording booking for payment {razorpay_payment_id} at "
+                f"salon {salon.get('id')}, which is no longer active/accepting "
+                "bookings. The customer has been charged, so the booking is kept; "
+                "this one may need cancelling and refunding."
+            )
+
+        from app.services.config_service import ConfigService
+        try:
+            convenience_fee_percentage = await ConfigService(self.db).get_convenience_fee_percentage()
+        except ValueError as config_error:
+            # Only matters if the pinned pricing is unusable; create_booking falls
+            # back to recomputing, and that is what needs the percentage.
+            logger.warning(f"Webhook: convenience fee config unavailable: {config_error}")
+            convenience_fee_percentage = None
+
+        from app.schemas.request.booking import ServiceItem
+        from app.services.booking_service import BookingService
+        from app.schemas import BookingCreate
+
+        booking_data = BookingCreate(
+            salon_id=salon["id"],
+            booking_date=booking_date,
+            booking_time=time_slots[0],
+            time_slots=time_slots,
+            services=[
+                ServiceItem(service_id=item["service_id"], quantity=item.get("quantity", 1))
+                for item in cart_snapshot
+            ],
+            payment_status="paid",
+            payment_method="razorpay",
+            razorpay_order_id=order_id,
+            razorpay_payment_id=razorpay_payment_id,
+            # No order|payment signature exists on this path — see the migration
+            # that stopped `payments` requiring one for a successful fee.
+            razorpay_signature=None,
+            notes="Booking completed from Razorpay payment.captured webhook",
+            coupon_code=intent.get("coupon_code"),
+        )
+
+        booking = await BookingService(self.db).create_booking(
+            booking=booking_data,
+            current_user_id=customer_id,
+            pinned_pricing=intent.get("pricing") if isinstance(intent.get("pricing"), dict) else None,
+            background_tasks=background_tasks,
+            salon_data=salon,
+            convenience_fee_percentage=convenience_fee_percentage,
+            idempotency_checked=True,
+        )
+
+        # Clear only what was paid for. `clear_cart` empties the whole cart, which
+        # is right in the browser flow but not here: the customer may have added
+        # something else in the time it took this webhook to arrive, and that is
+        # not ours to delete.
+        try:
+            self.db.table("cart_items").delete()\
+                .eq("user_id", customer_id)\
+                .in_("service_id", [item["service_id"] for item in cart_snapshot])\
+                .execute()
+        except Exception as e:
+            logger.warning(
+                f"Webhook: could not clear paid cart items for customer {customer_id}: {e}"
+            )
+
+        logger.info(
+            f"Webhook completed booking {booking.get('booking_number')} for payment "
+            f"{razorpay_payment_id} — the browser callback never arrived"
+        )
+        return booking
+
+    async def _legacy_snapshot_from_razorpay_order(
+        self,
+        payment_service,
+        razorpay_order_id: str,
+    ) -> tuple:
+        """
+        Read the cart/pricing snapshot out of a Razorpay order's notes.
+
+        Transitional. Until `payment_intents` existed, this was the only place
+        the snapshot lived, and reading it cost an external round trip inside the
+        post-charge request (payment audit H-2). It is now reached only for an
+        order created before this deploy — or one whose intent insert failed — so
+        that payments in flight during the rollout still record pinned amounts.
+        Safe to delete once no unpaid order predates the migration.
+
+        Returns (cart_snapshot, pinned_pricing, coupon_code), any of which may be
+        None. Never raises: an unreadable snapshot means checkout recomputes
+        server-side, which is the long-standing fail-open behaviour.
+        """
+        try:
+            import json
+
+            await payment_service._initialize_razorpay()
+            razorpay_order = payment_service.razorpay.client.order.fetch(razorpay_order_id)
+            notes = razorpay_order.get("notes", {}) or {}
+
+            cart_snapshot = None
+            raw_snapshot = notes.get("cart_snapshot")
+            if raw_snapshot:
+                parsed = json.loads(raw_snapshot)
+                if isinstance(parsed, list):
+                    cart_snapshot = parsed
+
+            pinned_pricing = None
+            raw_pricing = notes.get("pricing")
+            if raw_pricing:
+                try:
+                    parsed_pricing = json.loads(raw_pricing)
+                    if isinstance(parsed_pricing, dict):
+                        pinned_pricing = parsed_pricing
+                except (ValueError, TypeError) as parse_err:
+                    logger.warning(f"Could not parse pinned pricing note: {parse_err}")
+
+            logger.info(
+                f"No payment intent for order {razorpay_order_id}; read the snapshot "
+                "from the Razorpay order notes"
+            )
+            return cart_snapshot, pinned_pricing, notes.get("coupon_code")
+        except Exception as e:
+            logger.warning(f"Cart validation skipped due to error: {str(e)}")
+            return None, None, None
+
     async def checkout_cart(
         self,
         customer_id: str,
-        checkout_data: Dict[str, Any]
+        checkout_data: Dict[str, Any],
+        background_tasks: Optional[BackgroundTasks] = None
     ) -> Dict[str, Any]:
         """
         Create booking from cart items with payment verification.
@@ -559,25 +795,55 @@ class CustomerService:
             HTTPException 500: Booking creation failed
         """
         try:
+            # IDEMPOTENCY CHECK, before anything else: if this payment already
+            # produced a booking, say so whatever the cart now looks like. It runs
+            # first because the `payment.captured` webhook can get here before the
+            # browser does, and it clears the paid items on its way through — so a
+            # later-arriving callback would otherwise be told "Cart is empty" for a
+            # booking that exists, and the customer would see a failure for a
+            # successful payment (audit C-3's webhook racing C-2's retry).
+            if checkout_data.get("razorpay_payment_id"):
+                existing_booking = self.db.table("bookings").select(
+                    "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
+                ).eq("razorpay_payment_id", checkout_data["razorpay_payment_id"]).execute()
+
+                if existing_booking.data:
+                    logger.warning(f"Payment {checkout_data['razorpay_payment_id']} already used for booking. Returning existing booking (idempotent).")
+                    existing = existing_booking.data[0]
+                    return {
+                        "success": True,
+                        "message": "Booking already created with this payment",
+                        "booking": existing,
+                        "booking_id": existing.get("id"),
+                        "booking_number": existing.get("booking_number")
+                    }
+
             # Get cart items
             cart_response = await self.get_cart(customer_id)
-            
+
             if not cart_response.get("items") or len(cart_response["items"]) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Cart is empty"
                 )
-            
+
             cart_items = cart_response["items"]
             salon_id = cart_response["salon_id"]
-            
-            # Check if salon is accepting bookings
+
+            # Check if salon is accepting bookings. Selects the union of what
+            # this guard needs and what create_booking needs (scheduling fields
+            # for the date/time validation, vendor_id for the vendor email), so
+            # the salon row is read once per checkout instead of twice with
+            # different column sets (payment audit M-4).
             salon_response = self.db.table("salons")\
-                .select("id, business_name, accepting_bookings, is_active")\
+                .select(
+                    "id, business_name, accepting_bookings, is_active, vendor_id, "
+                    "opening_time, closing_time, working_days, business_hours"
+                )\
                 .eq("id", salon_id)\
                 .single()\
                 .execute()
-            
+
             if not salon_response.data:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -608,47 +874,19 @@ class CustomerService:
                 for item in cart_items
             ]
             
-            # Get system config for convenience fee percentage (dynamically set by admin)
-            # Use actual column names `config_key` / `config_value` (not `key`/`value`)
-            config_response = self.db.table("system_config")\
-                .select("config_key, config_value")\
-                .eq("config_key", "convenience_fee_percentage")\
-                .single()\
-                .execute()
-
-            convenience_fee_percentage = None
-            if config_response.data:
-                # When using single(), response.data is a dict
-                raw_value = config_response.data.get("config_value")
-                try:
-                    convenience_fee_percentage = float(raw_value)
-                    logger.info(f"Using convenience_fee_percentage from config: {convenience_fee_percentage}%")
-                except Exception:
-                    logger.error(f"Invalid convenience_fee_percentage config value: {raw_value}")
-            
-            if convenience_fee_percentage is None:
+            # Convenience fee percentage (admin-managed). Read once here and
+            # handed to create_booking, which used to read it again with a
+            # different filter (payment audit M-2).
+            from app.services.config_service import ConfigService
+            try:
+                convenience_fee_percentage = await ConfigService(self.db).get_convenience_fee_percentage()
+            except ValueError as config_error:
+                logger.error(f"Convenience fee config unavailable: {config_error}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Payment configuration not available. Please contact support."
                 )
 
-            # IDEMPOTENCY CHECK: Check if payment already used for a booking
-            if checkout_data.get("razorpay_payment_id"):
-                existing_booking = self.db.table("bookings").select(
-                    "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
-                ).eq("razorpay_payment_id", checkout_data["razorpay_payment_id"]).execute()
-                
-                if existing_booking.data:
-                    logger.warning(f"Payment {checkout_data['razorpay_payment_id']} already used for booking. Returning existing booking (idempotent).")
-                    existing = existing_booking.data[0]
-                    return {
-                        "success": True,
-                        "message": "Booking already created with this payment",
-                        "booking": existing,
-                        "booking_id": existing.get("id"),
-                        "booking_number": existing.get("booking_number")
-                    }
-            
             # Coupon applied at order-creation time is the authoritative one (it's
             # what the convenience fee was charged on). Read it from the order notes
             # below; fall back to whatever the client sent.
@@ -658,80 +896,80 @@ class CustomerService:
             # so recorded == charged even if coupon/sale/price state changed (D4).
             pinned_pricing = None
 
+            # One PaymentService for the whole request. Two were constructed
+            # before — one to fetch the order snapshot, one to verify the
+            # signature — which made `_initialize_razorpay`'s
+            # `_razorpay_initialized` guard useless and read the Razorpay
+            # credentials twice over (payment audit H-3).
+            from app.services.payment_service import PaymentService
+            payment_service = PaymentService(db_client=self.db)
+
             # CART VALIDATION: Verify cart hasn't changed since payment order creation
             # This prevents race conditions where cart is modified between payment and checkout
+            stored_cart = None
             if checkout_data.get("razorpay_order_id"):
-                try:
-                    # Fetch the Razorpay order to get the cart + pricing snapshot
-                    from app.services.payment_service import PaymentService
-                    payment_service = PaymentService(db_client=self.db)
-                    await payment_service._initialize_razorpay()
+                order_id = checkout_data["razorpay_order_id"]
 
-                    import json
-                    razorpay_order = payment_service.razorpay.client.order.fetch(checkout_data["razorpay_order_id"])
-                    stored_snapshot = razorpay_order.get("notes", {}).get("cart_snapshot")
-                    stored_item_count = razorpay_order.get("notes", {}).get("cart_item_count")
-                    # Use the coupon that was actually priced into this order
-                    note_coupon = razorpay_order.get("notes", {}).get("coupon_code")
-                    if note_coupon:
-                        applied_coupon_code = note_coupon
-                    # Parse the pinned pricing breakdown (authoritative for the booking)
-                    stored_pricing = razorpay_order.get("notes", {}).get("pricing")
-                    if stored_pricing:
-                        try:
-                            pinned_pricing = json.loads(stored_pricing)
-                        except (ValueError, TypeError) as parse_err:
-                            logger.warning(f"Could not parse pinned pricing note: {parse_err}")
+                # The snapshot now lives in our own `payment_intents` row, written
+                # when the order was created, so reading it is one local query
+                # instead of an external Razorpay `orders.fetch` inside the request
+                # the customer waits on after being charged (payment audit H-2).
+                intent = await PaymentIntentService(self.db).get_by_order_id(order_id)
 
-                    if stored_snapshot and stored_item_count:
-                        stored_cart = json.loads(stored_snapshot)
-                        current_item_count = len(cart_response["items"])
+                if intent:
+                    if isinstance(intent.get("pricing"), dict):
+                        pinned_pricing = intent["pricing"]
+                    else:
+                        logger.warning(f"Payment intent {order_id} has unusable pinned pricing")
+                    if isinstance(intent.get("cart_snapshot"), list):
+                        stored_cart = intent["cart_snapshot"]
+                    # The coupon priced into the order is the authoritative one —
+                    # it is what the convenience fee was charged on.
+                    if intent.get("coupon_code"):
+                        applied_coupon_code = intent["coupon_code"]
+                else:
+                    # No intent row. Either an order created before this table
+                    # existed (the snapshot is still in the Razorpay order's
+                    # notes, where it used to live), or the intent insert failed.
+                    # Reading the notes keeps orders in flight across the deploy
+                    # working; it can be deleted once none predate it.
+                    stored_cart, legacy_pricing, legacy_coupon = (
+                        await self._legacy_snapshot_from_razorpay_order(payment_service, order_id)
+                    )
+                    if legacy_pricing is not None:
+                        pinned_pricing = legacy_pricing
+                    if legacy_coupon:
+                        applied_coupon_code = legacy_coupon
 
-                        # Quick check: item count mismatch
-                        if int(stored_item_count) != current_item_count:
-                            logger.warning(f"Cart modified: expected {stored_item_count} items, found {current_item_count}")
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Your cart has been modified since payment. Please try checkout again."
-                            )
+            # Compare the snapshot against the live cart. A mismatch is a hard
+            # 400 — the customer paid for a different cart than the one we are
+            # about to record. An *unreadable* snapshot is not: that falls through
+            # to a fresh server-side recompute in create_booking (which still
+            # re-validates the coupon), as it always has.
+            if stored_cart is not None:
+                current_item_count = len(cart_response["items"])
+                if len(stored_cart) != current_item_count:
+                    logger.warning(
+                        f"Cart modified: expected {len(stored_cart)} items, found {current_item_count}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Your cart has been modified since payment. Please try checkout again."
+                    )
 
-                        # Detailed validation: compare service IDs, quantities AND unit
-                        # price (a price change since the order also invalidates the
-                        # charged amount — fail closed).
-                        def _cart_key(items):
-                            return {
-                                item["service_id"]: (
-                                    item["quantity"],
-                                    round(float(item.get("unit_price", 0) or 0), 2),
-                                )
-                                for item in items
-                            }
-                        current_cart = _cart_key(cart_response["items"])
-                        stored_cart_dict = _cart_key(stored_cart)
+                # Compares service IDs, quantities AND unit price — a price change
+                # since the order also invalidates the charged amount, so fail closed.
+                if _cart_comparison_key(cart_response["items"]) != _cart_comparison_key(stored_cart):
+                    logger.warning("Cart contents/prices changed since payment order creation")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Your cart has changed since payment. Please try checkout again."
+                    )
 
-                        if current_cart != stored_cart_dict:
-                            logger.warning("Cart contents/prices changed since payment order creation")
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="Your cart has changed since payment. Please try checkout again."
-                            )
-
-                        logger.info("Cart validation passed: snapshot matches current cart")
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    # Network/parse error fetching the order. We can't pin, so fall
-                    # back to a fresh server-side recompute in create_booking (which
-                    # still re-validates the coupon). Cart-mismatch above is a hard 400.
-                    logger.warning(f"Cart validation skipped due to error: {str(e)}")
+                logger.info("Cart validation passed: snapshot matches current cart")
 
             # Verify Razorpay payment signature if payment details provided
             if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
-                from app.services.payment_service import PaymentService
-                
-                # Use PaymentService to verify payment (proper separation of concerns)
-                payment_service = PaymentService(db_client=self.db)
-                
                 try:
                     await payment_service.verify_cart_payment(
                         razorpay_order_id=checkout_data["razorpay_order_id"],
@@ -772,18 +1010,47 @@ class CustomerService:
             )
             
             # Create booking (pinned_pricing makes the recorded amounts equal what
-            # was charged on the Razorpay order; None falls back to recompute)
+            # was charged on the Razorpay order; None falls back to recompute).
+            # salon_data / convenience_fee_percentage / idempotency_checked hand
+            # over work this method has already done, so create_booking does not
+            # repeat the salon read, the fee config read and the payment-id
+            # lookup (payment audit M-2/M-3/M-4).
             booking = await booking_service.create_booking(
                 booking=booking_data,
                 current_user_id=customer_id,
                 pinned_pricing=pinned_pricing,
+                background_tasks=background_tasks,
+                salon_data=salon,
+                convenience_fee_percentage=convenience_fee_percentage,
+                idempotency_checked=True,
             )
             
             # Clear cart after successful booking
             await self.clear_cart(customer_id)
-            
+
+            # Close the intent out. Bookkeeping for reconciliation only — the
+            # webhook's guard against double-booking is the `bookings` lookup on
+            # razorpay_payment_id, not this status — so it runs after the response
+            # rather than inside the request the customer is waiting on.
+            if checkout_data.get("razorpay_order_id"):
+                intent_service = PaymentIntentService(self.db)
+                complete_args = dict(
+                    booking_id=booking.get("id"),
+                    razorpay_payment_id=checkout_data.get("razorpay_payment_id"),
+                )
+                if background_tasks is not None:
+                    background_tasks.add_task(
+                        intent_service.mark_completed,
+                        checkout_data["razorpay_order_id"],
+                        **complete_args,
+                    )
+                else:
+                    await intent_service.mark_completed(
+                        checkout_data["razorpay_order_id"], **complete_args
+                    )
+
             logger.info(f"Checkout completed for customer {customer_id}, booking created: {booking.get('id')}")
-            
+
             return {
                 "success": True,
                 "message": "Booking created successfully",
