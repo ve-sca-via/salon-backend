@@ -1,8 +1,8 @@
 # Payment Flow Audit — latency, state machine, race conditions
 
-**Date:** 2026-10-05 · **Branch:** `dev` · **Status: Phases 0, 1 and 2 implemented**
-(see §12, §13 and §14). Phase 3 not started. Nothing deployed, and **Phase 2's
-migration has not been applied anywhere.**
+**Date:** 2026-10-05, Phase 3 added 2026-10-08 · **Branch:** `dev` ·
+**Status: all four phases implemented** (see §12, §13, §14 and §15). Nothing
+deployed, and **Phase 2's migration has not been applied anywhere.**
 
 Scope: every payment path end to end — backend (`backend/`), Next web app
 (`salon_management_next/`), Expo mobile app (`lubist_mobile_application/`).
@@ -181,6 +181,10 @@ So each of the ~27 round trips above blocks the **entire** event loop, not just
 this request. One customer checking out stalls every other request on that worker
 for the full duration. This is finding **C-4** and it makes every other latency
 number worse under load.
+
+*(Fixed for the payment path in Phase 3 — §15. Every query there now goes through
+`db_exec`, which awaits `.execute()` in the threadpool. The rest of the backend
+still blocks; see §15's "still outstanding".)*
 
 ### 4.3 Backend — `POST /payments/cart/create-order`
 
@@ -565,11 +569,11 @@ two auth reads and the one remaining Razorpay `orders.fetch` (H-2, Phase 2). See
 | **C-3** | Re-add the signature-verified `payment.captured` webhook, completing bookings from the intent row. | done — §14 |
 | **L-2** | Reap abandoned `pending` product orders. | **deferred by choice** — nothing in the backend schedules work, so this needs a trigger mechanism decided first (admin endpoint, expire-on-read, or `pg_cron`). Lowest severity in the audit. |
 
-### Phase 3 — its own PR, highest risk
+### Phase 3 — its own PR, highest risk ✅ DONE (payment path)
 
-| # | Fix |
-|---|---|
-| **C-4** | Stop blocking the event loop (threadpool wrapper for `.execute()` and the Razorpay client). |
+| # | Fix | Status |
+|---|---|---|
+| **C-4** | Stop blocking the event loop (threadpool wrapper for `.execute()` and the Razorpay client). | done for the payment path — §15 |
 
 ### Also do, outside the code
 
@@ -974,4 +978,199 @@ before pointing Razorpay at the endpoint.
   guarantees it.
 - **C-4 (Phase 3) is now the only phase left**, and it is the riskiest: every
   query above still blocks the whole event loop. M-5 should be reconsidered as
-  part of it, never before.
+  part of it, never before. *(Done — §15.)*
+
+---
+
+## 15. Phase 3 — what actually shipped (2026-10-08)
+
+C-4, for the payment path. Backend only; no migration, no frontend change, no
+API change. Gates: backend **851 passed / 26 skipped** (was 849/26 — 2 new
+tests), `ruff check app/ tests/` at **43 findings, exactly the pre-existing
+baseline**, `python -c "from main import app"` boots 184 routes / 141 OpenAPI
+paths.
+
+### What was actually wrong
+
+`get_db()` returns the **synchronous** supabase client, so `.execute()` is a
+blocking call on `httpx.Client`. Called straight from `async def` — which is how
+all 351 call sites in `app/` were written — it does not merely make *this*
+request wait. It parks the whole event loop, so one customer's checkout froze
+every other request on that worker for the duration.
+
+That is not a theory. The negative control is in the commit: revert `db_exec` to
+call `.execute()` inline and `test_checkout_leaves_the_event_loop_free_while_it_waits`
+reports the heartbeat counter at `[0, 0, 0, 0, 0, 0, …]` — **zero ticks across
+all twelve queries**. The loop did not run at all while a checkout was in
+progress.
+
+### The mechanism: one helper, `db_exec`
+
+`app/core/database.py` gained:
+
+```python
+async def db_exec(query):
+    return await run_in_threadpool(query.execute)
+```
+
+and every call site became `await db_exec(self.db.table(...).select(...).eq(...))`.
+Only `.execute()` moves to the thread. Building the chain stays on the loop,
+deliberately: it is pure object construction with no I/O, and it keeps
+supabase-py's lazily-initialised `postgrest` property single-threaded, so the
+one piece of shared mutable state in the client is never raced for.
+
+Three library facts were verified rather than assumed, because the whole change
+rests on them:
+
+- `postgrest` 0.13.2's `SyncQueryRequestBuilder.execute` is a plain method, not
+  a coroutine, and its body is a single `self.session.request(...)`.
+- `self.session` is an `httpx.Client`, which is thread-safe, and each call builds
+  its own request builder — so concurrent `db_exec` calls over the shared
+  singleton share nothing mutable.
+- `run_in_threadpool` passes anyio's `abandon_on_cancel=False`. **This one
+  matters for money:** if the customer disconnects mid-write we still wait for
+  the thread, rather than orphaning a half-applied booking insert with nothing
+  awaiting its result.
+
+Concurrency is bounded by anyio's default thread limiter (40). That is left at
+the default on purpose: it is the backstop that stops a traffic spike opening
+unbounded connections to PostgREST, and exceeding it queues requests instead of
+blocking the loop — strictly better than the old behaviour at every load level.
+
+### Scope — the payment path, 128 call sites
+
+| File | Sites |
+|---|---|
+| `core/auth.py` | 9 |
+| `services/customer_service.py` | 36 |
+| `services/booking_service.py` | 15 |
+| `services/payment_service.py` | 13 |
+| `services/product_order_service.py` | 14 |
+| `services/coupon_service.py` | 13 |
+| `services/config_service.py` | 11 |
+| `services/product_cart_service.py` | 10 |
+| `services/payment_intent_service.py` | 3 |
+| `services/activity_log_service.py` | 3 |
+| `services/webhook_service.py` | 1 |
+
+`core/auth.py` is in scope although it is not strictly payment code: it runs on
+**every authenticated request**, so leaving its two round trips blocking would
+have left the loop stalled on the way in to the very endpoints being fixed.
+`activity_log_service.py` is in scope because §4.1's rows 23 and 25 are its
+inserts — they run after the response now, but a background task that blocks the
+loop still blocks it for everyone.
+
+The rewrite was done by an AST script (exact node offsets for the receiver
+expression, so multi-line chains and nested parens could not be mangled), not by
+regex, and it refused to touch any call outside an `async def`. **The ten calls
+it refused were the interesting part** — each was a synchronous function doing
+I/O, and each had to be converted by hand along with its callers:
+
+| Was sync, now async | Callers updated |
+|---|---|
+| `verify_token`, `verify_refresh_token`, `revoke_token`, `cleanup_expired_tokens` | `get_current_user`, `get_optional_user`, `auth_service` ×2, `core/tasks.py` |
+| `CouponService.public_vendor_coupons_by_salon`, `public_platform_coupons` | `salon_service` ×2 |
+| `CustomerService._get_existing_review` | ×2, same file |
+| `PaymentIntentService._update` | `mark_captured`, `mark_completed`, `mark_failed` |
+
+`cleanup_expired_tokens` is worth calling out: it is the periodic background
+task, so it was blocking the loop of a live worker on a timer, for no request's
+benefit at all.
+
+### The Razorpay client, and the one call deliberately left alone
+
+`razorpay.Client` is built on `requests`, so its calls block too.
+`RazorpayService.create_order` is now `async` and awaits
+`run_in_threadpool(self.client.order.create, …)`; the legacy `order.fetch` in
+`_legacy_snapshot_from_razorpay_order` is wrapped the same way.
+
+`verify_payment_signature` stays **synchronous, on purpose**: it makes no network
+call. `utility.verify_payment_signature` is a local HMAC comparison, so there is
+nothing to move off the loop and wrapping it would only add a thread hop to the
+post-charge path. The docstring says so, so nobody "finishes the job" later.
+
+### Two new tests, because the old ones could not see this
+
+Every existing test passed before this change and after it. That is the problem:
+C-4 is invisible to behavioural tests by construction — the response is
+identical, only every *other* request suffers. So the fake DB in
+`test_customer_mocked.py` now records `threading.get_ident()` per query
+(index-aligned with the existing `queries` log), and:
+
+1. **`test_checkout_runs_every_query_off_the_event_loop`** captures the loop's
+   thread id by wrapping `checkout_cart`, then asserts no query ran on it.
+   Names the offending queries on failure.
+2. **`test_checkout_leaves_the_event_loop_free_while_it_waits`** is the claim
+   stated as the thing a customer suffers. A heartbeat task yields in a tight
+   loop; each query blocks for 20 ms in its worker thread and records the
+   heartbeat's tick count. The assertion is that the count **advances** between
+   the first query and the last — i.e. the loop kept running while the checkout
+   waited. It asserts on direction, not duration, so it does not depend on the
+   host's clock resolution or load.
+
+Both were confirmed to fail against the pre-C-4 behaviour before being kept.
+
+### M-5, reconsidered as the audit asked — and now worth doing
+
+Phase 1 refused M-5 (`asyncio.gather` the independent reads) because `gather`
+over a blocking sync client buys exactly zero. **Phase 3 removes that premise,
+and it was re-measured rather than re-reasoned:**
+
+```
+4 x 100ms queries: serial 409ms, gathered 110ms   -> 3.7x
+```
+
+So the concurrency is real now. The opportunity is in `checkout_cart`, not
+`create-order` where Phase 1 was looking. Of the nine pre-response queries, four
+are mutually independent:
+
+| Query | Depends on |
+|---|---|
+| `bookings` (idempotency) | the payment id, known at entry |
+| `cart_items` | the customer id, known at entry |
+| `system_config` (fee) | nothing |
+| `payment_intents` | the order id, known at entry |
+| `salons` | **the cart** (salon_id) |
+| `services` | **the cart** (service ids) |
+
+Gathering the first four would cut three round trips of wall time — perhaps
+60–150 ms — off the request the customer waits on *after being charged*.
+
+**It is not done here, and it is a decision rather than an oversight**, for three
+reasons worth weighing:
+
+1. It changes the behaviour of the most sensitive request in the system, which
+   is not something to fold into a mechanical change as a bonus.
+2. It makes the query *sequence* nondeterministic, so
+   `test_checkout_makes_nine_round_trips_before_responding` — which asserts the
+   exact order on purpose (§14) — has to be rewritten to assert a multiset plus
+   the dependencies that still hold. That test is a deliberate guard; loosening
+   it should be its own reviewed change.
+3. It trades throughput for latency: four threadpool slots per checkout instead
+   of one, out of 40. Worth it at current traffic, but it is a real trade and
+   should be made knowingly.
+
+### Still outstanding
+
+- **C-4 elsewhere in the backend.** 223 of the 351 call sites are untouched —
+  `vendor_service` (36), `rm_service` (23), `auth_service` (23), `salon_service`
+  (17), `user_service` (16), the admin routers, and the rest. They still block
+  the loop. Nothing on the payment path reaches them (verified:
+  `customer_service`'s only use of `SalonService` is the static
+  `flatten_business_type`, and `effective_unit_price` is pure), but every admin
+  or vendor request still stalls payments by stalling the worker. `db_exec` and
+  the AST script make this a mechanical follow-up per module, and it pairs
+  naturally with [[module-by-module-audit]].
+- **`core/features.py` is deliberately excluded.** `get_feature_statuses` is
+  sync and does one blocking read, but it sits behind a 60 s `TTLCache`, so it
+  blocks once per minute per worker at most. Making it async would ripple into
+  `feature_service` and the `RequireFeature` dependency for almost no gain.
+- **M-5**, above.
+- Everything in §12's, §13's and §14's outstanding lists, unchanged: the browser
+  pass on Phase 0's web changes, `maxDuration` on the proxy route, H-4
+  (auto-capture in the dashboard), L-2, and the integration tier (26 skips —
+  still no Docker here).
+- **The Phase 2 deployment steps remain the gating item for all of this.** None
+  of the four phases is in production, the `payment_intents` migration has not
+  been applied anywhere, and the Razorpay dashboard still has no webhook. See
+  §14's list, and note the order matters.

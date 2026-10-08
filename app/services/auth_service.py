@@ -764,7 +764,7 @@ class AuthService:
         """
         try:
             # Verify refresh token
-            token_data = verify_refresh_token(refresh_token, self.db)
+            token_data = await verify_refresh_token(refresh_token, self.db)
             
             # Fetch current user profile (maybe_single -> empty data, not PGRST116, when missing)
             profile_response = self.db.table("profiles").select(
@@ -975,7 +975,7 @@ class AuthService:
             # Only revoke if we have a JTI
             if token_jti:
                 # Revoke the access token by adding to blacklist
-                revoke_token(
+                await revoke_token(
                     db=self.db,
                     token_jti=token_jti,
                     user_id=user_id,

@@ -28,6 +28,7 @@ condition that leaves a capture unreconcilable.
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class PaymentIntentService:
         }
 
         try:
-            response = self.db.table("payment_intents").insert(row).execute()
+            response = await db_exec(self.db.table("payment_intents").insert(row))
         except Exception as e:
             logger.error(
                 f"Failed to record payment intent for order {razorpay_order_id}: {e}. "
@@ -128,11 +129,10 @@ class PaymentIntentService:
         try:
             # maybe_single(): a missing intent is a value, not a PGRST116 to be
             # masked as a 500.
-            response = self.db.table("payment_intents")\
+            response = await db_exec(self.db.table("payment_intents")\
                 .select(INTENT_COLUMNS)\
                 .eq("razorpay_order_id", razorpay_order_id)\
-                .maybe_single()\
-                .execute()
+                .maybe_single())
         except Exception as e:
             logger.warning(
                 f"Could not read payment intent for order {razorpay_order_id}: {e}"
@@ -162,7 +162,7 @@ class PaymentIntentService:
         and a capture with no booking is precisely the state reconciliation
         needs to be able to see.
         """
-        self._update(
+        await self._update(
             razorpay_order_id,
             {
                 "razorpay_payment_id": razorpay_payment_id,
@@ -186,7 +186,7 @@ class PaymentIntentService:
         }
         if razorpay_payment_id:
             updates["razorpay_payment_id"] = razorpay_payment_id
-        self._update(razorpay_order_id, updates, "completed")
+        await self._update(razorpay_order_id, updates, "completed")
 
     async def mark_failed(self, razorpay_order_id: str, *, reason: Optional[str]) -> None:
         """
@@ -195,14 +195,14 @@ class PaymentIntentService:
         Guarded on `status = 'created'` so a late `payment.failed` for an order
         that was retried and paid cannot overwrite a completed booking.
         """
-        self._update(
+        await self._update(
             razorpay_order_id,
             {"status": "failed", "failure_reason": (reason or "")[:500]},
             "failed",
             only_while_created=True,
         )
 
-    def _update(
+    async def _update(
         self,
         razorpay_order_id: str,
         updates: Dict[str, Any],
@@ -221,7 +221,7 @@ class PaymentIntentService:
                 .eq("razorpay_order_id", razorpay_order_id)
             if only_while_created:
                 query = query.eq("status", "created")
-            query.execute()
+            await db_exec(query)
         except Exception as e:
             logger.error(
                 f"Failed to mark payment intent {razorpay_order_id} as {what}: {e}"

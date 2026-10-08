@@ -169,7 +169,7 @@ def test_inactive_account_is_rejected(auth_db):
 def test_blacklisted_token_is_rejected(auth_db):
     user = auth_db.seed_user()
     token = auth_db.token_for(user)
-    payload = verify_token(token, auth_db.db)
+    payload = asyncio.run(verify_token(token, auth_db.db))
     auth_db.blacklist.rows.append({"id": 1, "token_jti": payload.jti})
 
     from fastapi import HTTPException
@@ -196,14 +196,18 @@ def test_falls_back_to_its_own_read_without_a_carried_profile(auth_db, monkeypat
     """
     user = auth_db.seed_user()
     token = auth_db.token_for(user)
-    payload = verify_token(token, auth_db.db)
+    payload = asyncio.run(verify_token(token, auth_db.db))
     auth_db.profiles.reads = 0
 
     stripped = TokenPayload(
         sub=payload.sub, email=payload.email, user_role=payload.user_role,
         jti=payload.jti, exp=payload.exp, profile=None,
     )
-    monkeypatch.setattr("app.core.auth.verify_token", lambda token, db: stripped)
+
+    async def fake_verify_token(token, db):
+        return stripped
+
+    monkeypatch.setattr("app.core.auth.verify_token", fake_verify_token)
 
     current = asyncio.run(get_current_user(auth_db.creds(token), auth_db.db))
 

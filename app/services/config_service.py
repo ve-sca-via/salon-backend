@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from app.schemas.request.admin import SystemConfigUpdate
 from app.core.encryption import get_encryption_service
 from app.core.config import settings
+from app.core.database import db_exec
 import logging
 
 logger = logging.getLogger(__name__)
@@ -171,7 +172,7 @@ class ConfigService:
             Exception: If database query fails
         """
         try:
-            response = self.db.table("system_config").select("*").order(order_by).execute()
+            response = await db_exec(self.db.table("system_config").select("*").order(order_by))
             data = response.data if response.data else []
 
             # Auto-decrypt any sensitive config values
@@ -212,9 +213,9 @@ class ConfigService:
             Exception: If database query fails
         """
         try:
-            response = self.db.table("system_config").select(
+            response = await db_exec(self.db.table("system_config").select(
                 "*"
-            ).eq("config_key", config_key).execute()
+            ).eq("config_key", config_key))
             
             if not response.data or len(response.data) == 0:
                 logger.error(f"Configuration not found in database: {config_key}")
@@ -282,9 +283,9 @@ class ConfigService:
         """
         try:
             # Verify config exists first
-            check_response = self.db.table("system_config").select(
+            check_response = await db_exec(self.db.table("system_config").select(
                 "id"
-            ).eq("config_key", config_key).single().execute()
+            ).eq("config_key", config_key).single())
             
             if not check_response.data:
                 raise ValueError(f"Configuration not found: {config_key}")
@@ -309,9 +310,9 @@ class ConfigService:
                     raise Exception(f"Failed to encrypt sensitive configuration: {e}")
             
             # Perform update
-            response = self.db.table("system_config").update(
+            response = await db_exec(self.db.table("system_config").update(
                 processed_updates
-            ).eq("config_key", config_key).execute()
+            ).eq("config_key", config_key))
             
             if not response.data:
                 raise Exception("Update operation returned no data")
@@ -364,9 +365,9 @@ class ConfigService:
         """
         try:
             # Check if config already exists
-            existing = self.db.table("system_config").select(
+            existing = await db_exec(self.db.table("system_config").select(
                 "id"
-            ).eq("config_key", config_key).execute()
+            ).eq("config_key", config_key))
             
             if existing.data and len(existing.data) > 0:
                 raise ValueError(f"Configuration already exists: {config_key}")
@@ -398,7 +399,7 @@ class ConfigService:
             if description:
                 new_config["description"] = description
             
-            response = self.db.table("system_config").insert(new_config).execute()
+            response = await db_exec(self.db.table("system_config").insert(new_config))
             
             if not response.data:
                 raise Exception("Insert operation returned no data")
@@ -440,15 +441,15 @@ class ConfigService:
         """
         try:
             # Verify config exists
-            check_response = self.db.table("system_config").select(
+            check_response = await db_exec(self.db.table("system_config").select(
                 "id"
-            ).eq("config_key", config_key).single().execute()
+            ).eq("config_key", config_key).single())
             
             if not check_response.data:
                 raise ValueError(f"Configuration not found: {config_key}")
             
             # Delete config
-            self.db.table("system_config").delete().eq("config_key", config_key).execute()
+            await db_exec(self.db.table("system_config").delete().eq("config_key", config_key))
 
             clear_config_cache(config_key)
 
@@ -529,12 +530,11 @@ class ConfigService:
 
         # maybe_single(): a missing row comes back empty instead of raising
         # PGRST116, so "not configured" stays a value check, not an exception.
-        response = self.db.table("system_config")\
+        response = await db_exec(self.db.table("system_config")\
             .select("config_value")\
             .eq("config_key", CONVENIENCE_FEE_CONFIG_KEY)\
             .eq("is_active", True)\
-            .maybe_single()\
-            .execute()
+            .maybe_single())
 
         row = getattr(response, "data", None)
         raw_value = row.get("config_value") if row else None
@@ -568,9 +568,9 @@ class ConfigService:
             Exception: If database query fails
         """
         try:
-            response = self.db.table("system_config").select(
+            response = await db_exec(self.db.table("system_config").select(
                 "*"
-            ).eq("config_type", config_type).order("config_key").execute()
+            ).eq("config_type", config_type).order("config_key"))
             
             logger.info(f"Retrieved {len(response.data) if response.data else 0} configs of type {config_type}")
             
@@ -595,11 +595,11 @@ class ConfigService:
         """
         try:
             # Search in config_key and description fields
-            response = self.db.table("system_config").select(
+            response = await db_exec(self.db.table("system_config").select(
                 "*"
             ).or_(
                 f"config_key.ilike.%{search_term}%,description.ilike.%{search_term}%"
-            ).order("config_key").execute()
+            ).order("config_key"))
             
             logger.info(f"Found {len(response.data) if response.data else 0} configs matching '{search_term}'")
             

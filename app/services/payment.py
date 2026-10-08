@@ -7,6 +7,7 @@ Low-level gateway client. Handles:
 import razorpay
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from app.core.config import settings
 import logging
 
@@ -77,7 +78,7 @@ class RazorpayService:
                 logger.error(f"Failed to initialize Razorpay client: {str(e)}")
                 self.client = None
     
-    def create_order(
+    async def create_order(
         self,
         amount: float,
         currency: str = "INR",
@@ -86,13 +87,17 @@ class RazorpayService:
     ) -> Dict[str, Any]:
         """
         Create a Razorpay order
-        
+
+        Async because `razorpay.Client` is built on `requests`, so the HTTPS call
+        to Razorpay is blocking. Awaited through the threadpool it stalls only
+        this request instead of every request on the worker (payment audit C-4).
+
         Args:
             amount: Amount in rupees (will be converted to paise)
             currency: Currency code (default: INR)
             receipt: Receipt ID for your reference
             notes: Additional notes as key-value pairs
-        
+
         Returns:
             Order details including order_id
         """
@@ -113,7 +118,7 @@ class RazorpayService:
                 "notes": notes or {}
             }
             
-            order = self.client.order.create(data=order_data)
+            order = await run_in_threadpool(self.client.order.create, data=order_data)
             logger.info(f"Razorpay order created: {order['id']}")
             
             return {
@@ -162,6 +167,11 @@ class RazorpayService:
         
         Returns:
             True if signature is valid, raises exception otherwise
+
+        Note:
+            Deliberately stays synchronous. Unlike `create_order`, this makes no
+            network call - `utility.verify_payment_signature` is a local HMAC
+            comparison, so there is nothing to move off the event loop.
         """
         if not self.client:
             raise HTTPException(

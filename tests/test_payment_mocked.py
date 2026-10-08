@@ -189,7 +189,9 @@ class FakeRazorpay:
     # Phase 2 the notes carry scalars only, not the snapshot blobs.
     orders_created = []
 
-    def create_order(self, amount, currency="INR", receipt=None, notes=None):
+    # Async to match the real RazorpayService, whose blocking `requests` call to
+    # Razorpay now goes through the threadpool (payment audit C-4).
+    async def create_order(self, amount, currency="INR", receipt=None, notes=None):
         FakeRazorpay.orders_created.append({"amount": amount, "notes": dict(notes or {})})
         return {
             "order_id": f"order_{uuid.uuid4().hex[:12]}",

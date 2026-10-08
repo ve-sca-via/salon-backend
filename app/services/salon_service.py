@@ -140,7 +140,7 @@ class SalonService:
         if not salon_ids:
             return
         from app.services.coupon_service import CouponService
-        grouped = CouponService(self.db).public_vendor_coupons_by_salon(salon_ids)
+        grouped = await CouponService(self.db).public_vendor_coupons_by_salon(salon_ids)
         for salon in salons:
             salon["coupons"] = grouped.get(salon.get("id"), [])
 
@@ -156,7 +156,7 @@ class SalonService:
         await self._attach_discount_flags([salon])
         await self._attach_vendor_coupons([salon])
         from app.services.coupon_service import CouponService
-        salon["platform_coupons"] = CouponService(self.db).public_platform_coupons()
+        salon["platform_coupons"] = await CouponService(self.db).public_platform_coupons()
 
     @staticmethod
     def is_publicly_visible(salon: Dict[str, Any]) -> bool:

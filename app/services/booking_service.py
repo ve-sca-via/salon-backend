@@ -10,6 +10,7 @@ from fastapi import BackgroundTasks, HTTPException, status
 
 from app.core.auth import create_review_feedback_token
 from app.core.config import settings
+from app.core.database import db_exec
 from app.schemas import BookingCreate
 from app.services.email import email_service
 from app.services.activity_log_service import ActivityLogService
@@ -80,9 +81,9 @@ class BookingService:
                 query = query.lte("booking_date", date_to)
             
             # Execute query with pagination - order and limit
-            response = query.order("booking_date", desc=True).order(
+            response = await db_exec(query.order("booking_date", desc=True).order(
                 "created_at", desc=True
-            ).range(offset, offset + limit).execute()
+            ).range(offset, offset + limit))
             
             bookings = response.data or []
             
@@ -271,9 +272,9 @@ class BookingService:
         try:
             # IDEMPOTENCY CHECK: Check if payment already used for a booking
             if booking.razorpay_payment_id and not idempotency_checked:
-                existing_booking = self.db.table("bookings").select(
+                existing_booking = await db_exec(self.db.table("bookings").select(
                     "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
-                ).eq("razorpay_payment_id", booking.razorpay_payment_id).execute()
+                ).eq("razorpay_payment_id", booking.razorpay_payment_id))
 
                 if existing_booking.data:
                     logger.warning(f"Payment {booking.razorpay_payment_id} already used for booking. Returning existing booking (idempotent).")
@@ -454,7 +455,7 @@ class BookingService:
 
             # Create booking within transaction
             try:
-                response = self.db.table("bookings").insert(db_booking_data).execute()
+                response = await db_exec(self.db.table("bookings").insert(db_booking_data))
                 created_booking = response.data[0] if response.data else None
             except Exception as insert_exc:
                 # Log error and re-raise
@@ -546,7 +547,7 @@ class BookingService:
             })
 
             try:
-                self.db.table("payments").insert(payment_rows).execute()
+                await db_exec(self.db.table("payments").insert(payment_rows))
                 logger.info(
                     f"Created {len(payment_rows)} payment record(s) for booking {booking_id}"
                 )
@@ -628,7 +629,7 @@ class BookingService:
         try:
             # maybe_single(): a missing booking returns empty data and hits the
             # explicit 404 below, instead of raising PGRST116 and being masked as a 500.
-            booking_response = self.db.table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
+            booking_response = await db_exec(self.db.table("bookings").select("*").eq("id", booking_id).maybe_single())
 
             if not booking_response or not booking_response.data:
                 raise HTTPException(
@@ -665,18 +666,18 @@ class BookingService:
 
             # Load related profile and salon for notification emails
             try:
-                profile_response = self.db.table("profiles").select(
+                profile_response = await db_exec(self.db.table("profiles").select(
                     "email, full_name, phone"
-                ).eq("id", booking_data["customer_id"]).single().execute()
+                ).eq("id", booking_data["customer_id"]).single())
                 booking_data["profiles"] = profile_response.data or {}
             except Exception as profile_error:
                 logger.warning(f"Could not load customer profile for booking {booking_id}: {profile_error}")
                 booking_data["profiles"] = {}
 
             try:
-                salon_response = self.db.table("salons").select(
+                salon_response = await db_exec(self.db.table("salons").select(
                     "id, business_name, vendor_id"
-                ).eq("id", booking_data["salon_id"]).single().execute()
+                ).eq("id", booking_data["salon_id"]).single())
                 booking_data["salons"] = salon_response.data or {}
             except Exception as salon_error:
                 logger.warning(f"Could not load salon for booking {booking_id}: {salon_error}")
@@ -690,16 +691,15 @@ class BookingService:
                 "updated_by": current_user_id,
             }
             response = (
-                self.db.table("bookings")
+                await db_exec(self.db.table("bookings")
                 .update(update_data)
-                .eq("id", booking_id)
-                .execute()
+                .eq("id", booking_id))
             )
             
             cancelled_booking = response.data[0] if response.data else None
             if not cancelled_booking:
                 # Re-fetch in case client returned no rows (should not happen with service role)
-                refetch = self.db.table("bookings").select("*").eq("id", booking_id).single().execute()
+                refetch = await db_exec(self.db.table("bookings").select("*").eq("id", booking_id).single())
                 cancelled_booking = refetch.data
                 if not cancelled_booking or cancelled_booking.get("status") != "cancelled":
                     raise HTTPException(
@@ -752,9 +752,9 @@ class BookingService:
     
     async def _get_customer_profile(self, user_id: str) -> Dict[str, Any]:
         """Get customer profile data."""
-        response = self.db.table("profiles").select("email, full_name, phone").eq(
+        response = await db_exec(self.db.table("profiles").select("email, full_name, phone").eq(
             "id", user_id
-        ).single().execute()
+        ).single())
         
         if not response.data:
             raise HTTPException(
@@ -770,10 +770,10 @@ class BookingService:
 
     async def _send_review_request_email(self, booking_id: str) -> None:
         """Send a review invitation email for a completed booking."""
-        booking_response = self.db.table("bookings").select(
+        booking_response = await db_exec(self.db.table("bookings").select(
             "id, booking_number, booking_date, customer_id, salon_id, "
             "profiles!customer_id(full_name, email), salons(business_name)"
-        ).eq("id", booking_id).single().execute()
+        ).eq("id", booking_id).single())
 
         booking = booking_response.data
         if not booking:
@@ -836,10 +836,10 @@ class BookingService:
         try:
             # Include scheduling fields so booking creation can enforce
             # closed-day / working-hours rules server-side.
-            response = self.db.table("salons").select(
+            response = await db_exec(self.db.table("salons").select(
                 "id, business_name, vendor_id, opening_time, closing_time, "
                 "working_days, business_hours"
-            ).eq("id", salon_id).execute()
+            ).eq("id", salon_id))
 
             if not response.data or len(response.data) == 0:
                 raise HTTPException(
@@ -870,9 +870,9 @@ class BookingService:
             return None
 
         try:
-            vendor_response = self.db.table("profiles").select(
+            vendor_response = await db_exec(self.db.table("profiles").select(
                 "email"
-            ).eq("id", vendor_id).execute()
+            ).eq("id", vendor_id))
 
             if vendor_response.data and len(vendor_response.data) > 0:
                 return vendor_response.data[0].get("email")
@@ -899,7 +899,7 @@ class BookingService:
         if not service_ids:
             return {}
             
-        response = self.db.table("services").select("*").in_("id", service_ids).execute()
+        response = await db_exec(self.db.table("services").select("*").in_("id", service_ids))
         
         if not response.data:
             from app.core.exceptions import NotFoundError
@@ -995,7 +995,7 @@ class BookingService:
         vendor_id = salon.get("vendor_id")
         if vendor_id:
             try:
-                vendor_response = self.db.table("profiles").select("email").eq("id", vendor_id).execute()
+                vendor_response = await db_exec(self.db.table("profiles").select("email").eq("id", vendor_id))
                 if vendor_response.data:
                     vendor_email = vendor_response.data[0].get("email")
             except Exception as vendor_error:

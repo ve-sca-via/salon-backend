@@ -8,8 +8,10 @@ from typing import Dict, Any, Optional, List
 from app.schemas.request.customer import CartItemCreate, ReviewCreate, ReviewUpdate
 from datetime import datetime
 from fastapi import BackgroundTasks, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 
 from app.core.auth import verify_review_feedback_token
+from app.core.database import db_exec
 from app.schemas.response.vendor import SalonListResponse
 from app.services.payment_intent_service import PaymentIntentService
 from app.services.salon_service import SalonService
@@ -66,14 +68,13 @@ class CustomerService:
         """
         try:
             # Query cart_items with service and salon details
-            response = self.db.table("cart_items")\
+            response = await db_exec(self.db.table("cart_items")\
                 .select(
                     "id, service_id, salon_id, quantity, metadata, created_at, "
                     "services(id, name, price, discounted_price, discount_percentage, duration_minutes, image_url, is_active), "
                     "salons(id, business_name, city, state)"
                 )\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
             
             if not response.data:
                 # Return empty cart if no cart items exist
@@ -167,11 +168,10 @@ class CustomerService:
         ]
 
         # Convenience fee % (admin-managed; required)
-        config_response = self.db.table("system_config")\
+        config_response = await db_exec(self.db.table("system_config")\
             .select("config_value")\
             .eq("config_key", "convenience_fee_percentage")\
-            .single()\
-            .execute()
+            .single())
         try:
             convenience_fee_percentage = float(config_response.data["config_value"])
         except Exception:
@@ -253,11 +253,10 @@ class CustomerService:
                 )
 
             # Get service details to validate and get salon_id
-            service_response = self.db.table("services")\
+            service_response = await db_exec(self.db.table("services")\
                 .select("id, name, price, duration_minutes, salon_id, is_active, image_url")\
                 .eq("id", service_id)\
-                .maybe_single()\
-                .execute()
+                .maybe_single())
 
             if not service_response or not service_response.data:
                 raise HTTPException(
@@ -275,11 +274,10 @@ class CustomerService:
             service_salon_id = service_details['salon_id']
             
             # Check if salon is accepting bookings
-            salon_response = self.db.table("salons")\
+            salon_response = await db_exec(self.db.table("salons")\
                 .select("id, business_name, accepting_bookings, is_active")\
                 .eq("id", service_salon_id)\
-                .maybe_single()\
-                .execute()
+                .maybe_single())
 
             if not salon_response or not salon_response.data:
                 raise HTTPException(
@@ -301,11 +299,10 @@ class CustomerService:
                 )
             
             # Check if user has cart items from a different salon
-            existing_cart = self.db.table("cart_items")\
+            existing_cart = await db_exec(self.db.table("cart_items")\
                 .select("salon_id")\
                 .eq("user_id", customer_id)\
-                .limit(1)\
-                .execute()
+                .limit(1))
             
             if existing_cart.data:
                 existing_salon_id = existing_cart.data[0].get("salon_id")
@@ -316,11 +313,10 @@ class CustomerService:
                     )
             
             # Check if item already exists in cart
-            check_response = self.db.table("cart_items")\
+            check_response = await db_exec(self.db.table("cart_items")\
                 .select("id, quantity")\
                 .eq("user_id", customer_id)\
-                .eq("service_id", service_id)\
-                .execute()
+                .eq("service_id", service_id))
             
             quantity = cart_item.quantity
             
@@ -329,10 +325,9 @@ class CustomerService:
                 existing_item = check_response.data[0]
                 new_quantity = existing_item.get("quantity", 1) + quantity
                 
-                response = self.db.table("cart_items")\
+                response = await db_exec(self.db.table("cart_items")\
                     .update({"quantity": new_quantity})\
-                    .eq("id", existing_item["id"])\
-                    .execute()
+                    .eq("id", existing_item["id"]))
                 
                 logger.info(f"Updated cart item quantity for customer {customer_id}")
                 
@@ -351,9 +346,8 @@ class CustomerService:
                     "metadata": cart_item.metadata or {}
                 }
                 
-                response = self.db.table("cart_items")\
-                    .insert(cart_item_data)\
-                    .execute()
+                response = await db_exec(self.db.table("cart_items")\
+                    .insert(cart_item_data))
                 
                 logger.info(f"Added new item to cart for customer {customer_id}")
                 
@@ -401,11 +395,10 @@ class CustomerService:
                 )
 
             # Verify cart item exists and belongs to user
-            check_response = self.db.table("cart_items")\
+            check_response = await db_exec(self.db.table("cart_items")\
                 .select("id")\
                 .eq("id", item_id)\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
 
             if not check_response.data:
                 raise HTTPException(
@@ -414,11 +407,10 @@ class CustomerService:
                 )
 
             # Update quantity
-            response = self.db.table("cart_items")\
+            response = await db_exec(self.db.table("cart_items")\
                 .update({"quantity": quantity})\
                 .eq("id", item_id)\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
 
             if not response.data:
                 raise HTTPException(
@@ -463,11 +455,10 @@ class CustomerService:
         """
         try:
             # Delete cart item (user_id ensures ownership)
-            response = self.db.table("cart_items")\
+            response = await db_exec(self.db.table("cart_items")\
                 .delete()\
                 .eq("id", item_id)\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
 
             if not response.data:
                 raise HTTPException(
@@ -509,10 +500,9 @@ class CustomerService:
             # second round trip — and cannot miss an item added between a count
             # and the delete. This runs inside checkout, after the customer has
             # been charged, so the round trip is worth not spending.
-            delete_response = self.db.table("cart_items")\
+            delete_response = await db_exec(self.db.table("cart_items")\
                 .delete()\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
 
             deleted_count = len(delete_response.data) if delete_response.data else 0
 
@@ -562,9 +552,9 @@ class CustomerService:
 
         # Idempotency first: if the browser got there after all (or an earlier
         # webhook delivery did), this payment already has its booking.
-        existing = self.db.table("bookings").select(
+        existing = await db_exec(self.db.table("bookings").select(
             "id, booking_number, status, booking_date, time_slots, total_amount, salon_id"
-        ).eq("razorpay_payment_id", razorpay_payment_id).execute()
+        ).eq("razorpay_payment_id", razorpay_payment_id))
         if existing.data:
             logger.info(
                 f"Webhook: payment {razorpay_payment_id} already has booking "
@@ -610,14 +600,13 @@ class CustomerService:
             return None
 
         # The salon row, with the columns create_booking needs.
-        salon_response = self.db.table("salons")\
+        salon_response = await db_exec(self.db.table("salons")\
             .select(
                 "id, business_name, accepting_bookings, is_active, vendor_id, "
                 "opening_time, closing_time, working_days, business_hours"
             )\
             .eq("id", intent.get("salon_id"))\
-            .maybe_single()\
-            .execute()
+            .maybe_single())
         salon = getattr(salon_response, "data", None)
         if not salon:
             logger.error(
@@ -682,10 +671,9 @@ class CustomerService:
         # something else in the time it took this webhook to arrive, and that is
         # not ours to delete.
         try:
-            self.db.table("cart_items").delete()\
+            await db_exec(self.db.table("cart_items").delete()\
                 .eq("user_id", customer_id)\
-                .in_("service_id", [item["service_id"] for item in cart_snapshot])\
-                .execute()
+                .in_("service_id", [item["service_id"] for item in cart_snapshot]))
         except Exception as e:
             logger.warning(
                 f"Webhook: could not clear paid cart items for customer {customer_id}: {e}"
@@ -720,7 +708,11 @@ class CustomerService:
             import json
 
             await payment_service._initialize_razorpay()
-            razorpay_order = payment_service.razorpay.client.order.fetch(razorpay_order_id)
+            # Blocking `requests` call inside razorpay-python, so it goes through
+            # the threadpool like every other external call (payment audit C-4).
+            razorpay_order = await run_in_threadpool(
+                payment_service.razorpay.client.order.fetch, razorpay_order_id
+            )
             notes = razorpay_order.get("notes", {}) or {}
 
             cart_snapshot = None
@@ -803,9 +795,9 @@ class CustomerService:
             # booking that exists, and the customer would see a failure for a
             # successful payment (audit C-3's webhook racing C-2's retry).
             if checkout_data.get("razorpay_payment_id"):
-                existing_booking = self.db.table("bookings").select(
+                existing_booking = await db_exec(self.db.table("bookings").select(
                     "id, booking_number, status, booking_date, time_slots, total_amount, salon_id, salons(business_name)"
-                ).eq("razorpay_payment_id", checkout_data["razorpay_payment_id"]).execute()
+                ).eq("razorpay_payment_id", checkout_data["razorpay_payment_id"]))
 
                 if existing_booking.data:
                     logger.warning(f"Payment {checkout_data['razorpay_payment_id']} already used for booking. Returning existing booking (idempotent).")
@@ -835,14 +827,13 @@ class CustomerService:
             # for the date/time validation, vendor_id for the vendor email), so
             # the salon row is read once per checkout instead of twice with
             # different column sets (payment audit M-4).
-            salon_response = self.db.table("salons")\
+            salon_response = await db_exec(self.db.table("salons")\
                 .select(
                     "id, business_name, accepting_bookings, is_active, vendor_id, "
                     "opening_time, closing_time, working_days, business_hours"
                 )\
                 .eq("id", salon_id)\
-                .single()\
-                .execute()
+                .single())
 
             if not salon_response.data:
                 raise HTTPException(
@@ -1086,15 +1077,14 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = self.db.table("bookings")\
+            response = await db_exec(self.db.table("bookings")\
                 .select(
                     "*, "
                     "salons(business_name, city, address, phone, logo_url), "
                     "profiles(full_name, phone)"
                 )\
                 .eq("customer_id", customer_id)\
-                .order("booking_date", desc=True)\
-                .execute()
+                .order("booking_date", desc=True))
             
             bookings = response.data or []
             
@@ -1148,10 +1138,9 @@ class CustomerService:
         """
         try:
             # Get favorite salon IDs
-            favorites_response = self.db.table("favorites")\
+            favorites_response = await db_exec(self.db.table("favorites")\
                 .select("salon_id")\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
             
             if not favorites_response.data:
                 return {"success": True, "favorites": [], "count": 0}
@@ -1162,13 +1151,12 @@ class CustomerService:
             # business_type (spa / barber_shop / …) lives on the vendor's join
             # request, not the salons table, so join + flatten it the same way the
             # public listings do — the saved-salon cards show it as a badge.
-            salons_response = self.db.table("salons")\
+            salons_response = await db_exec(self.db.table("salons")\
                 .select("*, vendor_join_requests(business_type)")\
                 .in_("id", salon_ids)\
                 .eq("is_active", True)\
                 .eq("is_verified", True)\
-                .eq("registration_fee_paid", True)\
-                .execute()
+                .eq("registration_fee_paid", True))
 
             favorites = salons_response.data or []
             SalonService.flatten_business_type(favorites)
@@ -1219,11 +1207,10 @@ class CustomerService:
         """
         try:
             # Check if already favorited
-            existing = self.db.table("favorites")\
+            existing = await db_exec(self.db.table("favorites")\
                 .select("id")\
                 .eq("user_id", customer_id)\
-                .eq("salon_id", salon_id)\
-                .execute()
+                .eq("salon_id", salon_id))
             
             if existing.data:
                 logger.info(f"Salon {salon_id} already favorited by customer {customer_id}")
@@ -1234,13 +1221,12 @@ class CustomerService:
                 }
             
             # Add to favorites
-            response = self.db.table("favorites")\
+            response = await db_exec(self.db.table("favorites")\
                 .insert({
                     "user_id": customer_id,
                     "salon_id": salon_id,
                     "created_at": datetime.utcnow().isoformat()
-                })\
-                .execute()
+                }))
             
             logger.info(f"Added salon {salon_id} to favorites for customer {customer_id}")
             
@@ -1284,11 +1270,10 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            self.db.table("favorites")\
+            await db_exec(self.db.table("favorites")\
                 .delete()\
                 .eq("user_id", customer_id)\
-                .eq("salon_id", salon_id)\
-                .execute()
+                .eq("salon_id", salon_id))
             
             logger.info(f"Removed salon {salon_id} from favorites for customer {customer_id}")
 
@@ -1323,10 +1308,9 @@ class CustomerService:
         """
         try:
             # Get favorite product IDs
-            favorites_response = self.db.table("product_favorites")\
+            favorites_response = await db_exec(self.db.table("product_favorites")\
                 .select("product_id")\
-                .eq("user_id", customer_id)\
-                .execute()
+                .eq("user_id", customer_id))
 
             if not favorites_response.data:
                 return {"success": True, "favorites": [], "count": 0}
@@ -1334,11 +1318,10 @@ class CustomerService:
             # Get product details (only active products)
             product_ids = [fav["product_id"] for fav in favorites_response.data]
 
-            products_response = self.db.table("products")\
+            products_response = await db_exec(self.db.table("products")\
                 .select("*")\
                 .in_("id", product_ids)\
-                .eq("is_active", True)\
-                .execute()
+                .eq("is_active", True))
 
             favorites = products_response.data or []
 
@@ -1377,11 +1360,10 @@ class CustomerService:
         """
         try:
             # Reject unknown/inactive products so the saved tab stays clean
-            product = self.db.table("products")\
+            product = await db_exec(self.db.table("products")\
                 .select("id")\
                 .eq("id", product_id)\
-                .eq("is_active", True)\
-                .execute()
+                .eq("is_active", True))
 
             if not product.data:
                 raise HTTPException(
@@ -1390,11 +1372,10 @@ class CustomerService:
                 )
 
             # Check if already favorited
-            existing = self.db.table("product_favorites")\
+            existing = await db_exec(self.db.table("product_favorites")\
                 .select("id")\
                 .eq("user_id", customer_id)\
-                .eq("product_id", product_id)\
-                .execute()
+                .eq("product_id", product_id))
 
             if existing.data:
                 logger.info(f"Product {product_id} already favorited by customer {customer_id}")
@@ -1405,13 +1386,12 @@ class CustomerService:
                 }
 
             # Add to favorites
-            response = self.db.table("product_favorites")\
+            response = await db_exec(self.db.table("product_favorites")\
                 .insert({
                     "user_id": customer_id,
                     "product_id": product_id,
                     "created_at": datetime.utcnow().isoformat()
-                })\
-                .execute()
+                }))
 
             logger.info(f"Added product {product_id} to favorites for customer {customer_id}")
 
@@ -1455,11 +1435,10 @@ class CustomerService:
             HTTPException: If operation fails
         """
         try:
-            self.db.table("product_favorites")\
+            await db_exec(self.db.table("product_favorites")\
                 .delete()\
                 .eq("user_id", customer_id)\
-                .eq("product_id", product_id)\
-                .execute()
+                .eq("product_id", product_id))
 
             logger.info(f"Removed product {product_id} from favorites for customer {customer_id}")
 
@@ -1493,12 +1472,11 @@ class CustomerService:
             HTTPException: If query fails
         """
         try:
-            response = self.db.table("reviews")\
+            response = await db_exec(self.db.table("reviews")\
                 .select("id, rating, review_text, created_at, updated_at, is_verified, salons(business_name)")\
                 .eq("customer_id", customer_id)\
                 .is_("deleted_at", "null")\
-                .order("created_at", desc=True)\
-                .execute()
+                .order("created_at", desc=True))
             
             reviews = []
             for review in response.data or []:
@@ -1591,13 +1569,12 @@ class CustomerService:
             HTTPException: If review not found or update fails
         """
         try:
-            review_response = self.db.table("reviews")\
+            review_response = await db_exec(self.db.table("reviews")\
                 .select("id")\
                 .eq("id", review_id)\
                 .eq("customer_id", customer_id)\
                 .is_("deleted_at", "null")\
-                .maybe_single()\
-                .execute()
+                .maybe_single())
 
             if not review_response or not review_response.data:
                 raise HTTPException(
@@ -1613,10 +1590,9 @@ class CustomerService:
             if getattr(review_data, 'comment', None) is not None:
                 update_data["review_text"] = review_data.comment
              
-            response = self.db.table("reviews")\
+            response = await db_exec(self.db.table("reviews")\
                 .update(update_data)\
-                .eq("id", review_id)\
-                .execute()
+                .eq("id", review_id))
             
             logger.info(f"Updated review {review_id} for customer {customer_id}")
             
@@ -1652,12 +1628,12 @@ class CustomerService:
     async def get_public_salon_reviews(self, salon_id: str) -> Dict[str, Any]:
         """Get publicly visible reviews for a salon."""
         try:
-            response = self.db.table("reviews").select(
+            response = await db_exec(self.db.table("reviews").select(
                 "id, rating, review_text, created_at, is_verified, vendor_response, "
                 "profiles!reviews_customer_id_fkey(full_name), services(name)"
             ).eq("salon_id", salon_id).eq("is_hidden", False).is_("deleted_at", "null").order(
                 "created_at", desc=True
-            ).execute()
+            ))
 
             reviews = []
             for review in response.data or []:
@@ -1698,7 +1674,7 @@ class CustomerService:
             customer_id=token_data["customer_id"],
             salon_id=salon_id
         )
-        existing_review = self._get_existing_review(token_data["booking_id"])
+        existing_review = await self._get_existing_review(token_data["booking_id"])
 
         return {
             "success": True,
@@ -1744,7 +1720,7 @@ class CustomerService:
         comment: str
     ) -> Dict[str, Any]:
         booking = await self._get_reviewable_booking(booking_id, customer_id, salon_id)
-        if self._get_existing_review(booking_id):
+        if await self._get_existing_review(booking_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A review has already been submitted for this booking"
@@ -1773,7 +1749,7 @@ class CustomerService:
             "updated_at": datetime.utcnow().isoformat()
         }
 
-        response = self.db.table("reviews").insert(review_payload).execute()
+        response = await db_exec(self.db.table("reviews").insert(review_payload))
         if not response.data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1795,10 +1771,10 @@ class CustomerService:
         }
 
     async def _get_reviewable_booking(self, booking_id: str, customer_id: str, salon_id: str) -> Dict[str, Any]:
-        booking_response = self.db.table("bookings").select(
+        booking_response = await db_exec(self.db.table("bookings").select(
             "id, booking_number, booking_date, status, customer_id, salon_id, services, "
             "profiles!customer_id(full_name, email), salons(business_name, logo_url, city)"
-        ).eq("id", booking_id).eq("customer_id", customer_id).eq("salon_id", salon_id).single().execute()
+        ).eq("id", booking_id).eq("customer_id", customer_id).eq("salon_id", salon_id).single())
 
         booking = booking_response.data
         if not booking:
@@ -1815,10 +1791,10 @@ class CustomerService:
 
         return booking
 
-    def _get_existing_review(self, booking_id: str) -> Optional[Dict[str, Any]]:
-        response = self.db.table("reviews").select(
+    async def _get_existing_review(self, booking_id: str) -> Optional[Dict[str, Any]]:
+        response = await db_exec(self.db.table("reviews").select(
             "id, rating, review_text, created_at"
-        ).eq("booking_id", booking_id).is_("deleted_at", "null").execute()
+        ).eq("booking_id", booking_id).is_("deleted_at", "null"))
 
         if not response.data:
             return None

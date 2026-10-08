@@ -31,6 +31,7 @@ import hmac
 import json
 import logging
 from typing import Any, Dict, Optional
+from app.core.database import db_exec
 
 from fastapi import BackgroundTasks
 
@@ -330,11 +331,10 @@ class RazorpayWebhookService:
     async def _registration_payment_exists(self, razorpay_order_id: str) -> bool:
         """Whether this Razorpay order is a vendor registration fee."""
         try:
-            response = self.db.table("vendor_registration_payments")\
+            response = await db_exec(self.db.table("vendor_registration_payments")\
                 .select("id")\
                 .eq("razorpay_order_id", razorpay_order_id)\
-                .maybe_single()\
-                .execute()
+                .maybe_single())
             return bool(getattr(response, "data", None))
         except Exception as e:
             logger.warning(

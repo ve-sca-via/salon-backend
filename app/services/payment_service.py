@@ -18,6 +18,7 @@ CREDENTIALS MANAGEMENT:
 from typing import Dict, Any, List, Optional
 from fastapi import BackgroundTasks, HTTPException, status
 import logging
+from app.core.database import db_exec
 
 from app.services.payment import RazorpayService, resolve_razorpay_credentials
 from app.services.config_service import ConfigService
@@ -193,13 +194,12 @@ class PaymentService:
         
         try:
             # Get cart items
-            cart_response = self.db.table("cart_items")\
+            cart_response = await db_exec(self.db.table("cart_items")\
                 .select(
                     "id, service_id, quantity, "
                     "services(id, name, price, discounted_price, salon_id)"
                 )\
-                .eq("user_id", user_id)\
-                .execute()
+                .eq("user_id", user_id))
             
             if not cart_response.data or len(cart_response.data) == 0:
                 raise HTTPException(
@@ -295,7 +295,7 @@ class PaymentService:
             # checkout an external `orders.fetch` to read back (audit H-2) and
             # risked silent truncation at Razorpay's 256-character limit per
             # note value once a cart held a handful of services.
-            order = self.razorpay.create_order(
+            order = await self.razorpay.create_order(
                 amount=total_payment,
                 currency="INR",
                 receipt=f"cart_{user_id[:8]}",
@@ -385,9 +385,9 @@ class PaymentService:
         
         try:
             # Verify vendor request exists
-            request_check = self.db.table("vendor_join_requests").select(
+            request_check = await db_exec(self.db.table("vendor_join_requests").select(
                 "id, status, rm_id"
-            ).eq("id", vendor_request_id).single().execute()
+            ).eq("id", vendor_request_id).single())
             
             if not request_check.data:
                 raise HTTPException(
@@ -405,9 +405,9 @@ class PaymentService:
                 )
             
             # Check if payment already completed for this vendor request
-            existing_payment = self.db.table("vendor_registration_payments").select(
+            existing_payment = await db_exec(self.db.table("vendor_registration_payments").select(
                 "id, razorpay_order_id, status"
-            ).eq("vendor_request_id", vendor_request_id).eq("status", "success").execute()
+            ).eq("vendor_request_id", vendor_request_id).eq("status", "success"))
             
             if existing_payment.data and len(existing_payment.data) > 0:
                 raise HTTPException(
@@ -416,19 +416,19 @@ class PaymentService:
                 )
             
             # Cancel any existing pending orders for this vendor request (prevent duplicates)
-            pending_orders = self.db.table("vendor_registration_payments").select(
+            pending_orders = await db_exec(self.db.table("vendor_registration_payments").select(
                 "id, razorpay_order_id"
-            ).eq("vendor_request_id", vendor_request_id).eq("vendor_id", user_id).eq("status", "pending").execute()
+            ).eq("vendor_request_id", vendor_request_id).eq("vendor_id", user_id).eq("status", "pending"))
             
             if pending_orders.data and len(pending_orders.data) > 0:
                 # Mark old pending orders as failed
                 for old_order in pending_orders.data:
-                    self.db.table("vendor_registration_payments").update({
+                    await db_exec(self.db.table("vendor_registration_payments").update({
                         "status": "failed",
                         "payment_failed_at": "now()",
                         "failure_reason": "Replaced by new payment attempt",
                         "updated_at": "now()"
-                    }).eq("id", old_order["id"]).execute()
+                    }).eq("id", old_order["id"]))
                     logger.info(f"Cancelled pending order: {old_order['razorpay_order_id']}")
             
             # Get registration fee from config (no fallback - must exist in database)
@@ -436,7 +436,7 @@ class PaymentService:
             registration_fee = float(registration_fee_config.get("config_value"))
             
             # Create Razorpay order
-            order = self.razorpay.create_order(
+            order = await self.razorpay.create_order(
                 amount=registration_fee,
                 currency="INR",
                 receipt=f"vendor_reg_{vendor_request_id[:8]}",
@@ -457,7 +457,7 @@ class PaymentService:
                 "created_at": "now()"
             }
             
-            self.db.table("vendor_registration_payments").insert(payment_data).execute()
+            await db_exec(self.db.table("vendor_registration_payments").insert(payment_data))
             
             logger.info(f"Created vendor registration order: {order['order_id']}")
             
@@ -518,9 +518,9 @@ class PaymentService:
         owner_email = None
 
         if vendor_request_id:
-            vendor_request = self.db.table("vendor_join_requests").select(
+            vendor_request = await db_exec(self.db.table("vendor_join_requests").select(
                 "id, owner_name, owner_email"
-            ).eq("id", vendor_request_id).maybe_single().execute()
+            ).eq("id", vendor_request_id).maybe_single())
 
             if vendor_request and vendor_request.data:
                 owner_name = vendor_request.data.get("owner_name")
@@ -529,24 +529,24 @@ class PaymentService:
             # Find the salon created from this request. maybe_single(): a request
             # whose salon does not exist yet must come back empty, not raise
             # PGRST116 and be masked as a 500.
-            salon_response = self.db.table("salons").select(
+            salon_response = await db_exec(self.db.table("salons").select(
                 "id, business_name, vendor_id"
-            ).eq("join_request_id", vendor_request_id).maybe_single().execute()
+            ).eq("join_request_id", vendor_request_id).maybe_single())
 
             if salon_response and salon_response.data:
                 salon_data = salon_response.data
                 salon_id = salon_data["id"]
 
-                self.db.table("salons").update({
+                await db_exec(self.db.table("salons").update({
                     "is_active": True,
                     "registration_fee_paid": True,
                     "updated_at": "now()"
-                }).eq("id", salon_id).execute()
+                }).eq("id", salon_id))
 
                 # Link payment to salon (also the marker that activation happened)
-                self.db.table("vendor_registration_payments").update({
+                await db_exec(self.db.table("vendor_registration_payments").update({
                     "salon_id": salon_id
-                }).eq("razorpay_order_id", razorpay_order_id).execute()
+                }).eq("razorpay_order_id", razorpay_order_id))
 
                 logger.info(
                     f"Vendor registration payment verified: {razorpay_payment_id}, "
@@ -694,9 +694,9 @@ class PaymentService:
         """
         try:
             # IDEMPOTENCY CHECK: Fetch payment record first
-            payment_record = self.db.table("vendor_registration_payments").select(
+            payment_record = await db_exec(self.db.table("vendor_registration_payments").select(
                 "*, vendor_id, salon_id, vendor_request_id"
-            ).eq("razorpay_order_id", razorpay_order_id).single().execute()
+            ).eq("razorpay_order_id", razorpay_order_id).single())
             
             if not payment_record.data:
                 raise HTTPException(
@@ -739,17 +739,17 @@ class PaymentService:
             if razorpay_signature:
                 payment_updates["razorpay_signature"] = razorpay_signature
 
-            payment_update = self.db.table("vendor_registration_payments").update(
+            payment_update = await db_exec(self.db.table("vendor_registration_payments").update(
                 payment_updates
-            ).eq("razorpay_order_id", razorpay_order_id).eq("status", "pending").execute()
+            ).eq("razorpay_order_id", razorpay_order_id).eq("status", "pending"))
 
             # Check if update succeeded (no rows affected = payment already processed by concurrent request)
             if not payment_update.data or len(payment_update.data) == 0:
                 logger.warning(f"Vendor registration payment already processed by concurrent request: {razorpay_order_id}")
                 # Re-fetch the completed payment data
-                completed_payment = self.db.table("vendor_registration_payments").select(
+                completed_payment = await db_exec(self.db.table("vendor_registration_payments").select(
                     "*, salon_id"
-                ).eq("razorpay_order_id", razorpay_order_id).single().execute()
+                ).eq("razorpay_order_id", razorpay_order_id).single())
 
                 return await self._finish_vendor_registration(
                     payment_data=completed_payment.data or payment_data,

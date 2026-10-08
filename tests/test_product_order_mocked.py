@@ -166,7 +166,8 @@ class FakeRazorpay:
     def __init__(self, *args, **kwargs):
         pass
 
-    def create_order(self, amount, receipt, notes=None):
+    # Async to match the real RazorpayService (payment audit C-4).
+    async def create_order(self, amount, receipt, notes=None):
         return {"order_id": f"order_{uuid.uuid4().hex[:12]}", "amount": amount, "currency": "INR"}
 
     def verify_payment_signature(self, razorpay_order_id, razorpay_payment_id, razorpay_signature):

@@ -16,11 +16,16 @@ salon-reviews/feedback flow.
 
 No marker -> these run in the fast (no-stack) job alongside the smoke suite.
 """
+import asyncio
+import itertools
 import re
+import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta
 
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -119,6 +124,10 @@ class _Query:
         # /cart/checkout makes after the customer has been charged, so the fake
         # records each one (see the checkout tests at the end of this file).
         self._db.queries.append((self._t.name, op))
+        # Which thread ran it. Phase 3 (C-4) is about queries no longer blocking
+        # the event loop, and nothing else in this fake would notice them moving
+        # back onto it. See test_checkout_runs_every_query_off_the_event_loop.
+        self._db.query_threads.append(threading.get_ident())
         if op == "select":
             matched = [r for r in rows if self._match(r)]
             total = len(matched)
@@ -176,6 +185,8 @@ class FakeSupabase:
         self._t = {}
         # (table_name, op) for every .execute() the app made, in order.
         self.queries = []
+        # The thread id each of those ran on, index-aligned with self.queries.
+        self.query_threads = []
 
     def table(self, name):
         if name not in self._t:
@@ -658,6 +669,105 @@ def test_checkout_makes_nine_round_trips_before_responding(cs, monkeypatch):
         ("profiles", "select"),
         ("payment_intents", "update"),
     ], deferred
+
+
+def test_checkout_runs_every_query_off_the_event_loop(cs, monkeypatch):
+    """
+    C-4. `get_db()` hands back the *synchronous* supabase client, so every
+    `.execute()` is a blocking call; made directly from `async def` it stalls the
+    whole worker, not just this request. They all go through `db_exec` now, which
+    means they must run on a thread that is not the one running the event loop.
+
+    Nothing else in this file would notice a query moving back onto the loop:
+    behaviour is identical, only every other request on the process suffers. So
+    the fake records the thread id of each `.execute()` and this asserts on it.
+    """
+    salon, service = _seed_checkout_state(cs)
+    _install_fake_razorpay(cs, monkeypatch, service)
+    _stub_booking_emails(monkeypatch)
+    cs.login()
+
+    # The route awaits checkout_cart, so this wrapper's first statement runs on
+    # the event loop thread - whichever thread TestClient's portal picked.
+    loop_thread = {}
+    original = customer_module.CustomerService.checkout_cart
+
+    async def recording_checkout(self, *args, **kwargs):
+        loop_thread["id"] = threading.get_ident()
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(customer_module.CustomerService, "checkout_cart", recording_checkout)
+
+    cs.db.queries.clear()
+    cs.db.query_threads.clear()
+    r = cs.client.post(f"{CUST}/cart/checkout", json=_checkout_payload())
+    assert r.status_code == 200, r.text
+
+    assert loop_thread.get("id") is not None
+    assert len(cs.db.query_threads) == len(cs.db.queries)
+    assert cs.db.queries, "no queries recorded - the test is not exercising anything"
+
+    on_the_loop = [
+        cs.db.queries[i]
+        for i, tid in enumerate(cs.db.query_threads)
+        if tid == loop_thread["id"]
+    ]
+    assert on_the_loop == [], f"these queries blocked the event loop: {on_the_loop}"
+
+
+@pytest.mark.asyncio
+async def test_checkout_leaves_the_event_loop_free_while_it_waits(cs, monkeypatch):
+    """
+    The point of C-4, stated as the thing a customer actually suffers: while one
+    checkout waits on the database, every *other* request on that worker used to
+    wait too.
+
+    A heartbeat task yields in a tight loop, and the fake records its tick count
+    at each query. If the queries ran on the event loop the heartbeat could not
+    advance between the first and the last - that is precisely what blocking
+    means. The assertion is on direction, not on timing, so it does not depend on
+    the host's clock resolution or load.
+    """
+    salon, service = _seed_checkout_state(cs)
+    _install_fake_razorpay(cs, monkeypatch, service)
+    _stub_booking_emails(monkeypatch)
+
+    ticks = itertools.count()
+    heartbeat_at_query = []
+    seen = [0]
+
+    async def heartbeat():
+        while True:
+            seen[0] = next(ticks)
+            await asyncio.sleep(0)
+
+    # Each query blocks for a beat, as a real round trip does. In the worker
+    # thread this costs the request 20ms and the loop nothing.
+    original_execute = _Query.execute
+
+    def slow_execute(self):
+        time.sleep(0.02)
+        heartbeat_at_query.append(seen[0])
+        return original_execute(self)
+
+    monkeypatch.setattr(_Query, "execute", slow_execute)
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        service_obj = customer_module.CustomerService(cs.db)
+        booking = await service_obj.checkout_cart(
+            customer_id="cust-1",
+            checkout_data=_checkout_payload(),
+            background_tasks=BackgroundTasks(),
+        )
+    finally:
+        beat.cancel()
+
+    assert booking is not None
+    assert len(heartbeat_at_query) >= 9, heartbeat_at_query
+    # The loop kept running throughout, not just at the edges.
+    assert heartbeat_at_query[-1] > heartbeat_at_query[0], heartbeat_at_query
+    assert heartbeat_at_query == sorted(heartbeat_at_query), heartbeat_at_query
 
 
 def test_checkout_does_not_read_profiles_before_responding(cs, monkeypatch):

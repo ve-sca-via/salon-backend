@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
 from app.core.config import settings
-from app.core.database import get_db_client
+from app.core.database import db_exec, get_db_client
 from app.core.features import is_feature_visible_to
 import logging
 import uuid
@@ -121,13 +121,17 @@ def create_refresh_token(data: dict) -> str:
     return encoded_jwt
 
 
-def verify_token(token: str, db) -> TokenPayload:
+async def verify_token(token: str, db) -> TokenPayload:
     """
     Verify and decode JWT token, checking against blacklist and token_valid_after
-    
+
+    Async because it makes two database round trips (profile + blacklist) on
+    every authenticated request; running them through `db_exec` keeps them off
+    the event loop (payment audit C-4).
+
     Args:
         token: JWT token string
-    
+
     Returns:
         TokenPayload with user data
     
@@ -168,9 +172,9 @@ def verify_token(token: str, db) -> TokenPayload:
         # Selects the union of what this function checks and what get_current_user /
         # get_optional_user need, and returns it on the TokenPayload, so the same
         # profiles row is read once per request instead of twice (payment audit M-1).
-        profile_response = db.table("profiles").select(
+        profile_response = await db_exec(db.table("profiles").select(
             "id, email, user_role, token_valid_after, is_active, is_internal"
-        ).eq("id", user_id).maybe_single().execute()
+        ).eq("id", user_id).maybe_single())
 
         profile = getattr(profile_response, "data", None)
 
@@ -217,7 +221,7 @@ def verify_token(token: str, db) -> TokenPayload:
         
         # Check if token is blacklisted (for single logout)
         if jti:
-            blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
+            blacklist_check = await db_exec(db.table("token_blacklist").select("id").eq("token_jti", jti))
             if blacklist_check.data:
                 logger.warning("Blocked attempt to use blacklisted token")
                 raise HTTPException(
@@ -240,10 +244,10 @@ def verify_token(token: str, db) -> TokenPayload:
         )
 
 
-def verify_refresh_token(token: str, db) -> dict:
+async def verify_refresh_token(token: str, db) -> dict:
     """
     Verify and decode JWT refresh token, checking against blacklist and token_valid_after
-    
+
     Args:
         token: JWT refresh token string
     
@@ -274,9 +278,9 @@ def verify_refresh_token(token: str, db) -> dict:
             )
         
         # Load the user's profile (maybe_single avoids a PGRST116 crash if it was deleted).
-        profile_response = db.table("profiles").select(
+        profile_response = await db_exec(db.table("profiles").select(
             "token_valid_after, is_active"
-        ).eq("id", user_id).maybe_single().execute()
+        ).eq("id", user_id).maybe_single())
 
         profile = getattr(profile_response, "data", None)
 
@@ -322,7 +326,7 @@ def verify_refresh_token(token: str, db) -> dict:
         
         # Check if refresh token is blacklisted (for single logout)
         if jti:
-            blacklist_check = db.table("token_blacklist").select("id").eq("token_jti", jti).execute()
+            blacklist_check = await db_exec(db.table("token_blacklist").select("id").eq("token_jti", jti))
             if blacklist_check.data:
                 logger.warning(f"Attempt to use blacklisted refresh token: {jti}")
                 raise HTTPException(
@@ -426,7 +430,7 @@ def verify_phone_verification_token(token: str) -> str:
 # TOKEN REVOCATION FUNCTIONS
 # =====================================================
 
-def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: datetime, reason: str = "logout") -> bool:
+async def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: datetime, reason: str = "logout") -> bool:
     """
     Add token to blacklist to revoke it
     
@@ -447,11 +451,11 @@ def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: 
         logger.info(f"Attempting to revoke token for user {user_id}")
         
         # Note: token_blacklist table only has: id, user_id, token_jti, expires_at, created_at
-        result = db.table("token_blacklist").insert({
+        result = await db_exec(db.table("token_blacklist").insert({
             "token_jti": token_jti,
             "user_id": user_id,
             "expires_at": expires_at.isoformat()
-        }).execute()
+        }))
         
         if result.data:
             logger.info(f" Token successfully revoked: {token_jti}")
@@ -474,7 +478,7 @@ def revoke_token(db, token_jti: str, user_id: str, token_type: str, expires_at: 
 # revoke_all_user_tokens removed - now properly implemented via token_valid_after in auth_service.logout_all_devices()
 
 
-def cleanup_expired_tokens(db) -> int:
+async def cleanup_expired_tokens(db) -> int:
     """
     Remove expired tokens from blacklist (can be run as periodic job)
     
@@ -483,7 +487,7 @@ def cleanup_expired_tokens(db) -> int:
     """
     try:
         now = datetime.utcnow().isoformat()
-        result = db.table("token_blacklist").delete().lt("expires_at", now).execute()
+        result = await db_exec(db.table("token_blacklist").delete().lt("expires_at", now))
         count = len(result.data) if result.data else 0
         logger.info(f"Cleaned up {count} expired tokens from blacklist")
         return count
@@ -519,7 +523,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = credentials.credentials
-    token_data = verify_token(token, db)
+    token_data = await verify_token(token, db)
 
     # Verify user exists and is active
     try:
@@ -529,9 +533,9 @@ async def get_current_user(
         # built elsewhere.
         user = token_data.profile
         if user is None:
-            user_response = db.table("profiles").select(
+            user_response = await db_exec(db.table("profiles").select(
                 "id, email, user_role, is_active, is_internal"
-            ).eq("id", token_data.sub).maybe_single().execute()
+            ).eq("id", token_data.sub).maybe_single())
             user = getattr(user_response, "data", None)
 
         if not user:
@@ -581,14 +585,14 @@ async def get_optional_user(
 
     try:
         token = credentials.credentials
-        token_data = verify_token(token, db)
+        token_data = await verify_token(token, db)
 
         # Reuse the profile verify_token already read (payment audit M-1).
         user = token_data.profile
         if user is None:
-            user_response = db.table("profiles").select(
+            user_response = await db_exec(db.table("profiles").select(
                 "id, email, user_role, is_active, is_internal"
-            ).eq("id", token_data.sub).maybe_single().execute()
+            ).eq("id", token_data.sub).maybe_single())
             user = getattr(user_response, "data", None)
 
         if not user:
@@ -970,9 +974,9 @@ async def get_user_salon_id(user_id: str, db = Depends(get_db_client)) -> Option
         Salon ID if user is vendor owner, None otherwise
     """
     try:
-        response = db.table("salons").select("id").eq(
+        response = await db_exec(db.table("salons").select("id").eq(
             "owner_id", user_id
-        ).eq("is_active", True).single().execute()
+        ).eq("is_active", True).single())
         
         return response.data.get("id") if response.data else None
     
