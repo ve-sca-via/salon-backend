@@ -9,7 +9,7 @@ Handles all customer-facing operations:
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from pydantic import BaseModel
 from supabase import Client
 from app.core.auth import get_current_user, TokenData
@@ -201,6 +201,7 @@ async def clear_cart(
 @router.post("/cart/checkout", response_model=BookingResponse)
 async def checkout_cart(
     checkout_data: CartCheckoutCreate,
+    background_tasks: BackgroundTasks,
     current_user: TokenData = Depends(get_current_user),
     customer_service: CustomerService = Depends(get_customer_service)
 ):
@@ -226,7 +227,12 @@ async def checkout_cart(
     12. Backend: Creates booking_payment record
     13. Backend: Clears cart
     14. Backend: Returns booking details
-    
+    15. After the response: confirmation emails to customer and vendor
+
+    Step 15 is deliberately not awaited. The customer has already been charged by
+    the time this endpoint runs, so nothing that cannot change the outcome of the
+    booking belongs in front of the response (audit C-1).
+
     Payment Split Model:
     - Convenience Fee (10% + GST): Paid ONLINE during checkout
     - Service Amount (100%): Paid AT SALON after service completion
@@ -244,7 +250,8 @@ async def checkout_cart(
             "payment_method": checkout_data.payment_method,
             "notes": checkout_data.notes,
             "coupon_code": checkout_data.coupon_code
-        }
+        },
+        background_tasks=background_tasks
     )
     # Return only the booking data, not the wrapper dict
     return result["booking"]

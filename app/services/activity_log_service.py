@@ -4,7 +4,7 @@ Simple implementation for audit trail on dashboard
 """
 import logging
 from typing import Optional, Dict, Any, List
-from app.core.database import get_db
+from app.core.database import db_exec, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class ActivityLogService:
             }
             
             logger.info(f"Attempting to log activity: {action} by {user_id or 'system'}, entity: {entity_type}/{entity_id}")
-            response = db.table("activity_logs").insert(log_data).execute()
+            response = await db_exec(db.table("activity_logs").insert(log_data))
             logger.info(f"Activity logged successfully: {action} (response: {len(response.data) if response.data else 0} rows)")
             return True
             
@@ -84,7 +84,7 @@ class ActivityLogService:
             )
             if exclude_actions:
                 query = query.not_.in_("action", list(exclude_actions))
-            response = query.order("created_at", desc=True).limit(limit).execute()
+            response = await db_exec(query.order("created_at", desc=True).limit(limit))
             
             return response.data or []
             
@@ -112,11 +112,11 @@ class ActivityLogService:
         try:
             db = get_db()
             
-            response = db.table("activity_logs").select(
+            response = await db_exec(db.table("activity_logs").select(
                 "*, profiles(full_name, email)"
             ).eq("entity_type", entity_type).eq(
                 "entity_id", entity_id
-            ).order("created_at", desc=True).limit(limit).execute()
+            ).order("created_at", desc=True).limit(limit))
             
             return response.data or []
             

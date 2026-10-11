@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import logging
 
 from fastapi import HTTPException, status
+from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +83,10 @@ class CouponService:
         # create), and idx_coupons_active_code guarantees at most one active row
         # per code — so this is an indexed point lookup, not a full scan.
         resp = (
-            self.db.table("coupons")
+            await db_exec(self.db.table("coupons")
             .select("*")
             .eq("is_active", True)
-            .eq("code", normalized)
-            .execute()
+            .eq("code", normalized))
         )
         coupon = (resp.data or [None])[0]
         if not coupon:
@@ -122,9 +122,9 @@ class CouponService:
 
         per_user_limit = coupon.get("usage_limit_per_user")
         if per_user_limit is not None:
-            used_by_user = self.db.table("coupon_redemptions").select(
+            used_by_user = await db_exec(self.db.table("coupon_redemptions").select(
                 "id", count="exact"
-            ).eq("coupon_id", coupon["id"]).eq("user_id", customer_id).execute()
+            ).eq("coupon_id", coupon["id"]).eq("user_id", customer_id))
             if (used_by_user.count or 0) >= int(per_user_limit):
                 return None, _REASON_MESSAGES["per_user_limit_reached"]
 
@@ -142,7 +142,7 @@ class CouponService:
         ).is_("deleted_at", "null").neq("status", "cancelled")
         if scope == "vendor":
             query = query.eq("salon_id", salon_id)
-        result = query.execute()
+        result = await db_exec(query)
         return (result.count or 0) == 0
 
     @staticmethod
@@ -222,7 +222,7 @@ class CouponService:
         condition) — the authoritative check still runs on apply (validate_coupon).
         """
         now = datetime.now(timezone.utc)
-        resp = self.db.table("coupons").select("*").eq("is_active", True).execute()
+        resp = await db_exec(self.db.table("coupons").select("*").eq("is_active", True))
         all_active = resp.data or []
 
         # Scope + validity window + total-usage pre-filter
@@ -257,11 +257,10 @@ class CouponService:
         coupon_ids = [c["id"] for c in candidates]
         used_by_user: Dict[str, int] = {}
         redemptions = (
-            self.db.table("coupon_redemptions")
+            await db_exec(self.db.table("coupon_redemptions")
             .select("coupon_id")
             .eq("user_id", customer_id)
-            .in_("coupon_id", coupon_ids)
-            .execute()
+            .in_("coupon_id", coupon_ids))
         )
         for row in (redemptions.data or []):
             cid = row.get("coupon_id")
@@ -311,7 +310,7 @@ class CouponService:
             return False
         return True
 
-    def public_vendor_coupons_by_salon(
+    async def public_vendor_coupons_by_salon(
         self, salon_ids: List[str]
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -323,12 +322,11 @@ class CouponService:
             return {}
         now = datetime.now(timezone.utc)
         resp = (
-            self.db.table("coupons")
+            await db_exec(self.db.table("coupons")
             .select("*")
             .eq("is_active", True)
             .eq("scope", "vendor")
-            .in_("salon_id", salon_ids)
-            .execute()
+            .in_("salon_id", salon_ids))
         )
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for coupon in (resp.data or []):
@@ -338,18 +336,17 @@ class CouponService:
             grouped.setdefault(sid, []).append(self._to_public_coupon(coupon))
         return grouped
 
-    def public_platform_coupons(self) -> List[Dict[str, Any]]:
+    async def public_platform_coupons(self) -> List[Dict[str, Any]]:
         """
         Active, in-window platform coupons (usable at any salon), projected to
         public display fields. Public/unfiltered.
         """
         now = datetime.now(timezone.utc)
         resp = (
-            self.db.table("coupons")
+            await db_exec(self.db.table("coupons")
             .select("*")
             .eq("is_active", True)
-            .eq("scope", "platform")
-            .execute()
+            .eq("scope", "platform"))
         )
         return [
             self._to_public_coupon(c)
@@ -377,7 +374,7 @@ class CouponService:
         caller logs and proceeds (the discount was already validated at order time).
         """
         try:
-            resp = self.db.rpc("redeem_coupon", {
+            resp = await db_exec(self.db.rpc("redeem_coupon", {
                 "p_coupon_id": coupon_id,
                 "p_user_id": user_id,
                 "p_booking_id": booking_id,
@@ -385,7 +382,7 @@ class CouponService:
                 "p_gross_discount": round(float(
                     gross_discount if gross_discount is not None else (discount_amount or 0)
                 ), 2),
-            }).execute()
+            }))
             row = resp.data[0] if resp.data else {}
             return {
                 "success": bool(row.get("success")),
@@ -415,7 +412,7 @@ class CouponService:
         # pass an arbitrary salon_id).
         if data.get("scope") == "vendor" and data.get("salon_id"):
             salon = (
-                self.db.table("salons").select("id").eq("id", data["salon_id"]).execute()
+                await db_exec(self.db.table("salons").select("id").eq("id", data["salon_id"]))
             )
             if not (salon.data or []):
                 raise HTTPException(
@@ -423,7 +420,7 @@ class CouponService:
                     detail="Salon not found for this coupon.",
                 )
         try:
-            resp = self.db.table("coupons").insert(data).execute()
+            resp = await db_exec(self.db.table("coupons").insert(data))
         except Exception as e:
             msg = str(e).lower()
             if "idx_coupons_active_code" in msg or "duplicate" in msg or "unique" in msg:
@@ -456,11 +453,11 @@ class CouponService:
             query = query.eq("salon_id", salon_id)
         if not include_inactive:
             query = query.eq("is_active", True)
-        resp = query.order("created_at", desc=True).execute()
+        resp = await db_exec(query.order("created_at", desc=True))
         return resp.data or []
 
     async def get_coupon(self, coupon_id: str) -> Dict[str, Any]:
-        resp = self.db.table("coupons").select("*").eq("id", coupon_id).single().execute()
+        resp = await db_exec(self.db.table("coupons").select("*").eq("id", coupon_id).single())
         if not resp.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Coupon not found")
         return resp.data
@@ -481,7 +478,7 @@ class CouponService:
         clean = {k: v for k, v in updates.items() if v is not None}
         if not clean:
             return existing
-        resp = self.db.table("coupons").update(clean).eq("id", coupon_id).execute()
+        resp = await db_exec(self.db.table("coupons").update(clean).eq("id", coupon_id))
         return resp.data[0] if resp.data else existing
 
     async def deactivate_coupon(

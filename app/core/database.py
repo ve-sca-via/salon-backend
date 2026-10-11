@@ -5,14 +5,60 @@ This module provides Supabase client instances for the entire application.
 
 - get_auth_client(): Returns auth client (ANON key for sign_in operations)
 - get_db(): Returns database client (SERVICE_ROLE key, bypasses RLS)
+- db_exec(): Awaits a built query off the event loop (see below)
 """
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
+from fastapi.concurrency import run_in_threadpool
 from app.core.config import settings
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+async def db_exec(query: Any) -> Any:
+    """
+    Execute a built Supabase/PostgREST query without blocking the event loop.
+
+    `get_db()` returns the **synchronous** supabase client, so `.execute()` is a
+    plain blocking method over `httpx.Client` (verified against postgrest 0.13.2:
+    `SyncQueryRequestBuilder.execute` is not a coroutine). Calling it directly
+    inside `async def` stalls the *entire* worker for the round trip, not just
+    the one request - so one customer checking out froze every other request on
+    that process for ~9 queries' worth of latency. That was finding C-4 of the
+    payment flow audit (docs/PAYMENT_FLOW_AUDIT.md section 4.2).
+
+    Usage - wrap the query, keep the chain:
+
+        response = await db_exec(self.db.table("bookings").select("*").eq("id", booking_id))
+
+    Only `.execute()` moves to the thread. Building the chain stays on the event
+    loop, which is deliberate: it is pure object construction with no I/O, and it
+    keeps supabase-py's lazily-initialised `postgrest` property single-threaded.
+
+    Two properties of this helper are load-bearing:
+
+    - **httpx.Client is thread-safe**, and each call builds its own request
+      builder, so concurrent `db_exec` calls over the shared singleton client do
+      not share mutable state.
+    - **A cancelled request does not abandon the query.** `run_in_threadpool`
+      passes `abandon_on_cancel=False`, so if the client disconnects mid-write we
+      still wait for the thread to finish rather than leaving a half-applied
+      write with nothing awaiting its result.
+
+    Concurrency is bounded by anyio's default thread limiter (40), which is the
+    backstop that keeps a traffic spike from opening unlimited connections to
+    PostgREST. Exceeding it queues requests instead of blocking the loop.
+
+    Args:
+        query: A built (not yet executed) postgrest request builder, or anything
+            else exposing a blocking, no-argument `.execute()`.
+
+    Returns:
+        Whatever `.execute()` returns - normally an `APIResponse` with `.data`.
+    """
+    return await run_in_threadpool(query.execute)
 
 
 def _isolated_options() -> ClientOptions:

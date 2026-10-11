@@ -1,10 +1,11 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import HTTPException, status
 import uuid
 import datetime
 
 from app.services.product_service import effective_unit_price
+from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,12 @@ class ProductOrderService:
         """Create a new product order and a Razorpay order"""
         
         # 1. Fetch user role for price validation
-        profile_resp = self.db.table("profiles").select("user_role").eq("id", user_id).single().execute()
+        profile_resp = await db_exec(self.db.table("profiles").select("user_role").eq("id", user_id).single())
         user_role = profile_resp.data.get("user_role") if profile_resp.data else "customer"
 
         # 2. Validate items and prices
         product_ids = [item['product_id'] for item in items]
-        products_resp = self.db.table("products").select("*").in_("id", product_ids).execute()
+        products_resp = await db_exec(self.db.table("products").select("*").in_("id", product_ids))
         products_map = {p['id']: p for p in products_resp.data or []}
 
         validated_items = []
@@ -71,9 +72,13 @@ class ProductOrderService:
                 "image_url": product.get('image_urls', [None])[0] if product.get('image_urls') else None
             })
 
-        discount_total = order_data.get('discount_total', 0.0)
-        total_amount = subtotal - discount_total
-        
+        # Product orders have no discount/coupon flow, so the total IS the
+        # server-computed subtotal. This used to subtract a client-supplied
+        # `discount_total`, which made every order payable for ₹1 (audit C-5).
+        # The column is kept at 0 so the row shape is unchanged.
+        discount_total = 0.0
+        total_amount = subtotal
+
         if total_amount < 1: # Razorpay minimum
             total_amount = 1.0
 
@@ -99,7 +104,7 @@ class ProductOrderService:
                 # Real Razorpay mode: Initialize service with current keys
                 temp_rzp_service = RazorpayService(razorpay_key_id=key_id, razorpay_key_secret=key_secret)
 
-                rzp_order = temp_rzp_service.create_order(
+                rzp_order = await temp_rzp_service.create_order(
                     amount=float(total_amount),
                     receipt=order_number,
                     notes={
@@ -127,7 +132,7 @@ class ProductOrderService:
                 "user_type": user_role
             }
             
-            order_response = self.db.table("product_orders").insert(order_insert_data).execute()
+            order_response = await db_exec(self.db.table("product_orders").insert(order_insert_data))
             
             if not order_response.data:
                 raise Exception("Failed to insert order into database")
@@ -148,7 +153,7 @@ class ProductOrderService:
                     "image_url": item.get('image_url')
                 })
                 
-            self.db.table("product_order_items").insert(order_items_data).execute()
+            await db_exec(self.db.table("product_order_items").insert(order_items_data))
 
             return {
                 "order": order_row,
@@ -178,9 +183,9 @@ class ProductOrderService:
                 "razorpay_payment_id": f"dev_pay_{uuid.uuid4().hex[:12]}",
                 "updated_at": datetime.datetime.now().isoformat()
             }
-            result = self.db.table("product_orders").update(update_data)\
+            result = await db_exec(self.db.table("product_orders").update(update_data)\
                 .eq("id", order_id)\
-                .eq("user_id", user_id).execute()
+                .eq("user_id", user_id))
 
             if not result.data:
                 raise HTTPException(status_code=404, detail="Order not found")
@@ -226,9 +231,9 @@ class ProductOrderService:
                 "updated_at": datetime.datetime.now().isoformat()
             }
 
-            result = self.db.table("product_orders").update(update_data)\
+            result = await db_exec(self.db.table("product_orders").update(update_data)\
                 .eq("razorpay_order_id", razorpay_order_id)\
-                .eq("user_id", user_id).execute()
+                .eq("user_id", user_id))
 
             if not result.data:
                 raise HTTPException(status_code=404, detail="Order not found")
@@ -248,17 +253,79 @@ class ProductOrderService:
                 detail="Failed to verify payment"
             )
 
+    async def mark_order_paid_from_webhook(
+        self, razorpay_order_id: str, razorpay_payment_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mark a product order paid from the `payment.captured` webhook.
+
+        The browser path (`verify_payment`) proves the payment with an
+        order|payment signature and scopes the update to the signed-in user. A
+        webhook has neither: its proof is the HMAC over the webhook body, already
+        verified by the caller, and there is no session to scope to — so the order
+        id alone identifies the row.
+
+        Guarded on `payment_status = 'pending'`, which also means a webhook cannot
+        resurrect an order someone has since cancelled.
+
+        Returns the updated order, or None when there was nothing pending to
+        update (already paid, cancelled, or no such order).
+        """
+        try:
+            result = await db_exec(self.db.table("product_orders").update({
+                "status": "paid",
+                "payment_status": "completed",
+                "razorpay_payment_id": razorpay_payment_id,
+                "updated_at": datetime.datetime.now().isoformat()
+            })\
+                .eq("razorpay_order_id", razorpay_order_id)\
+                .eq("payment_status", "pending"))
+
+            if not result.data:
+                return None
+
+            order = result.data[0]
+            logger.info(
+                f"Product order {order.get('order_number')} marked paid by webhook "
+                f"(payment {razorpay_payment_id})"
+            )
+            return order
+        except Exception as e:
+            logger.error(
+                f"Failed to mark product order paid from webhook for order "
+                f"{razorpay_order_id}: {e}"
+            )
+            raise
+
+    async def find_by_razorpay_order_id(self, razorpay_order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        The product order behind a Razorpay order, or None.
+
+        Used by the webhook to decide which flow a captured payment belongs to.
+        """
+        try:
+            response = await db_exec(self.db.table("product_orders")\
+                .select("id, order_number, user_id, status, payment_status, razorpay_payment_id")\
+                .eq("razorpay_order_id", razorpay_order_id)\
+                .maybe_single())
+            return getattr(response, "data", None) or None
+        except Exception as e:
+            logger.warning(
+                f"Could not look up product order for Razorpay order {razorpay_order_id}: {e}"
+            )
+            return None
+
     async def get_user_orders(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all product orders for a user"""
         try:
-            orders_response = self.db.table("product_orders").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+            orders_response = await db_exec(self.db.table("product_orders").select("*").eq("user_id", user_id).order("created_at", desc=True))
             orders = orders_response.data or []
             if not orders:
                 return []
 
             # Fetch all line items in one query, then group by order_id
             order_ids = [o['id'] for o in orders]
-            items_response = self.db.table("product_order_items").select("*").in_("order_id", order_ids).execute()
+            items_response = await db_exec(self.db.table("product_order_items").select("*").in_("order_id", order_ids))
             items_by_order: Dict[str, List[Dict[str, Any]]] = {}
             for it in items_response.data or []:
                 items_by_order.setdefault(it['order_id'], []).append(it)
@@ -276,10 +343,9 @@ class ProductOrderService:
         try:
             logger.info("Fetching all product orders for admin...")
             # 1. Fetch all orders
-            orders_response = self.db.table("product_orders")\
+            orders_response = await db_exec(self.db.table("product_orders")\
                 .select("*")\
-                .order("created_at", desc=True)\
-                .execute()
+                .order("created_at", desc=True))
             
             orders = orders_response.data or []
             logger.info(f"Found {len(orders)} orders in database")
@@ -291,19 +357,17 @@ class ProductOrderService:
             user_ids = list(set(order['user_id'] for order in orders))
             
             # 3. Fetch profiles for these users
-            profiles_response = self.db.table("profiles")\
+            profiles_response = await db_exec(self.db.table("profiles")\
                 .select("id, full_name, phone, user_role")\
-                .in_("id", user_ids)\
-                .execute()
+                .in_("id", user_ids))
             
             profiles_map = {p['id']: p for p in profiles_response.data or []}
 
             # 4. Fetch all line items in one query, then group by order_id
             order_ids = [order['id'] for order in orders]
-            items_response = self.db.table("product_order_items")\
+            items_response = await db_exec(self.db.table("product_order_items")\
                 .select("*")\
-                .in_("order_id", order_ids)\
-                .execute()
+                .in_("order_id", order_ids))
             items_by_order: Dict[str, List[Dict[str, Any]]] = {}
             for it in items_response.data or []:
                 items_by_order.setdefault(it['order_id'], []).append(it)
@@ -329,8 +393,8 @@ class ProductOrderService:
                 "updated_at": datetime.datetime.now().isoformat()
             }
 
-            result = self.db.table("product_orders").update(update_data)\
-                .eq("id", order_id).execute()
+            result = await db_exec(self.db.table("product_orders").update(update_data)\
+                .eq("id", order_id))
 
             if not result.data:
                 raise HTTPException(status_code=404, detail="Order not found")

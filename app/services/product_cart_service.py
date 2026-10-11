@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from supabase import Client
 
 from app.services.product_service import is_b2b_role, effective_unit_price
+from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +15,9 @@ class ProductCartService:
     async def get_cart(self, user_id: str, user_role: Optional[str] = None) -> Dict[str, Any]:
         """Get all product cart items for a user"""
         try:
-            response = self.db.table("product_cart_items")\
+            response = await db_exec(self.db.table("product_cart_items")\
                 .select("*, products(*)")\
-                .eq("user_id", user_id)\
-                .execute()
+                .eq("user_id", user_id))
             
             items = response.data or []
             
@@ -69,33 +69,32 @@ class ProductCartService:
         """Add a product to the cart or increment quantity"""
         try:
             # 1. Check that the product exists and read its available stock
-            product_resp = self.db.table("products").select("id, stock_quantity").eq("id", product_id).maybe_single().execute()
+            product_resp = await db_exec(self.db.table("products").select("id, stock_quantity").eq("id", product_id).maybe_single())
             if not product_resp or not product_resp.data:
                 raise HTTPException(status_code=404, detail="Product not found")
 
             stock = product_resp.data.get("stock_quantity") or 0
 
             # 2. Check if already in cart
-            existing = self.db.table("product_cart_items")\
+            existing = await db_exec(self.db.table("product_cart_items")\
                 .select("id, quantity")\
                 .eq("user_id", user_id)\
-                .eq("product_id", product_id)\
-                .execute()
+                .eq("product_id", product_id))
 
             # 3. Resulting quantity must not exceed available stock
             if existing.data:
                 new_qty = existing.data[0]["quantity"] + quantity
                 if new_qty > stock:
                     raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
-                self.db.table("product_cart_items").update({"quantity": new_qty}).eq("id", existing.data[0]["id"]).execute()
+                await db_exec(self.db.table("product_cart_items").update({"quantity": new_qty}).eq("id", existing.data[0]["id"]))
             else:
                 if quantity > stock:
                     raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
-                self.db.table("product_cart_items").insert({
+                await db_exec(self.db.table("product_cart_items").insert({
                     "user_id": user_id,
                     "product_id": product_id,
                     "quantity": quantity
-                }).execute()
+                }))
                 
             return {"success": True, "message": "Product added to cart"}
         except HTTPException:
@@ -111,25 +110,25 @@ class ProductCartService:
                 return await self.remove_item(user_id, item_id)
 
             # Resolve the cart item (and its product) so we can validate stock
-            item_resp = self.db.table("product_cart_items")\
+            item_resp = await db_exec(self.db.table("product_cart_items")\
                 .select("id, product_id")\
                 .eq("id", item_id)\
                 .eq("user_id", user_id)\
-                .maybe_single().execute()
+                .maybe_single())
             if not item_resp or not item_resp.data:
                 raise HTTPException(status_code=404, detail="Cart item not found")
 
-            product_resp = self.db.table("products")\
+            product_resp = await db_exec(self.db.table("products")\
                 .select("stock_quantity")\
                 .eq("id", item_resp.data["product_id"])\
-                .maybe_single().execute()
+                .maybe_single())
             stock = (product_resp.data.get("stock_quantity") or 0) if (product_resp and product_resp.data) else 0
             if quantity > stock:
                 raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
 
-            response = self.db.table("product_cart_items").update({"quantity": quantity})\
+            response = await db_exec(self.db.table("product_cart_items").update({"quantity": quantity})\
                 .eq("id", item_id)\
-                .eq("user_id", user_id).execute()
+                .eq("user_id", user_id))
 
             if not response.data:
                 raise HTTPException(status_code=404, detail="Cart item not found")
@@ -144,7 +143,7 @@ class ProductCartService:
     async def remove_item(self, user_id: str, item_id: str) -> Dict[str, Any]:
         """Remove an item from the cart"""
         try:
-            self.db.table("product_cart_items").delete().eq("id", item_id).eq("user_id", user_id).execute()
+            await db_exec(self.db.table("product_cart_items").delete().eq("id", item_id).eq("user_id", user_id))
             return {"success": True, "message": "Item removed"}
         except Exception as e:
             logger.error(f"Failed to remove from product cart: {e}")
@@ -153,7 +152,7 @@ class ProductCartService:
     async def clear_cart(self, user_id: str) -> Dict[str, Any]:
         """Clear the entire cart for a user"""
         try:
-            self.db.table("product_cart_items").delete().eq("user_id", user_id).execute()
+            await db_exec(self.db.table("product_cart_items").delete().eq("user_id", user_id))
             return {"success": True, "message": "Cart cleared"}
         except Exception as e:
             logger.error(f"Failed to clear product cart: {e}")

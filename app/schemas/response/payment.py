@@ -28,6 +28,11 @@ class VendorRegistrationVerificationResponse(BaseModel):
     success: bool
     message: str
     payment_id: str
+    # `success` only means the payment was verified and recorded. `activated` says
+    # whether the salon was actually switched on — the two can diverge when the
+    # salon row doesn't exist yet, and the client must not promise a live account
+    # on the strength of `success` alone (audit H-6).
+    activated: bool = True
     salon_id: Optional[str] = None
     salon_name: Optional[str] = None
     vendor_request_id: Optional[str] = None

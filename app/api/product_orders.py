@@ -16,8 +16,11 @@ class OrderItemSchema(BaseModel):
     quantity: int = 1
 
 class CreateOrderRequest(BaseModel):
+    # No discount field. There is no coupon flow for product orders, and accepting
+    # a client-supplied discount let any caller subtract an arbitrary amount from
+    # the server-computed subtotal (floored at the ₹1 gateway minimum) — i.e. buy
+    # anything for ₹1. See docs/PAYMENT_FLOW_AUDIT.md C-5.
     shipping_address: Dict[str, Any]
-    discount_total: float = 0.0
     items: List[OrderItemSchema]
 
 class VerifyPaymentRequest(BaseModel):
@@ -37,8 +40,7 @@ async def create_order(
 ):
     """Create a new product order and get Razorpay order details"""
     order_data = {
-        "shipping_address": request.shipping_address,
-        "discount_total": request.discount_total
+        "shipping_address": request.shipping_address
     }
     items_data = [item.model_dump() for item in request.items]
     
