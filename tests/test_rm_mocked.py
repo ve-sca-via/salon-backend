@@ -359,6 +359,77 @@ def test_create_vendor_request_inactive_rm_403(rm):
     assert r.status_code == 403, r.text
 
 
+def _regular_buyer_payload(**over):
+    """regular_buyer owners generally have no email - the RM instead verifies
+    their phone via OTP at intake (see rm_service.py's
+    _apply_regular_buyer_phone_verification) and collects age/gender, since
+    there's no buyer-facing step left to ask for them later."""
+    defaults = {
+        "request_type": "regular_buyer",
+        "owner_email": None,
+        "owner_age": 30,
+        "owner_gender": "male",
+        "owner_phone_verification_token": "good-token",
+    }
+    defaults.update(over)
+    return _vr_payload(**defaults)
+
+
+def test_create_regular_buyer_request_verified_succeeds(rm, monkeypatch):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    monkeypatch.setattr(
+        "app.services.rm_service.verify_phone_verification_token",
+        lambda token: "+919876543210" if token == "good-token" else None,
+    )
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_regular_buyer_payload())
+    assert r.status_code == 200, r.text
+    row = rm.db.table("vendor_join_requests").rows[0]
+    assert row["owner_email"] is None
+    assert row["owner_age"] == 30
+    assert row["owner_gender"] == "male"
+    assert row["owner_phone_verified"] is True
+    assert row["owner_phone_verified_at"] is not None
+    assert "owner_phone_verification_token" not in row
+
+
+def test_create_regular_buyer_request_token_phone_mismatch_is_400(rm, monkeypatch):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    monkeypatch.setattr(
+        "app.services.rm_service.verify_phone_verification_token",
+        lambda token: "+911111111111",  # does not match owner_phone below
+    )
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_regular_buyer_payload())
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.parametrize("missing_field", ["owner_age", "owner_gender", "owner_phone_verification_token"])
+def test_create_regular_buyer_request_missing_intake_field_is_422(rm, missing_field):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_regular_buyer_payload(**{missing_field: None}))
+    assert r.status_code == 422, r.text
+
+
+def test_create_salon_request_without_owner_email_is_422(rm):
+    """Only regular_buyer gets to skip owner_email - normal salon/vendor
+    requests still need it for the emailed registration link."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+
+    r = rm.client.post(
+        f"{RM}/vendor-requests",
+        json=_vr_payload(request_type="salon", owner_email=None),
+    )
+    assert r.status_code == 422, r.text
+
+
 def test_create_vendor_request_no_rm_profile_404(rm):
     rm.login_rm(str(uuid.uuid4()))  # logged in but no rm_profiles row
     r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload())

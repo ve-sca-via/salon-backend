@@ -431,9 +431,14 @@ class PaymentService:
                     }).eq("id", old_order["id"]))
                     logger.info(f"Cancelled pending order: {old_order['razorpay_order_id']}")
             
-            # Get registration fee from config (no fallback - must exist in database)
-            registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-            registration_fee = float(registration_fee_config.get("config_value"))
+            # Get registration fee: this account's own override if an admin set
+            # one, else the salon_type-specific global default (no fallback -
+            # one of the two must exist in database).
+            salon_response = await db_exec(self.db.table("salons").select(
+                "salon_type, custom_registration_fee_amount"
+            ).eq("join_request_id", vendor_request_id).maybe_single())
+            salon_for_fee = salon_response.data or {}
+            registration_fee = await self.config_service.get_registration_fee_for_salon(salon_for_fee)
             
             # Create Razorpay order
             order = await self.razorpay.create_order(

@@ -7,13 +7,17 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from fastapi import HTTPException, status
 
+from datetime import datetime
+
 from app.schemas import VendorJoinRequestCreate
 from app.schemas.request.rm import RMProfileUpdate
+from app.core.auth import verify_phone_verification_token
 from app.services.activity_log_service import ActivityLogService
 from app.services.cloudinary_service import CloudinaryService
 from app.services.email import email_service
 from app.services.owner_identity import find_owner_conflicts
 from app.utils.location_text import normalize_city_name
+from app.utils.phone import normalize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +412,42 @@ class RMService:
     # =====================================================
     # VENDOR REQUEST CRUD
     # =====================================================
-    
+
+    def _apply_regular_buyer_phone_verification(
+        self,
+        request_data: VendorJoinRequestCreate,
+        db_data: Dict[str, Any]
+    ) -> None:
+        """
+        For a regular_buyer submission, prove `owner_phone` was actually OTP-verified
+        (by the RM, at intake) before letting the request reach an admin for approval
+        - account creation now happens at approval time with no buyer-facing step left,
+        so this is the only checkpoint left to catch a wrong/unverified number.
+
+        Mutates `db_data` in place: drops the one-time token (never persisted) and,
+        once validated, stamps the verified-phone columns (same naming convention as
+        `profiles.phone_verified`/`phone_verified_at`/`phone_verification_method`).
+
+        Raises:
+            HTTPException: 400 if the token is missing, expired, or doesn't match
+                owner_phone.
+        """
+        token = db_data.pop("owner_phone_verification_token", None)
+        if request_data.request_type != "regular_buyer":
+            return
+
+        verified_phone = verify_phone_verification_token(token)
+        submitted_phone = normalize_phone(request_data.owner_phone)
+        if not submitted_phone or normalize_phone(verified_phone) != submitted_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone verification does not match the owner phone number. Please re-verify."
+            )
+
+        db_data["owner_phone_verified"] = True
+        db_data["owner_phone_verified_at"] = datetime.utcnow().isoformat()
+        db_data["owner_phone_verification_method"] = "otp"
+
     def _reject_duplicate_owner(
         self,
         request_data: VendorJoinRequestCreate,
@@ -484,6 +523,7 @@ class RMService:
 
             # Prepare request data (mode='json' converts time objects to strings)
             db_data = request_data.model_dump(mode='json')
+            self._apply_regular_buyer_phone_verification(request_data, db_data)
             db_data["rm_id"] = rm_id
             db_data["status"] = "draft" if is_draft else "pending"
             if db_data.get("city"):
@@ -601,6 +641,7 @@ class RMService:
 
             # Prepare update data (mode='json' converts time objects to strings)
             update_data = request_data.model_dump(mode='json')
+            self._apply_regular_buyer_phone_verification(request_data, update_data)
             if update_data.get("city"):
                 update_data["city"] = normalize_city_name(update_data["city"])
 

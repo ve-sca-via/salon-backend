@@ -1023,6 +1023,31 @@ def test_login_phone_send_otp_non_customer_blocked(mock_auth):
     assert r.status_code == 403, r.text
 
 
+def test_login_phone_send_otp_regular_buyer_allowed(mock_auth):
+    """regular_buyer (B2B product buyer, no email on file) logs in via phone
+    exactly like a customer - only vendor/admin/RM stay email-only."""
+    mock_auth.seed_profile(
+        phone="+919876543210", phone_verified=True, user_role="regular_buyer", full_name="Buyer"
+    )
+    r = mock_auth.client.post(
+        f"{API}/auth/login/phone/send-otp", json={"phone": "9876543210", "country_code": "91"}
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_login_phone_verify_otp_regular_buyer_allowed(mock_auth):
+    mock_auth.seed_profile(
+        phone="+919876543210", phone_verified=True, user_role="regular_buyer"
+    )
+    mock_auth.otp_valid = True
+    r = mock_auth.client.post(
+        f"{API}/auth/login/phone/verify-otp",
+        json={"phone": "9876543210", "otp": "123456", "verification_id": "vid-test-123"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["role"] == "regular_buyer"
+
+
 def test_login_phone_verify_otp_happy(mock_auth):
     prof = mock_auth.seed_profile(
         phone="+919876543210", phone_verified=True, user_role="customer"

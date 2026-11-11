@@ -22,6 +22,7 @@ class CompleteRegistrationResponse(BaseModel):
     class Config:
         extra = "allow"
 
+
 class VendorJoinRequestResponse(BaseModel):
     id: str
     user_id: Optional[str] = None
@@ -38,8 +39,13 @@ class VendorJoinRequestResponse(BaseModel):
     business_name: str = Field(..., min_length=2, max_length=255)
     business_type: BusinessType
     owner_name: str = Field(..., min_length=2, max_length=255)
-    owner_email: EmailStr
+    owner_email: Optional[EmailStr] = None
     owner_phone: str = Field(..., max_length=20)
+    owner_age: Optional[int] = None
+    owner_gender: Optional[str] = None
+    owner_phone_verified: Optional[bool] = False
+    owner_phone_verified_at: Optional[datetime] = None
+    owner_phone_verification_method: Optional[str] = None
     business_address: str
     city: str = Field(..., max_length=100)
     state: str = Field(..., max_length=100)

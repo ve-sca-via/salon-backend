@@ -67,6 +67,7 @@ APPROVAL_ERROR_STATUS = {
     "not_found": status.HTTP_404_NOT_FOUND,
     "already_reviewed": status.HTTP_409_CONFLICT,
     "duplicate_owner": status.HTTP_409_CONFLICT,
+    "phone_not_verified": status.HTTP_400_BAD_REQUEST,
 }
 
 
@@ -98,7 +99,8 @@ async def approve_vendor_request(
     result = await approval_service.approve_vendor_request(
         request_id=request_id,
         admin_notes=request_body.admin_notes,
-        admin_id=current_user.user_id
+        admin_id=current_user.user_id,
+        custom_registration_fee_amount=request_body.custom_registration_fee_amount
     )
 
     if not result.success:

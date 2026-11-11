@@ -7,6 +7,7 @@ from typing import Optional
 from app.core.auth import require_admin, TokenData
 from app.core.validators import UUIDPath
 from app.services.salon_service import SalonService, SalonSearchParams
+from app.services.config_service import ConfigService
 from app.schemas.request.vendor import SalonUpdate
 from app.schemas.admin import StatusToggle
 from app.core.database import get_db_client
@@ -164,9 +165,9 @@ async def send_payment_reminder(
         if not salon_name:
             raise HTTPException(status_code=400, detail="Salon does not have business name")
         
-        # Get registration fee from system config
-        config_response = db.table('system_config').select('config_value').eq('config_key', 'registration_fee_amount').single().execute()
-        registration_fee = float(config_response.data.get('config_value', 999.0)) if config_response.data else 999.0
+        # Registration fee: this salon's own override if an admin set one,
+        # else the salon_type-specific global default.
+        registration_fee = await ConfigService(db_client=db).get_registration_fee_for_salon(salon)
         
         # Send payment reminder email - vendor just needs to login and pay
         email_sent = await email_service.send_payment_reminder_email(

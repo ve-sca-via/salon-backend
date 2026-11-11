@@ -55,6 +55,7 @@ class ProductCartItem(BaseModel):
     image_urls: List[str] = []
     total: float
     is_b2b_price: bool = False
+    is_active: bool = True
 
 
 class ProductCartResponse(BaseModel):
