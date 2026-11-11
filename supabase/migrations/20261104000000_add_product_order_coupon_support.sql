@@ -195,7 +195,10 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION redeem_product_coupon(UUID, UUID, UUID, NUMERIC) TO authenticated;
+-- SECURITY DEFINER + trusts its arguments: only the backend (service_role)
+-- may call it. Postgres grants EXECUTE to PUBLIC by default, and Supabase's
+-- default privileges grant it to anon/authenticated, so revoke all three.
+REVOKE EXECUTE ON FUNCTION redeem_product_coupon(UUID, UUID, UUID, NUMERIC) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION redeem_product_coupon(UUID, UUID, UUID, NUMERIC) TO service_role;
 
 COMMENT ON FUNCTION redeem_product_coupon(UUID, UUID, UUID, NUMERIC) IS
