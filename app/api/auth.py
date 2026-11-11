@@ -350,7 +350,7 @@ async def verify_phone_signup_otp(
     )
 
 # =====================================================
-# PHONE OTP LOGIN (CUSTOMERS ONLY)
+# PHONE OTP LOGIN (CUSTOMERS AND REGULAR BUYERS ONLY)
 # =====================================================
 
 @router.post("/login/phone/send-otp", response_model=PhoneLoginSendOTPResponse)
@@ -362,18 +362,18 @@ async def send_phone_login_otp(
     auth_client: Client = Depends(get_auth_client)
 ):
     """
-    Send OTP to phone number for login (CUSTOMERS ONLY)
+    Send OTP to phone number for login (customers and regular buyers only)
 
     - Validates that phone exists on an account in the database
     - An unverified number still gets an OTP; a correct code verifies it at the
       verify-otp step, since receiving the SMS proves the caller holds the number
-    - Validates user is a customer (other roles must use email login)
+    - Validates user is a customer or regular_buyer (other roles must use email login)
     - Sends 6-digit OTP via MessageCentral SMS
     - Returns verification_id for OTP verification step
     - Rate limited: 3 OTP sends per 5 minutes per IP
 
-    **Note**: Only customer accounts can log in via phone. Admin, RM, and Vendor
-    users must use email login.
+    **Note**: Only customer and regular_buyer accounts can log in via phone.
+    Admin, RM, and Vendor users must use email login.
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.send_phone_login_otp(
@@ -391,15 +391,15 @@ async def verify_phone_login_otp(
     auth_client: Client = Depends(get_auth_client)
 ):
     """
-    Verify OTP and login user via phone (CUSTOMERS ONLY)
+    Verify OTP and login user via phone (customers and regular buyers only)
 
     - Verifies OTP with MessageCentral
-    - Validates user is customer and account is active
+    - Validates user is customer or regular_buyer and account is active
     - Generates JWT tokens (access + refresh)
     - Returns same response as email login
     - Rate limited: 5 verification attempts per 5 minutes
 
-    **Note**: Only customer accounts can log in via phone.
+    **Note**: Only customer and regular_buyer accounts can log in via phone.
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
     return await auth_service.verify_phone_login_otp(

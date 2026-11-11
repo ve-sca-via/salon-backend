@@ -9,6 +9,8 @@ import re
 from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, status
 
+from app.core.database import db_exec
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,7 +143,7 @@ class ProductService:
             query = query.order("created_at", desc=True)
             query = query.range(offset, offset + limit)
 
-            response = query.execute()
+            response = await db_exec(query)
             products = response.data or []
             
             # Apply B2B pricing if applicable
@@ -184,12 +186,11 @@ class ProductService:
             HTTPException 404 if not found
         """
         try:
-            response = (
+            response = await db_exec(
                 self.db.table("products")
                 .select("*")
                 .eq("id", product_id)
                 .maybe_single()
-                .execute()
             )
 
             if not response or not response.data:
@@ -228,13 +229,12 @@ class ProductService:
             HTTPException 404 if not found
         """
         try:
-            response = (
+            response = await db_exec(
                 self.db.table("products")
                 .select("*")
                 .eq("slug", slug)
                 .eq("is_active", True)
                 .maybe_single()
-                .execute()
             )
 
             if not response or not response.data:
@@ -298,7 +298,7 @@ class ProductService:
                     _apply_b2b_pricing(product, user_role)
                     collected.append(product)
 
-            def _fetch_tier(apply_filter) -> List[Dict[str, Any]]:
+            async def _fetch_tier(apply_filter) -> List[Dict[str, Any]]:
                 remaining = limit - len(collected)
                 if remaining <= 0:
                     return []
@@ -310,19 +310,20 @@ class ProductService:
                     .order("created_at", desc=True)
                     .limit(remaining)
                 )
-                return query.execute().data or []
+                response = await db_exec(query)
+                return response.data or []
 
             # Tier 1: same category.
             if category:
-                _take(_fetch_tier(lambda q: q.eq("category", category)))
+                _take(await _fetch_tier(lambda q: q.eq("category", category)))
 
             # Tier 2: same brand.
             if brand and len(collected) < limit:
-                _take(_fetch_tier(lambda q: q.eq("brand", brand)))
+                _take(await _fetch_tier(lambda q: q.eq("brand", brand)))
 
             # Tier 3: any other active product.
             if len(collected) < limit:
-                _take(_fetch_tier(lambda q: q))
+                _take(await _fetch_tier(lambda q: q))
 
             logger.info(
                 f"Retrieved {len(collected)} related products for {product_id} (category={category})"
@@ -347,11 +348,10 @@ class ProductService:
             List of category strings
         """
         try:
-            response = (
+            response = await db_exec(
                 self.db.table("products")
                 .select("category")
                 .eq("is_active", True)
-                .execute()
             )
 
             # Extract unique categories
@@ -412,7 +412,7 @@ class ProductService:
                 if pct is not None:
                     product_data["b2b_discount_percentage"] = pct
 
-            response = self.db.table("products").insert(product_data).execute()
+            response = await db_exec(self.db.table("products").insert(product_data))
 
             if not response.data:
                 raise HTTPException(
@@ -504,11 +504,10 @@ class ProductService:
                     if pct is not None:
                         safe_updates["b2b_discount_percentage"] = pct
 
-            response = (
+            response = await db_exec(
                 self.db.table("products")
                 .update(safe_updates)
                 .eq("id", product_id)
-                .execute()
             )
 
             if not response.data:
@@ -554,16 +553,15 @@ class ProductService:
             if hard_delete:
                 # Verify product exists first
                 await self.get_product_by_id(product_id)
-                self.db.table("products").delete().eq("id", product_id).execute()
+                await db_exec(self.db.table("products").delete().eq("id", product_id))
                 logger.warning(f"Product permanently deleted: {product_id}")
                 return {"message": "Product permanently deleted", "product_id": product_id}
             else:
                 # Soft delete — set is_active = false
-                response = (
+                response = await db_exec(
                     self.db.table("products")
                     .update({"is_active": False})
                     .eq("id", product_id)
-                    .execute()
                 )
 
                 if not response.data:
@@ -622,11 +620,10 @@ class ProductService:
         Does NOT raise HTTPException — used for existence checks.
         """
         try:
-            response = (
+            response = await db_exec(
                 self.db.table("products")
                 .select("id, slug")
                 .eq("slug", slug)
-                .execute()
             )
             return response.data[0] if response.data else None
         except Exception:

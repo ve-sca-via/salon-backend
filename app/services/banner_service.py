@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
+from app.core.database import db_exec
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,7 +67,7 @@ class BannerService:
 
             # Primary sort by sort_order asc; created_at desc breaks ties.
             query = query.order("sort_order", desc=False).order("created_at", desc=True)
-            response = query.execute()
+            response = await db_exec(query)
             banners = response.data or []
 
             if not include_inactive:
@@ -85,12 +87,11 @@ class BannerService:
     async def get_banner_by_id(self, banner_id: str) -> Dict[str, Any]:
         """Get a single banner by UUID. Raises 404 if not found."""
         try:
-            response = (
+            response = await db_exec(
                 self.db.table("banners")
                 .select("*")
                 .eq("id", banner_id)
                 .maybe_single()
-                .execute()
             )
             if not response or not response.data:
                 raise HTTPException(
@@ -116,7 +117,7 @@ class BannerService:
         """Create a new banner. Datetimes are serialized to ISO strings for PostgREST."""
         try:
             payload = self._serialize(banner_data)
-            response = self.db.table("banners").insert(payload).execute()
+            response = await db_exec(self.db.table("banners").insert(payload))
             if not response.data:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -148,11 +149,10 @@ class BannerService:
             safe_updates.pop("created_at", None)
             payload = self._serialize(safe_updates)
 
-            response = (
+            response = await db_exec(
                 self.db.table("banners")
                 .update(payload)
                 .eq("id", banner_id)
-                .execute()
             )
             if not response.data:
                 raise HTTPException(
@@ -182,11 +182,10 @@ class BannerService:
         updated: List[Dict[str, Any]] = []
         try:
             for item in orders:
-                response = (
+                response = await db_exec(
                     self.db.table("banners")
                     .update({"sort_order": item["sort_order"]})
                     .eq("id", item["id"])
-                    .execute()
                 )
                 if response.data:
                     updated.append(response.data[0])
@@ -205,15 +204,14 @@ class BannerService:
         try:
             if hard_delete:
                 await self.get_banner_by_id(banner_id)  # 404 if missing
-                self.db.table("banners").delete().eq("id", banner_id).execute()
+                await db_exec(self.db.table("banners").delete().eq("id", banner_id))
                 logger.warning(f"Banner permanently deleted: {banner_id}")
                 return {"message": "Banner permanently deleted", "banner_id": banner_id}
 
-            response = (
+            response = await db_exec(
                 self.db.table("banners")
                 .update({"is_active": False})
                 .eq("id", banner_id)
-                .execute()
             )
             if not response.data:
                 raise HTTPException(

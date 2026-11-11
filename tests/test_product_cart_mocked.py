@@ -293,6 +293,34 @@ def test_get_cart_requires_auth(cart):
     assert r.status_code in (401, 403), r.text
 
 
+def test_get_cart_flags_deactivated_item_and_excludes_it_from_totals(cart):
+    """
+    A product added while active, then deactivated by admin, stays visible in
+    the cart (so the customer can see and remove it) but is flagged `is_active:
+    false` and no longer counted toward total_amount/item_count — mirrors
+    Amazon/Flipkart leaving an "unavailable" line rather than silently
+    dropping it.
+    """
+    active = cart.seed_product(price=1000.0, stock_quantity=5)
+    inactive = cart.seed_product(price=500.0, stock_quantity=5, is_active=False)
+    cart.seed_cart_item("u1", active["id"], quantity=1)
+    cart.seed_cart_item("u1", inactive["id"], quantity=2)
+    cart.login_as("u1")
+
+    r = cart.client.get(CART)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert len(body["items"]) == 2
+    by_product = {item["product_id"]: item for item in body["items"]}
+    assert by_product[active["id"]]["is_active"] is True
+    assert by_product[inactive["id"]]["is_active"] is False
+
+    # Only the active line counts toward what the customer can actually pay.
+    assert body["total_amount"] == 1000.0
+    assert body["item_count"] == 1
+
+
 # =====================================================================
 # POST /customers/product-cart  (add_to_cart)
 # =====================================================================
@@ -343,6 +371,14 @@ def test_add_increment_exceeding_stock_is_400(cart):
     assert r.status_code == 400, r.text
 
 
+def test_add_inactive_product_is_404(cart):
+    p = cart.seed_product(stock_quantity=10, is_active=False)
+    cart.login_as("u1")
+    r = cart.client.post(CART, json={"product_id": p["id"], "quantity": 1})
+    assert r.status_code == 404, r.text
+    assert "no longer available" in r.text.lower()
+
+
 def test_add_requires_auth(cart):
     r = cart.client.post(CART, json={"product_id": str(uuid.uuid4()), "quantity": 1})
     assert r.status_code in (401, 403), r.text
@@ -385,6 +421,16 @@ def test_update_item_exceeding_stock_is_400(cart):
 
     r = cart.client.put(f"{CART}/{item['id']}", json={"quantity": 5})
     assert r.status_code == 400, r.text
+
+
+def test_update_item_inactive_product_is_404(cart):
+    p = cart.seed_product(stock_quantity=10, is_active=False)
+    item = cart.seed_cart_item("u1", p["id"], quantity=1)
+    cart.login_as("u1")
+
+    r = cart.client.put(f"{CART}/{item['id']}", json={"quantity": 2})
+    assert r.status_code == 404, r.text
+    assert "no longer available" in r.text.lower()
 
 
 def test_update_item_requires_auth(cart):

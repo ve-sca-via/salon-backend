@@ -55,6 +55,22 @@ class CouponValidationResult(BaseModel):
     breakdown: Optional[CouponDiscountBreakdown] = None
 
 
+class ProductCouponDiscountBreakdown(BaseModel):
+    """Pricing breakdown returned when a product-order coupon is validated/applied."""
+    subtotal: float
+    discount_amount: float
+    total_amount: float
+
+
+class ProductCouponValidationResult(BaseModel):
+    """Result of validating a coupon against a product order."""
+    valid: bool
+    reason: Optional[str] = None
+    coupon_id: Optional[str] = None
+    coupon_code: Optional[str] = None
+    breakdown: Optional[ProductCouponDiscountBreakdown] = None
+
+
 class AvailableCouponResponse(BaseModel):
     """A customer-discoverable coupon (the 'available offers' list)."""
     id: str

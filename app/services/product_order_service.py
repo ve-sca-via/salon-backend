@@ -4,7 +4,7 @@ from fastapi import HTTPException, status
 import uuid
 import datetime
 
-from app.services.product_service import effective_unit_price
+from app.services.product_service import effective_unit_price, is_b2b_role
 from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
@@ -35,14 +35,15 @@ class ProductOrderService:
 
         return key_id, key_secret, is_placeholder
 
-    async def create_order(self, user_id: str, order_data: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Create a new product order and a Razorpay order"""
-        
-        # 1. Fetch user role for price validation
-        profile_resp = await db_exec(self.db.table("profiles").select("user_role").eq("id", user_id).single())
-        user_role = profile_resp.data.get("user_role") if profile_resp.data else "customer"
+    async def _price_items(self, user_role: str, items: List[Dict[str, Any]]) -> tuple:
+        """
+        Validate items (exist, active, in stock) and price them server-side.
 
-        # 2. Validate items and prices
+        Shared by create_order and validate_coupon so the subtotal a coupon is
+        previewed against is computed exactly the way create_order will compute
+        it moments later. Returns (validated_items, subtotal). Raises
+        HTTPException on any invalid item — never silently drops one.
+        """
         product_ids = [item['product_id'] for item in items]
         products_resp = await db_exec(self.db.table("products").select("*").in_("id", product_ids))
         products_map = {p['id']: p for p in products_resp.data or []}
@@ -54,16 +55,34 @@ class ProductOrderService:
             product_id = item['product_id']
             if product_id not in products_map:
                 raise HTTPException(status_code=400, detail=f"Product not found: {product_id}")
-            
+
             product = products_map[product_id]
+
+            if not product.get('is_active', True):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"\"{product['name']}\" is no longer available."
+                )
+
+            item_qty = item.get('quantity', 1)
+
+            # Reject up front, before taking any payment. This doesn't close the
+            # race between two concurrent checkouts on the last unit — that's
+            # caught at payment time by decrement_product_stock — but it does
+            # catch the common case of someone ordering more than currently exists.
+            available = product.get('stock_quantity')
+            if available is not None and item_qty > available:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only {available} unit(s) of \"{product['name']}\" left in stock."
+                )
 
             # Force the DB price to prevent client-side tampering (shared with cart)
             db_price = effective_unit_price(product, user_role)
 
-            item_qty = item.get('quantity', 1)
             item_total = db_price * item_qty
             subtotal += item_total
-            
+
             validated_items.append({
                 "product_id": product_id,
                 "product_name": product['name'],
@@ -72,12 +91,103 @@ class ProductOrderService:
                 "image_url": product.get('image_urls', [None])[0] if product.get('image_urls') else None
             })
 
-        # Product orders have no discount/coupon flow, so the total IS the
-        # server-computed subtotal. This used to subtract a client-supplied
-        # `discount_total`, which made every order payable for ₹1 (audit C-5).
-        # The column is kept at 0 so the row shape is unchanged.
-        discount_total = 0.0
-        total_amount = subtotal
+        return validated_items, round(subtotal, 2)
+
+    async def validate_coupon(self, user_id: str, code: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Preview a platform product coupon against a would-be order ("Apply
+        coupon" button on /checkout/products). Does NOT redeem — redemption
+        happens at payment-captured time. Mirrors CustomerService.validate_coupon's
+        shape but for products (no convenience fee, no salon-sale best-of).
+        """
+        from app.services.pricing_service import PricingService
+
+        profile_resp = await db_exec(self.db.table("profiles").select("user_role").eq("id", user_id).single())
+        user_role = profile_resp.data.get("user_role") if profile_resp.data else "customer"
+
+        _, subtotal = await self._price_items(user_role, items)
+
+        pricing = await PricingService(self.db).compute_product_order_pricing(
+            subtotal=subtotal,
+            customer_id=user_id,
+            coupon_code=code,
+        )
+
+        if not pricing["coupon_id"]:
+            return {
+                "valid": False,
+                "reason": pricing["coupon_reason"] or "This coupon could not be applied.",
+                "coupon_id": None,
+                "coupon_code": None,
+                "breakdown": None,
+            }
+
+        return {
+            "valid": True,
+            "reason": None,
+            "coupon_id": pricing["coupon_id"],
+            "coupon_code": pricing["coupon_code"],
+            "breakdown": {
+                "subtotal": pricing["subtotal"],
+                "discount_amount": pricing["discount_amount"],
+                "total_amount": pricing["total_amount"],
+            },
+        }
+
+    async def create_order(
+        self,
+        user_id: str,
+        order_data: Dict[str, Any],
+        items: List[Dict[str, Any]],
+        coupon_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a new product order and a Razorpay order"""
+
+        # 1. Fetch user role for price validation
+        profile_resp = await db_exec(self.db.table("profiles").select("user_role").eq("id", user_id).single())
+        user_role = profile_resp.data.get("user_role") if profile_resp.data else "customer"
+
+        # B2B accounts (vendor, regular_buyer) owe a one-time registration fee
+        # before they can buy — the activation email says so, but nothing used
+        # to enforce it. Fail open if there's no salon row to check: that's an
+        # inconsistent account state, not a reason to block every B2B order.
+        if is_b2b_role(user_role):
+            salon_resp = await db_exec(
+                self.db.table("salons")
+                .select("registration_fee_paid, registration_fee_amount")
+                .eq("vendor_id", user_id)
+                .maybe_single()
+            )
+            salon = salon_resp.data if salon_resp else None
+            if salon and not salon.get("registration_fee_paid"):
+                fee = salon.get("registration_fee_amount")
+                fee_text = f" (₹{fee:,.0f})" if fee else ""
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Please complete your registration payment{fee_text} before ordering products."
+                )
+
+        # 2. Validate items and prices
+        validated_items, subtotal = await self._price_items(user_role, items)
+
+        # 3. Resolve an optional platform coupon against the server-computed
+        # subtotal (never trust a client-supplied discount — see audit C-5).
+        # A platform coupon is the only kind that can ever apply here (products
+        # are admin-managed; see get_valid_product_coupon). An invalid/expired
+        # code is not a hard error — the order proceeds without a discount, and
+        # the reason is surfaced back for the frontend to toast.
+        from app.services.pricing_service import PricingService
+
+        pricing = await PricingService(self.db).compute_product_order_pricing(
+            subtotal=subtotal,
+            customer_id=user_id,
+            coupon_code=coupon_code,
+        )
+        discount_total = pricing["discount_amount"]
+        total_amount = pricing["total_amount"]
+        applied_coupon_id = pricing["coupon_id"]
+        applied_coupon_code = pricing["coupon_code"]
+        coupon_reason = pricing["coupon_reason"]
 
         if total_amount < 1: # Razorpay minimum
             total_amount = 1.0
@@ -125,6 +235,8 @@ class ProductOrderService:
                 "subtotal": subtotal,
                 "discount_total": discount_total,
                 "total_amount": total_amount,
+                "coupon_id": applied_coupon_id,
+                "coupon_code": applied_coupon_code,
                 "shipping_address": order_data.get('shipping_address'),
                 "razorpay_order_id": razorpay_order_id,
                 "status": "pending",
@@ -162,6 +274,7 @@ class ProductOrderService:
                 "amount_paise": rzp_amount_paise,
                 "currency": rzp_currency,
                 "key_id": key_id,
+                "coupon_reason": coupon_reason,
                 "dev_mode": is_dev_mode
             }
 
@@ -173,6 +286,55 @@ class ProductOrderService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create order"
             )
+
+    async def _decrement_stock_for_order(self, order_id: str) -> None:
+        """
+        Best-effort, idempotent stock decrement for a just-paid order (RPC
+        `decrement_product_stock`, migration 20261103000000).
+
+        Called after an order is marked paid, from all three paths that can do
+        that (browser verify, dev-verify, webhook) — any of which can fire more
+        than once for the same order, which is why the RPC itself is the thing
+        guaranteeing "exactly once", not this caller.
+
+        Payment is already captured by the time this runs, so a failure here
+        (a genuine oversell race) is logged, not raised — there is no good way
+        to un-charge the buyer from inside this call.
+        """
+        try:
+            await db_exec(self.db.rpc("decrement_product_stock", {"p_order_id": order_id}))
+        except Exception as e:
+            logger.error(f"Stock decrement failed for order {order_id}: {e}")
+
+    async def _redeem_coupon_for_order(self, order: Dict[str, Any]) -> None:
+        """
+        Redeem the coupon applied at create_order time, now that the order is
+        paid (same D2 decision as bookings: redeem only on paid, never at
+        creation). Idempotent via redeem_product_coupon()'s own guard, so this
+        can safely run again if verify_payment/dev_complete_order/the webhook
+        race or retry for the same order — same pattern as stock decrement.
+
+        No-op when the order carries no coupon.
+        """
+        coupon_id = order.get("coupon_id")
+        if not coupon_id:
+            return
+        try:
+            from app.services.coupon_service import CouponService
+
+            result = await CouponService(self.db).redeem_product(
+                coupon_id=coupon_id,
+                user_id=order["user_id"],
+                product_order_id=order["id"],
+                discount_amount=order.get("discount_total") or 0,
+            )
+            if not result.get("success"):
+                logger.warning(
+                    f"Coupon redemption did not succeed for order {order.get('order_number')}: "
+                    f"{result.get('reason')}"
+                )
+        except Exception as e:
+            logger.error(f"Coupon redemption failed for order {order.get('id')}: {e}")
 
     async def dev_complete_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
         """DEV ONLY: Mark order as paid without Razorpay verification"""
@@ -189,6 +351,9 @@ class ProductOrderService:
 
             if not result.data:
                 raise HTTPException(status_code=404, detail="Order not found")
+
+            await self._decrement_stock_for_order(result.data[0]["id"])
+            await self._redeem_coupon_for_order(result.data[0])
 
             return {
                 "success": True,
@@ -237,6 +402,9 @@ class ProductOrderService:
 
             if not result.data:
                 raise HTTPException(status_code=404, detail="Order not found")
+
+            await self._decrement_stock_for_order(result.data[0]['id'])
+            await self._redeem_coupon_for_order(result.data[0])
 
             return {
                 "success": True,
@@ -289,6 +457,8 @@ class ProductOrderService:
                 f"Product order {order.get('order_number')} marked paid by webhook "
                 f"(payment {razorpay_payment_id})"
             )
+            await self._decrement_stock_for_order(order["id"])
+            await self._redeem_coupon_for_order(order)
             return order
         except Exception as e:
             logger.error(
@@ -313,6 +483,32 @@ class ProductOrderService:
             logger.warning(
                 f"Could not look up product order for Razorpay order {razorpay_order_id}: {e}"
             )
+            return None
+
+    async def get_order_by_id(self, user_id: str, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        A single product order with its line items, scoped to its owner.
+
+        Backs `/order-confirmation`'s refresh/direct-link fallback — the
+        sessionStorage handoff from checkout is per-viewer only, so a refresh or
+        a shared link needs a real way to refetch by id.
+        """
+        try:
+            order_resp = await db_exec(
+                self.db.table("product_orders").select("*")
+                .eq("id", order_id).eq("user_id", user_id).maybe_single()
+            )
+            order = order_resp.data if order_resp else None
+            if not order:
+                return None
+
+            items_resp = await db_exec(
+                self.db.table("product_order_items").select("*").eq("order_id", order_id)
+            )
+            order["items"] = items_resp.data or []
+            return order
+        except Exception as e:
+            logger.error(f"Error fetching product order {order_id}: {e}")
             return None
 
     async def get_user_orders(self, user_id: str) -> List[Dict[str, Any]]:

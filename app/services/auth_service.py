@@ -510,10 +510,10 @@ class AuthService:
 
     async def send_phone_login_otp(self, phone: str, country_code: str = "91") -> Dict:
         """
-        Send OTP for phone-based login (CUSTOMERS ONLY).
+        Send OTP for phone-based login (customers and regular buyers only).
 
         Validates that the phone exists, is verified, and belongs to an active
-        customer account, then dispatches an OTP via MessageCentral.
+        customer or regular_buyer account, then dispatches an OTP via MessageCentral.
         """
         from app.utils.phone import (
             normalize_phone,
@@ -557,12 +557,13 @@ class AuthService:
             # the OTP itself is the verification (promoted in verify_phone_login_otp).
             # Blocking here only dead-ended users whose account was made with email.
 
-            # CRITICAL: Only allow customers to login via phone
-            if profile.get("user_role") != "customer":
+            # CRITICAL: Only customers and regular buyers (B2B product buyers,
+            # who generally don't have an email on file) can login via phone.
+            if profile.get("user_role") not in ("customer", "regular_buyer"):
                 logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Phone login is only available for customer accounts. Please use email login."
+                    detail="Phone login is only available for customer and regular buyer accounts. Please use email login."
                 )
 
             # Check if user is active
@@ -605,7 +606,7 @@ class AuthService:
         country_code: str = "91"
     ) -> Dict:
         """
-        Verify a login OTP and issue JWT tokens (CUSTOMERS ONLY).
+        Verify a login OTP and issue JWT tokens (customers and regular buyers only).
 
         Mirrors the email-login response shape on success.
         """
@@ -660,12 +661,12 @@ class AuthService:
             reconcile_profile_phone(self.db, profile["id"], profile.get("phone"), country_code)
             profile["phone"] = canonical_phone
 
-            # Validate user role (MUST be customer)
-            if profile.get("user_role") != "customer":
+            # Validate user role (customer or regular buyer only)
+            if profile.get("user_role") not in ("customer", "regular_buyer"):
                 logger.warning(f"Non-customer user attempted phone login: {profile.get('user_role')}")
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Phone login is only available for customer accounts."
+                    detail="Phone login is only available for customer and regular buyer accounts."
                 )
 
             # Check if user is active

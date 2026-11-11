@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from app.schemas.request.vendor import SalonUpdate
 from dataclasses import dataclass
 from app.utils.location_text import normalize_city_name
+from app.core.database import db_exec
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +104,9 @@ class SalonService:
         if not salon_ids:
             return
 
-        discounted_response = self.db.table("services").select(
+        discounted_response = await db_exec(self.db.table("services").select(
             "salon_id, price, discounted_price, discount_percentage"
-        ).in_("salon_id", salon_ids).eq("is_active", True).execute()
+        ).in_("salon_id", salon_ids).eq("is_active", True))
 
         discounted_salon_ids = set()
         max_pct_by_salon: Dict[str, float] = {}
@@ -220,7 +221,7 @@ class SalonService:
         select_query = ", ".join(select_parts)
 
         try:
-            response = self.db.table("salons").select(select_query).eq("id", salon_id).execute()
+            response = await db_exec(self.db.table("salons").select(select_query).eq("id", salon_id))
 
             # Check if we got results
             if not response.data or len(response.data) == 0:
@@ -284,9 +285,9 @@ class SalonService:
         # Default ordering
         query = query.order("created_at", desc=True)
         
-        response = query.execute()
+        response = await db_exec(query)
         salons = response.data or []
-        
+
         # Enrich salons with vendor and RM profile data
         await self._enrich_salon_profiles(salons)
         
@@ -307,15 +308,15 @@ class SalonService:
         # Fetch vendor profiles
         vendor_profiles = {}
         if vendor_ids:
-            vendor_response = self.db.table("profiles").select("id, full_name").in_("id", vendor_ids).execute()
+            vendor_response = await db_exec(self.db.table("profiles").select("id, full_name").in_("id", vendor_ids))
             vendor_profiles = {p["id"]: p for p in (vendor_response.data or [])}
-        
+
         # Fetch RM profiles with user data in single query
         rm_profiles = {}
         if rm_ids:
-            rm_response = self.db.table("rm_profiles").select(
+            rm_response = await db_exec(self.db.table("rm_profiles").select(
                 "id, employee_id, profiles(id, full_name, email)"
-            ).in_("id", rm_ids).execute()
+            ).in_("id", rm_ids))
             
             # Map RM ID to profile data
             for rm in (rm_response.data or []):
@@ -340,12 +341,12 @@ class SalonService:
             List of nearby salons with distance
         """
         # Call PostGIS function
-        response = self.db.rpc("get_nearby_salons", {
+        response = await db_exec(self.db.rpc("get_nearby_salons", {
             "user_lat": params.latitude,
             "user_lon": params.longitude,
             "radius_km": params.radius_km,
             "max_results": params.max_results
-        }).execute()
+        }))
         
         salons = response.data or []
         
@@ -356,11 +357,10 @@ class SalonService:
         if salons:
             salon_ids = [s["id"] for s in salons if s.get("id")]
             if salon_ids:
-                type_response = (
+                type_response = await db_exec(
                     self.db.table("salons")
                     .select("id, salon_type, vendor_join_requests(business_type)")
                     .in_("id", salon_ids)
-                    .execute()
                 )
                 type_rows = type_response.data or []
                 self.flatten_business_type(type_rows)
@@ -430,9 +430,9 @@ class SalonService:
         if "city" in safe_updates:
             safe_updates["city"] = normalize_city_name(safe_updates["city"])
         
-        response = self.db.table("salons").update(
+        response = await db_exec(self.db.table("salons").update(
             safe_updates
-        ).eq("id", salon_id).execute()
+        ).eq("id", salon_id))
         
         if not response.data:
             raise ValueError("Salon not found or update failed")
@@ -457,7 +457,7 @@ class SalonService:
         if reason:
             updates["deactivation_reason"] = reason
         
-        response = self.db.table("salons").update(updates).eq("id", salon_id).execute()
+        response = await db_exec(self.db.table("salons").update(updates).eq("id", salon_id))
         
         if not response.data:
             raise ValueError("Salon not found")
@@ -479,7 +479,7 @@ class SalonService:
         """
         if hard_delete:
             # Hard delete - remove from database
-            self.db.table("salons").delete().eq("id", salon_id).execute()
+            await db_exec(self.db.table("salons").delete().eq("id", salon_id))
             
             logger.warning(f"Salon {salon_id} permanently deleted")
             
@@ -521,7 +521,7 @@ class SalonService:
             .range(offset, offset + limit)
         )
 
-        response = query.execute()
+        response = await db_exec(query)
         salons = response.data or []
 
         await self._finalize_public_salons(salons)
@@ -571,8 +571,8 @@ class SalonService:
             # "show salons in <city>", so match either. postgrest 0.13.x has no
             # cross-column OR helper, so run each side and merge (dedupe by id,
             # preserve created_at desc order). Lists are small, so this is cheap.
-            name_rows = base_query().ilike("business_name", f"%{term}%").execute().data or []
-            city_rows = base_query().ilike("city", f"%{term}%").execute().data or []
+            name_rows = (await db_exec(base_query().ilike("business_name", f"%{term}%"))).data or []
+            city_rows = (await db_exec(base_query().ilike("city", f"%{term}%"))).data or []
 
             merged: Dict[str, Any] = {}
             for row in [*name_rows, *city_rows]:
@@ -585,7 +585,7 @@ class SalonService:
                 reverse=True,
             )[:limit]
         else:
-            salons = base_query().execute().data or []
+            salons = (await db_exec(base_query())).data or []
 
         await self._finalize_public_salons(salons)
 
@@ -641,7 +641,7 @@ class SalonService:
             # Highest-rated first; over-fetch a little so excluded ids don't
             # leave the section short.
             query = query.order("average_rating", desc=True).limit(remaining)
-            response = query.execute()
+            response = await db_exec(query)
             return response.data or []
 
         # Tier 1: same city.
@@ -684,20 +684,20 @@ class SalonService:
         # Get services from database with category and subcategory join.
         # service_subcategories is the DEEPEST taxonomy node the service points at
         # (a level-2 subcategory or a level-3 sub-subcategory).
-        response = self.db.table("services").select(
+        response = await db_exec(self.db.table("services").select(
             "*, service_categories(id, name, icon_url), "
             "service_subcategories(id, name, icon_url, parent_category_id, parent_subcategory_id)"
-        ).eq("salon_id", salon_id).eq("is_active", True).order("category_id").execute()
+        ).eq("salon_id", salon_id).eq("is_active", True).order("category_id"))
 
         services = response.data or []
 
-        self._attach_taxonomy_path(services)
+        await self._attach_taxonomy_path(services)
 
         logger.info(f"Retrieved {len(services)} services for salon {salon_id}")
 
         return services
 
-    def _attach_taxonomy_path(self, services: List[Dict[str, Any]]) -> None:
+    async def _attach_taxonomy_path(self, services: List[Dict[str, Any]]) -> None:
         """
         Add a normalized 3-slot ``taxonomy`` to each service so clients can group
         uniformly regardless of depth:
@@ -729,9 +729,9 @@ class SalonService:
         }
         parents_by_id = {}
         if parent_ids:
-            parents = self.db.table("service_subcategories").select(
+            parents = await db_exec(self.db.table("service_subcategories").select(
                 "id, name, icon_url"
-            ).in_("id", list(parent_ids)).execute()
+            ).in_("id", list(parent_ids)))
             parents_by_id = {p["id"]: p for p in (parents.data or [])}
 
         for s in services:

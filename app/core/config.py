@@ -126,10 +126,17 @@ class Settings(BaseSettings):
     # auth_service.py prints in its user-facing error messages.
     SUPPORT_EMAIL: str = "support@lubist.com"
 
-    # Resend (https://resend.com) is the only transport. Optional so the app
-    # still boots without it — sends then no-op with a warning instead of
-    # crashing at import, which keeps local dev usable without a real key.
+    # Resend (https://resend.com) is the only transport outside development.
+    # Optional so the app still boots without it — sends then no-op with a
+    # warning instead of crashing at import.
     RESEND_API_KEY: str = ""
+
+    # In development ENVIRONMENT, every email is routed to Mailpit's SMTP
+    # listener instead of Resend — regardless of RESEND_API_KEY — so local
+    # runs never mail a real inbox. This is `supabase start`'s inbucket
+    # container; matches supabase/config.toml's [inbucket] smtp_port.
+    MAILPIT_SMTP_HOST: str = "127.0.0.1"
+    MAILPIT_SMTP_PORT: int = 54325
 
 
     # =====================================================

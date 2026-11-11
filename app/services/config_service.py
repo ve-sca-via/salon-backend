@@ -46,6 +46,14 @@ CACHEABLE_CONFIG_KEYS = {
 
 CONVENIENCE_FEE_CONFIG_KEY = 'convenience_fee_percentage'
 
+# Registration-fee config keys, one per salon_type. A salon's own
+# custom_registration_fee_amount (if set) always wins over these - see
+# get_registration_fee_for_salon().
+REGISTRATION_FEE_CONFIG_KEYS = {
+    'salon': 'registration_fee_amount',
+    'regular_buyer': 'regular_buyer_registration_fee_amount',
+}
+
 # config_key -> (expires_at_monotonic, value)
 _config_cache: Dict[str, Tuple[float, Any]] = {}
 
@@ -96,6 +104,12 @@ AVAILABLE_SYSTEM_CONFIGS = [
         "label": "Vendor Registration Fee",
         "config_type": "number",
         "description": "The one-time registration fee charged to vendors when joining the platform. Used during checkout."
+    },
+    {
+        "config_key": "regular_buyer_registration_fee_amount",
+        "label": "Regular Buyer Registration Fee",
+        "config_type": "number",
+        "description": "The one-time registration fee charged to regular buyers (B2B product-only accounts) to unlock their dashboard. Set to 0 to waive it. Individual accounts can still be given their own price via Salons > custom fee override."
     },
     {
         "config_key": "convenience_fee_percentage",
@@ -553,6 +567,42 @@ class ConfigService:
         _cache_write(CONVENIENCE_FEE_CONFIG_KEY, percentage)
         logger.info(f"Using convenience_fee_percentage from config: {percentage}%")
         return percentage
+
+    async def get_registration_fee_for_salon(self, salon: Dict[str, Any]) -> float:
+        """
+        Resolve the one-time registration fee for a single salon/regular_buyer
+        account.
+
+        Precedence: the account's own `custom_registration_fee_amount` (set by an
+        admin for a negotiated price) always wins, including 0 for a waived fee.
+        Otherwise falls back to the global default for that salon_type -
+        `registration_fee_amount` for salons, `regular_buyer_registration_fee_amount`
+        for regular buyers.
+
+        Args:
+            salon: A salons row (or any dict with `salon_type` and optionally
+                `custom_registration_fee_amount`).
+
+        Raises:
+            ValueError: No override is set and the salon_type's global config is
+                missing or not a number - callers already refuse to guess a
+                registration fee, so this matches get_convenience_fee_percentage.
+        """
+        custom_fee = salon.get("custom_registration_fee_amount")
+        if custom_fee is not None:
+            return float(custom_fee)
+
+        salon_type = salon.get("salon_type") or "salon"
+        config_key = REGISTRATION_FEE_CONFIG_KEYS.get(salon_type, REGISTRATION_FEE_CONFIG_KEYS["salon"])
+
+        value = await self.get_config_value(config_key, default=None)
+        if value is None or value == "":
+            raise ValueError(f"Configuration '{config_key}' not found")
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Configuration '{config_key}' is not a number: {value!r}")
 
     async def get_configs_by_type(self, config_type: str) -> List[Dict[str, Any]]:
         """
