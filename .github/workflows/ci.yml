@@ -1,9 +1,11 @@
 name: CI
 
-# Only run on pull requests to main (not on pushes)
+# Run on pull requests into staging and main (not on pushes), so dev -> staging
+# is gated too and a red build never reaches staging.
 on:
   pull_request:
     branches:
+      - staging
       - main
 
 jobs:
