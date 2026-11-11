@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from app.services.geocoding import geocoding_service
 from app.services.email import email_service
 from app.services.owner_identity import find_owner_conflicts
+from app.services.config_service import ConfigService
 from app.core.auth import create_registration_token
 from app.schemas.response.vendor import VendorJoinRequestResponse
 from app.utils.location_text import normalize_city_name
@@ -63,7 +64,8 @@ class VendorApprovalService:
         self,
         request_id: str,
         admin_notes: Optional[str] = None,
-        admin_id: Optional[str] = None
+        admin_id: Optional[str] = None,
+        custom_registration_fee_amount: Optional[float] = None
     ) -> ApprovalResult:
         """
         Approve vendor join request - claims the request, creates the salon and
@@ -79,6 +81,10 @@ class VendorApprovalService:
             request_id: Vendor join request ID
             admin_notes: Optional notes from admin
             admin_id: ID of the admin who approved the request
+            custom_registration_fee_amount: Optional one-off registration fee for
+                this account, overriding the salon_type's global default (0 is a
+                valid value, for a waived fee). Stored on the salon so it keeps
+                applying to every later read/charge, not just this approval email.
 
         Returns:
             ApprovalResult with success status and salon details
@@ -114,8 +120,24 @@ class VendorApprovalService:
                 error_code="duplicate_owner",
             )
 
+        # Step 2.5: A regular_buyer's account is created right here, at approval
+        # time, with no buyer-facing step afterwards - so the RM's intake-time
+        # phone verification (see rm_service.py's
+        # _apply_regular_buyer_phone_verification) is the only proof left that
+        # the phone on file is real. Refuse to approve without it rather than
+        # creating an account nobody can get into.
+        if request_data.request_type == "regular_buyer" and not getattr(request_data, "owner_phone_verified", False):
+            return ApprovalResult(
+                success=False,
+                error="Owner phone was not verified at intake. Ask the RM to resubmit after verifying the phone number.",
+                error_code="phone_not_verified",
+            )
+
         # Step 3: Get system config (RM score, registration fee)
-        config = await self._get_approval_config()
+        config = await self._get_approval_config(
+            request_type=request_data.request_type,
+            custom_registration_fee_amount=custom_registration_fee_amount,
+        )
 
         warnings = []
 
@@ -142,7 +164,10 @@ class VendorApprovalService:
         # Step 6: Create salon. If this fails the request must go back to pending,
         # otherwise it is stuck as "approved" with no salon and no way to retry.
         try:
-            salon_id = await self._create_salon(request_id, request_data, coordinates, config)
+            salon_id = await self._create_salon(
+                request_id, request_data, coordinates, config,
+                custom_registration_fee_amount=custom_registration_fee_amount,
+            )
         except Exception as e:
             logger.error(f"Failed to create salon: {str(e)}")
             await self._release_request(request_id)
@@ -150,6 +175,18 @@ class VendorApprovalService:
 
         # Services are no longer created at approval time — vendors add their own
         # services (category / subcategory / sub-subcategory) after onboarding.
+
+        # Step 6.5: Activate the regular_buyer's account immediately - there is no
+        # self-service activation step for this role anymore. The salon itself is
+        # kept either way: a failure here is a warning, not a rollback, since
+        # geocoding/approval already did real work and the admin can retry
+        # activation separately rather than losing the whole approval.
+        if request_data.request_type == "regular_buyer":
+            try:
+                await self._activate_regular_buyer(request_id, request_data, salon_id)
+            except Exception as e:
+                logger.error(f"Failed to activate regular_buyer account for {request_id}: {str(e)}")
+                warnings.append(f"Account creation failed: {str(e)}")
 
         # Step 7: Update RM score and get new total
         rm_new_score = None
@@ -279,43 +316,52 @@ class VendorApprovalService:
 
         return model
 
-    async def _get_approval_config(self) -> Dict[str, Any]:
-        """Get RM score, penalty, and registration fee from system config"""
+    async def _get_approval_config(
+        self,
+        request_type: str = "salon",
+        custom_registration_fee_amount: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get RM score, penalty, and registration fee from system config.
+
+        The registration fee is the amount this specific account will actually
+        be charged: the admin's custom override if given, otherwise the global
+        default for `request_type` (regular_buyer has its own key - see
+        ConfigService.REGISTRATION_FEE_CONFIG_KEYS).
+        """
         # Get RM score for approval (with fallback)
         try:
             rm_score_response = self.db.table("system_config").select("config_value").eq(
                 "config_key", "rm_score_per_approval"
             ).eq("is_active", True).maybe_single().execute()
-            
+
             rm_score = int(rm_score_response.data.get("config_value", 10)) if rm_score_response.data else 10
         except Exception:
             rm_score = 10  # Default fallback
-        
+
         # Get RM penalty for rejection (with fallback)
         try:
             penalty_response = self.db.table("system_config").select("config_value").eq(
                 "config_key", "rm_rejection_penalty"
             ).eq("is_active", True).maybe_single().execute()
-            
+
             rm_penalty = abs(int(penalty_response.data.get("config_value", 5))) if penalty_response.data else 5
         except Exception:
             rm_penalty = 5  # Default fallback
-        
-        # Get registration fee (no fallback - must exist in database)
-        try:
-            fee_response = self.db.table("system_config").select("config_value").eq(
-                "config_key", "registration_fee_amount"
-            ).eq("is_active", True).maybe_single().execute()
-            
-            if not fee_response.data:
-                logger.error("CRITICAL: registration_fee_amount not found in system_config")
-                raise ValueError("Registration fee configuration missing")
-            
-            registration_fee = float(fee_response.data.get("config_value"))
-        except Exception as e:
-            logger.error(f"Failed to fetch registration fee config: {e}")
-            raise
-        
+
+        if custom_registration_fee_amount is not None:
+            registration_fee = float(custom_registration_fee_amount)
+        else:
+            # No fallback - must exist in database
+            config_service = ConfigService(db_client=self.db)
+            try:
+                registration_fee = await config_service.get_registration_fee_for_salon(
+                    {"salon_type": request_type}
+                )
+            except Exception as e:
+                logger.error(f"Failed to fetch registration fee config: {e}")
+                raise
+
         return {
             "rm_score": rm_score,
             "rm_rejection_penalty": rm_penalty,
@@ -420,9 +466,12 @@ class VendorApprovalService:
         request_id: str,
         request_data: VendorJoinRequestResponse,
         coordinates: Dict[str, float],
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        custom_registration_fee_amount: Optional[float] = None
     ) -> str:
         """Create salon entry in database"""
+        fee_waived = config.get("registration_fee") == 0
+
         # Extract documents JSON
         documents = request_data.documents or {}
         if isinstance(documents, str):
@@ -526,8 +575,12 @@ class VendorApprovalService:
             "business_hours": business_hours,
             "facilities": getattr(request_data, "facilities", None) or documents.get("facilities", None),
             "salon_type": getattr(request_data, "request_type", "salon"),
-            "registration_fee_paid": False,
-            "is_active": False,
+            "custom_registration_fee_amount": custom_registration_fee_amount,
+            # A 0 registration fee is a waived fee, not a fee to collect via
+            # Razorpay - there's nothing to pay, so skip the payment gate
+            # entirely instead of sending the vendor to a ₹0 checkout.
+            "registration_fee_paid": fee_waived,
+            "is_active": fee_waived,
             "is_verified": False
         }
         
@@ -538,9 +591,196 @@ class VendorApprovalService:
         
         salon_id = response.data[0]["id"]
         logger.info(f"Salon created: {salon_id}")
-        
+        if fee_waived:
+            logger.info(f"Registration fee waived for salon {salon_id} - activated without payment")
+
         return salon_id
-    
+
+    async def _find_orphaned_buyer_auth_user(self, local_phone: str, synthetic_email: str) -> Optional[str]:
+        """
+        Look up the Supabase auth user blocking `_activate_regular_buyer`'s
+        create_user call, and return its id only if it has no matching
+        `profiles` row (i.e. a leftover from a previous failed attempt, safe to
+        delete and retry). Returns None - and `create_user`'s original error
+        should stand - for a real account, or if the lookup itself fails.
+        """
+        import httpx
+        from app.core.config import settings
+
+        url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/admin/users"
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=headers, params={"filter": local_phone})
+            if response.status_code != 200:
+                logger.warning(f"Orphaned-auth-user lookup failed: {response.status_code} {response.text}")
+                return None
+
+            users = response.json().get("users", [])
+        except Exception as exc:
+            logger.warning(f"Orphaned-auth-user lookup errored: {exc}")
+            return None
+
+        candidate = next(
+            (u for u in users if u.get("email") == synthetic_email or local_phone in str(u.get("phone") or "")),
+            None,
+        )
+        if not candidate:
+            return None
+
+        user_id = candidate.get("id")
+        if not user_id:
+            return None
+
+        profile_response = self.db.table("profiles").select("id").eq("id", user_id).maybe_single().execute()
+        if profile_response and profile_response.data:
+            # A profile exists - this is a live account, not an orphan.
+            return None
+
+        return user_id
+
+    async def _activate_regular_buyer(
+        self,
+        request_id: str,
+        request_data: VendorJoinRequestResponse,
+        salon_id: str,
+    ) -> str:
+        """
+        Create the buyer's Supabase auth user + profile and claim the salon,
+        right at approval - regular_buyer has no self-service activation step
+        anymore (the RM already verified the phone at intake; see
+        VendorJoinRequestBase.owner_phone_verification_token). Mirrors
+        VendorService.complete_registration's auth-user -> profile -> salon-link
+        sequence and cleanup order, minus the OTP check (already done at intake)
+        and minus issuing JWT tokens (nobody is waiting in a browser for them -
+        the admin triggered this, not the buyer).
+
+        Raises on any failure; the caller treats that as a warning, not a
+        rollback of the salon that was just created.
+        """
+        from app.services.vendor_service import VendorService, _is_duplicate_email_error
+        from app.utils.phone import normalize_phone, split_e164, mask_phone
+        import secrets
+
+        normalized_phone = normalize_phone(request_data.owner_phone)
+        if not normalized_phone:
+            raise Exception(f"Invalid owner phone on request {request_id}")
+        _, local_phone = split_e164(normalized_phone)
+        synthetic_email = f"buyer.{local_phone}@phone.lubist.internal"
+        random_password = secrets.token_urlsafe(24)
+
+        vendor_service = VendorService(db_client=self.db)
+
+        auth_user_created = False
+        try:
+            auth_response = self.db.auth.admin.create_user({
+                "phone": normalized_phone,
+                "phone_confirm": True,
+                "email": synthetic_email,
+                "email_confirm": True,
+                "password": random_password,
+                "user_metadata": {"role": "regular_buyer", "full_name": request_data.owner_name},
+            })
+            auth_user_created = True
+        except Exception as auth_error:
+            if not _is_duplicate_email_error(auth_error):
+                raise
+
+            # "Duplicate" here almost always means a PREVIOUS activation attempt
+            # for this same phone created the auth user, then failed one step
+            # later (profile insert / salon link) and its own cleanup never ran
+            # (process crash, transient DB error) - leaving an orphan with no
+            # profile that permanently blocks every future attempt for this
+            # phone. Reclaim it (delete + recreate) rather than leaving the
+            # phone stuck forever. A real duplicate (the phone/synthetic email
+            # already belongs to a *live* account with a profile) still raises.
+            orphan_id = await self._find_orphaned_buyer_auth_user(local_phone, synthetic_email)
+            if not orphan_id:
+                raise Exception("An account already exists for this phone number") from auth_error
+
+            logger.warning(
+                f"Reclaiming orphaned auth user {orphan_id} for phone "
+                f"{mask_phone(normalized_phone)} (no profile row) before retrying activation "
+                f"for request {request_id}"
+            )
+            self.db.auth.admin.delete_user(orphan_id)
+
+            try:
+                auth_response = self.db.auth.admin.create_user({
+                    "phone": normalized_phone,
+                    "phone_confirm": True,
+                    "email": synthetic_email,
+                    "email_confirm": True,
+                    "password": random_password,
+                    "user_metadata": {"role": "regular_buyer", "full_name": request_data.owner_name},
+                })
+                auth_user_created = True
+            except Exception as retry_error:
+                raise Exception("An account already exists for this phone number") from retry_error
+
+        if hasattr(auth_response, "user") and auth_response.user:
+            user_id = auth_response.user.id
+        elif isinstance(auth_response, dict) and "user" in auth_response:
+            user_id = auth_response["user"]["id"]
+        else:
+            raise Exception("Auth user creation returned no user id")
+
+        try:
+            await vendor_service.create_vendor_profile(
+                user_id=user_id,
+                email=synthetic_email,
+                full_name=request_data.owner_name,
+                age=request_data.owner_age,
+                gender=request_data.owner_gender,
+                user_role="regular_buyer",
+                phone=normalized_phone,
+                phone_verified=True,
+            )
+        except Exception:
+            if auth_user_created:
+                try:
+                    self.db.auth.admin.delete_user(user_id)
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to cleanup auth user {user_id}: {cleanup_error}")
+            raise
+
+        try:
+            await vendor_service.link_vendor_to_salon(user_id=user_id, salon_id=salon_id)
+        except Exception:
+            try:
+                self.db.auth.admin.delete_user(user_id)
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup auth user {user_id}: {cleanup_error}")
+            try:
+                self.db.table("profiles").delete().eq("id", user_id).execute()
+            except Exception as cleanup_error:
+                logger.error(f"Failed to cleanup profile {user_id}: {cleanup_error}")
+            raise
+
+        logger.info(f"regular_buyer account {user_id} activated and linked to salon {salon_id}")
+
+        try:
+            from app.services.activity_log_service import ActivityLogService
+            await ActivityLogService.log(
+                user_id=user_id,
+                action="regular_buyer_account_activated",
+                entity_type="vendor",
+                entity_id=user_id,
+                details={
+                    "phone": mask_phone(normalized_phone),
+                    "salon_id": salon_id,
+                    "request_id": request_id,
+                },
+            )
+        except Exception as log_error:
+            logger.warning(f"Failed to log buyer activation activity: {log_error}")
+
+        return user_id
+
     async def _send_approval_email(
         self,
         request_id: str,
@@ -550,8 +790,16 @@ class VendorApprovalService:
         rm_email: Optional[str] = None
     ) -> bool:
         """Send approval email to vendor with registration link"""
+        is_regular_buyer = getattr(request_data, "request_type", "salon") == "regular_buyer"
+
         if not request_data.owner_email:
-            logger.error(f"Request {request_id} has no owner email - cannot send approval email")
+            # regular_buyer owners generally have no email on file at all (the
+            # account is already active via phone - see _activate_regular_buyer).
+            # That's expected, not an error.
+            if is_regular_buyer:
+                logger.info(f"Request {request_id} (regular_buyer) has no owner email - nothing to send")
+            else:
+                logger.error(f"Request {request_id} has no owner email - cannot send approval email")
             return False
 
         # Skip if owner email is same as RM email (testing scenario). NOTE: the RM
@@ -561,6 +809,28 @@ class VendorApprovalService:
         if rm_email and request_data.owner_email.lower() == rm_email.lower():
             logger.info(f"Skipping vendor email - owner is the RM ({request_data.owner_email})")
             return True
+
+        # regular_buyer has no self-service registration step left to link to -
+        # the account was already created at approval time. Send a plain
+        # "you're in, log in with your phone" notice instead.
+        if is_regular_buyer:
+            email_sent = await email_service.send_buyer_account_activated_email(
+                to_email=request_data.owner_email,
+                owner_name=request_data.owner_name,
+                salon_name=request_data.business_name,
+                registration_fee=config["registration_fee"],
+                salon_id=salon_id
+            )
+
+            if email_sent:
+                logger.info(f"Account-activated email sent to {request_data.owner_email}")
+            else:
+                logger.error(
+                    f"Failed to send account-activated email to {request_data.owner_email} "
+                    f"(request {request_id}, salon {salon_id})"
+                )
+
+            return email_sent
 
         # Generate registration token
         registration_token = create_registration_token(

@@ -84,12 +84,11 @@ class VendorService:
                 )
             
             salon_data = response.data[0]
-            
-            # Add registration fee amount from system config
+
+            # Add registration fee amount: this salon's own override if an admin
+            # set one, else the salon_type-specific system config default.
             try:
-                registration_fee_config = await self.config_service.get_config("registration_fee_amount")
-                config_value = registration_fee_config.get("config_value")
-                salon_data["registration_fee_amount"] = float(config_value)
+                salon_data["registration_fee_amount"] = await self.config_service.get_registration_fee_for_salon(salon_data)
             except Exception as e:
                 logger.error(f"CRITICAL: Failed to fetch registration fee config from database: {e}")
                 raise HTTPException(
@@ -767,18 +766,23 @@ class VendorService:
         full_name: str,
         age: int,
         gender: str,
-        user_role: str = "vendor"
+        user_role: str = "vendor",
+        phone: Optional[str] = None,
+        phone_verified: bool = False
     ) -> Dict[str, Any]:
         """
         Create vendor profile in profiles table.
-        
+
         Args:
             user_id: User ID from Supabase auth
             email: Vendor email
             full_name: Vendor full name
             age: Vendor age (18-120)
             gender: Vendor gender (male, female, other)
-            
+            phone: Vendor phone in E.164, if this account was created via the
+                phone-OTP buyer activation flow
+            phone_verified: Whether `phone` has already been proven via OTP
+
         Returns:
             Created profile data
         """
@@ -788,7 +792,7 @@ class VendorService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid gender. Must be 'male', 'female', or 'other'."
             )
-        
+
         profile_data = {
             "id": user_id,
             "email": email,
@@ -798,11 +802,16 @@ class VendorService:
             "user_role": user_role,
             "is_active": True
         }
-        
+        if phone:
+            profile_data["phone"] = phone
+            profile_data["phone_verified"] = phone_verified
+            if phone_verified:
+                profile_data["phone_verification_method"] = "otp"
+
         response = self.db.table("profiles").insert(profile_data).execute()
-        
+
         logger.info(f"Vendor profile created for {email}")
-        
+
         return response.data[0] if response.data else profile_data
     
     async def link_vendor_to_salon(
@@ -826,12 +835,12 @@ class VendorService:
         }
         
         response = self.db.table("salons").update(update_data).eq("id", salon_id).execute()
-        
+
         logger.info(f"Vendor {user_id} linked to salon {salon_id}")
         logger.info("Salon automatically verified upon vendor registration")
-        
+
         return response.data[0] if response.data else update_data
-    
+
     async def process_vendor_payment(
         self,
         vendor_id: str

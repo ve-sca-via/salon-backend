@@ -37,7 +37,7 @@ from .request.booking import (
 from .request.vendor import (
     CompleteRegistrationRequest, VendorJoinRequestBase, VendorJoinRequestCreate, VendorJoinRequestUpdate,
     VendorApprovalRequest, VendorRejectionRequest, SalonBase, SalonCreate, SalonUpdate,
-    ServiceCreate, ServiceUpdate, SalonPromoApplyRequest
+    ServiceCreate, ServiceUpdate, SalonPromoApplyRequest,
 )
 from .request.payment import (
     PaymentVerification, CartOrderCreate
@@ -82,7 +82,7 @@ from .response.vendor import (
     CompleteRegistrationResponse, VendorAnalyticsResponse,
     PublicSalonsResponse, SalonDetailResponse, AvailableSlotsResponse,
     SearchSalonsResponse, SalonServicesResponse,
-    PublicConfigResponse, ImageUploadResponse
+    PublicConfigResponse, ImageUploadResponse,
 )
 from .response.booking import (
     BookingResponse

@@ -463,7 +463,8 @@ async def get_public_configs(db: Client = Depends(get_db_client)):
             "convenience_fee_percentage",
             "cancellation_window_hours",
             "max_booking_advance_days",
-            "registration_fee_amount"  # Vendor registration fee
+            "registration_fee_amount",  # Vendor registration fee
+            "regular_buyer_registration_fee_amount"  # Regular buyer registration fee
         ]
         
         # Fetch all configs and filter to public ones

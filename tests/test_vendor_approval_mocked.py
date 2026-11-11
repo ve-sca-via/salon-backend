@@ -207,9 +207,36 @@ class _Table:
         return _Query(self).delete()
 
 
+class _FakeAuthAdmin:
+    """Supabase Auth Admin stand-in for regular_buyer account creation at
+    approval time (VendorApprovalService._activate_regular_buyer)."""
+
+    def __init__(self, raise_on_create=None, fail_first_n_creates=0):
+        self._raise_on_create = raise_on_create
+        self._fail_first_n_creates = fail_first_n_creates
+        self.created = []
+        self.deleted = []
+
+    def create_user(self, payload):
+        if self._raise_on_create:
+            raise self._raise_on_create
+        if self._fail_first_n_creates > 0:
+            self._fail_first_n_creates -= 1
+            raise Exception("user_already_exists: A user with this phone number has already been registered")
+        user_id = str(uuid.uuid4())
+        self.created.append({"id": user_id, **payload})
+        from types import SimpleNamespace
+        return SimpleNamespace(user=SimpleNamespace(id=user_id))
+
+    def delete_user(self, user_id):
+        self.deleted.append(user_id)
+
+
 class FakeSupabase:
     def __init__(self):
         self._tables = {}
+        from types import SimpleNamespace
+        self.auth = SimpleNamespace(admin=_FakeAuthAdmin())
 
     def table(self, name):
         return self._tables.setdefault(name, _Table(self))
@@ -250,7 +277,13 @@ class Handle:
         self.client = TestClient(app, raise_server_exceptions=False)
 
     # --- seeding ---
-    def seed_config(self, *, rm_score="10", penalty="5", fee="500"):
+    def seed_config(self, *, rm_score="10", penalty="5", fee="500", regular_buyer_fee=None):
+        # regular_buyer_fee defaults to `fee` - mirrors the migration that seeds
+        # regular_buyer_registration_fee_amount from whatever registration_fee_amount
+        # was already set to.
+        if regular_buyer_fee is None:
+            regular_buyer_fee = fee
+
         rows = self.db.table("system_config").rows
         if rm_score is not None:
             rows.append({"id": str(uuid.uuid4()), "config_key": "rm_score_per_approval",
@@ -261,6 +294,9 @@ class Handle:
         if fee is not None:
             rows.append({"id": str(uuid.uuid4()), "config_key": "registration_fee_amount",
                          "config_value": fee, "is_active": True})
+        if regular_buyer_fee is not None:
+            rows.append({"id": str(uuid.uuid4()), "config_key": "regular_buyer_registration_fee_amount",
+                         "config_value": regular_buyer_fee, "is_active": True})
 
     def seed_rm(self, rm_id, *, full_name="Alice RM", email="rm@example.com"):
         self.db.table("profiles").rows.append({
@@ -391,6 +427,29 @@ def test_approve_happy(va):
     kinds = {k for k, _ in va.spy.emails}
     assert {"vendor_approval", "rm_approved"} <= kinds
     assert len(va.spy.tokens) == 1
+
+
+def test_approve_with_waived_fee_activates_immediately(va):
+    """
+    A 0 custom_registration_fee_amount means there's nothing to charge, so the
+    salon must come out of approval already active and paid - not sent through
+    a ₹0 Razorpay checkout it would never clear the payment gate without.
+    """
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = va.seed_request(rm_id, latitude=12.97, longitude=77.59)
+
+    r = va.client.post(
+        f"{VREQS}/{req['id']}/approve",
+        json={"admin_notes": "Waived as a favor", "custom_registration_fee_amount": 0},
+    )
+    assert r.status_code == 200, r.text
+    salon_id = r.json()["data"]["salon_id"]
+
+    salon = next(s for s in va.db.table("salons").rows if s["id"] == salon_id)
+    assert salon["custom_registration_fee_amount"] == 0
+    assert salon["is_active"] is True and salon["registration_fee_paid"] is True
 
 
 def test_approve_refuses_an_owner_email_that_is_the_rms_own(va):
@@ -708,3 +767,151 @@ def test_resend_approval_email_requires_admin(va):
     va.logout()
     r = va.client.post(f"{VREQS}/{uuid.uuid4()}/resend-approval-email")
     assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# regular_buyer approval: account is activated immediately, no self-service
+# step - but only if the RM verified the phone at intake (see
+# rm_service.py's _apply_regular_buyer_phone_verification).
+# =====================================================================
+def _seed_regular_buyer_request(va, rm_id, *, verified=True, **over):
+    return va.seed_request(
+        rm_id,
+        request_type="regular_buyer",
+        owner_email=None,
+        owner_age=30,
+        owner_gender="male",
+        owner_phone_verified=verified,
+        owner_phone="+919876543210",
+        **over,
+    )
+
+
+def test_approve_regular_buyer_blocked_when_phone_not_verified(va):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _seed_regular_buyer_request(va, rm_id, verified=False)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
+    assert r.status_code == 400, r.text
+
+    # refused before claiming the request - still pending, retryable
+    assert va.db.table("vendor_join_requests").rows[0]["status"] == "pending"
+    assert va.db.table("salons").rows == []
+
+
+def test_approve_regular_buyer_activates_account_immediately(va):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _seed_regular_buyer_request(va, rm_id, latitude=12.97, longitude=77.59)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
+    assert r.status_code == 200, r.text
+    salon_id = r.json()["data"]["salon_id"]
+
+    salon = next(s for s in va.db.table("salons").rows if s["id"] == salon_id)
+    assert salon["vendor_id"], "account should be linked at approval time, not left NULL"
+    assert salon["is_verified"] is True
+
+    auth_admin = va.db.auth.admin
+    assert len(auth_admin.created) == 1
+    user_id = auth_admin.created[0]["id"]
+    assert user_id == salon["vendor_id"]
+
+    profile = next(p for p in va.db.table("profiles").rows if p["id"] == user_id)
+    assert profile["user_role"] == "regular_buyer"
+    assert profile["phone_verified"] is True
+    assert profile["age"] == 30
+    assert profile["gender"] == "male"
+
+    # no self-service flow left to wait on - no JWTs are minted here
+    assert "access_token" not in r.json()["data"]
+
+
+def test_approve_regular_buyer_profile_failure_rolls_back_auth_user_but_keeps_salon(va, monkeypatch):
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _seed_regular_buyer_request(va, rm_id)
+
+    from app.services.vendor_service import VendorService
+
+    async def failing_create_vendor_profile(self, **kwargs):
+        raise Exception("profile insert failed")
+    monkeypatch.setattr(VendorService, "create_vendor_profile", failing_create_vendor_profile)
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
+    assert r.status_code == 200, r.text
+    body = r.json()["data"]
+    assert body["salon_id"], "salon is kept even though activation failed"
+    assert any("Account creation failed" in w for w in (body.get("warnings") or []))
+
+    auth_admin = va.db.auth.admin
+    assert len(auth_admin.created) == 1
+    assert auth_admin.deleted == [auth_admin.created[0]["id"]], "the auth user created just before the failure is cleaned up"
+
+
+def test_approve_regular_buyer_reclaims_orphaned_auth_user(va, monkeypatch):
+    """
+    create_user fails with "duplicate" because a PREVIOUS attempt for this same
+    phone left an auth user behind with no profile (its own cleanup never ran).
+    That's reclaimable: delete the orphan and retry once, instead of leaving the
+    phone permanently stuck.
+    """
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _seed_regular_buyer_request(va, rm_id, latitude=12.97, longitude=77.59)
+
+    orphan_id = str(uuid.uuid4())
+
+    async def fake_find_orphan(self, local_phone, synthetic_email):
+        return orphan_id
+    monkeypatch.setattr(
+        approval_mod.VendorApprovalService, "_find_orphaned_buyer_auth_user", fake_find_orphan
+    )
+
+    va.db.auth.admin._fail_first_n_creates = 1
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
+    assert r.status_code == 200, r.text
+    body = r.json()["data"]
+    assert not body.get("warnings"), "the retry should succeed, not just warn"
+
+    auth_admin = va.db.auth.admin
+    assert auth_admin.deleted == [orphan_id], "the orphan is deleted before retrying"
+    assert len(auth_admin.created) == 1, "exactly one auth user survives: the retry"
+
+    salon = next(s for s in va.db.table("salons").rows if s["id"] == body["salon_id"])
+    assert salon["vendor_id"] == auth_admin.created[0]["id"]
+
+
+def test_approve_regular_buyer_real_duplicate_still_blocked(va, monkeypatch):
+    """
+    When the account blocking create_user actually has a profile (a real,
+    live account - not an orphan), activation must still fail rather than
+    deleting someone else's account.
+    """
+    rm_id = str(uuid.uuid4())
+    va.seed_config()
+    va.seed_rm(rm_id)
+    req = _seed_regular_buyer_request(va, rm_id)
+
+    async def fake_find_orphan(self, local_phone, synthetic_email):
+        return None
+    monkeypatch.setattr(
+        approval_mod.VendorApprovalService, "_find_orphaned_buyer_auth_user", fake_find_orphan
+    )
+
+    va.db.auth.admin._fail_first_n_creates = 1
+
+    r = va.client.post(f"{VREQS}/{req['id']}/approve", json={"admin_notes": "ok"})
+    assert r.status_code == 200, r.text
+    body = r.json()["data"]
+    assert any("Account creation failed" in w for w in (body.get("warnings") or []))
+
+    auth_admin = va.db.auth.admin
+    assert auth_admin.deleted == [], "nothing gets deleted when it isn't an orphan"
+    assert auth_admin.created == [], "no retry when the lookup says it's a real account"

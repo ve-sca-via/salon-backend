@@ -48,10 +48,13 @@ class _Query:
         self._filters = []          # list of (op, col, val)
         self._op = ("select", "*")
         self._single = False
+        self._maybe_single = False
         self._order = []
+        self._count = False
 
     def select(self, cols="*", count=None):
         self._op = ("select", cols)
+        self._count = count == "exact"
         return self
 
     def insert(self, payload):
@@ -70,6 +73,10 @@ class _Query:
         self._filters.append(("eq", col, val))
         return self
 
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
     def in_(self, col, vals):
         self._filters.append(("in", col, list(vals)))
         return self
@@ -82,10 +89,16 @@ class _Query:
         self._single = True
         return self
 
+    def maybe_single(self):
+        self._maybe_single = True
+        return self
+
     def _match(self, row):
         for op, c, v in self._filters:
             rv = row.get(c)
             if op == "eq" and rv != v:
+                return False
+            if op == "neq" and rv == v:
                 return False
             if op == "in" and rv not in v:
                 return False
@@ -103,7 +116,11 @@ class _Query:
                 if len(matched) != 1:
                     raise Exception("PGRST116: results contain 0 or multiple rows")
                 return _Resp(matched[0])
-            return _Resp(matched)
+            if self._maybe_single:
+                if len(matched) > 1:
+                    raise Exception("PGRST116: results contain multiple rows")
+                return _Resp(matched[0] if matched else None)
+            return _Resp(matched, count=len(matched) if self._count else None)
 
         if op == "insert":
             new_rows = payload if isinstance(payload, list) else [payload]
@@ -149,12 +166,103 @@ class _Table:
         return _Query(self).delete()
 
 
+class _Rpc:
+    """Understands `decrement_product_stock` and `redeem_product_coupon` — the
+    two RPCs this module calls. Mirrors migrations 20261103000000 and
+    20261104000000's behaviour against the fake's in-memory tables."""
+
+    def __init__(self, db, fn_name, params):
+        self.db = db
+        self.fn_name = fn_name
+        self.params = params
+
+    def execute(self):
+        if self.fn_name == "decrement_product_stock":
+            return self._decrement_product_stock()
+        if self.fn_name == "redeem_product_coupon":
+            return self._redeem_product_coupon()
+        raise Exception(f"FakeSupabase.rpc: unknown function {self.fn_name!r}")
+
+    def _decrement_product_stock(self):
+        order_id = self.params["p_order_id"]
+        order = next(
+            (o for o in self.db.table("product_orders").rows if o["id"] == order_id), None
+        )
+        if not order or order.get("stock_decremented"):
+            return _Resp(False)
+
+        items = [i for i in self.db.table("product_order_items").rows if i["order_id"] == order_id]
+        products = self.db.table("products").rows
+
+        # Validate everything before mutating anything, simulating the real
+        # function's single transaction (raise rolls back the whole thing).
+        for item in items:
+            product = next((p for p in products if p["id"] == item["product_id"]), None)
+            if not product or (product.get("stock_quantity") or 0) < item["quantity"]:
+                raise Exception(f"insufficient_stock_for_product_{item['product_id']}")
+
+        for item in items:
+            product = next(p for p in products if p["id"] == item["product_id"])
+            product["stock_quantity"] = product["stock_quantity"] - item["quantity"]
+
+        order["stock_decremented"] = True
+        return _Resp(True)
+
+    def _redeem_product_coupon(self):
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        coupon_id = self.params["p_coupon_id"]
+        user_id = self.params["p_user_id"]
+        order_id = self.params["p_product_order_id"]
+        discount_amount = self.params["p_discount_amount"]
+
+        redemptions = self.db.table("coupon_redemptions").rows
+        existing = next(
+            (r for r in redemptions if r["coupon_id"] == coupon_id and r.get("product_order_id") == order_id),
+            None,
+        )
+        if existing:
+            return _Resp([{"success": True, "reason": "already_redeemed", "was_already_redeemed": True}])
+
+        coupon = next((c for c in self.db.table("coupons").rows if c["id"] == coupon_id), None)
+        if not coupon:
+            return _Resp([{"success": False, "reason": "coupon_not_found", "was_already_redeemed": False}])
+        if not coupon.get("is_active", True):
+            return _Resp([{"success": False, "reason": "coupon_inactive", "was_already_redeemed": False}])
+        if coupon.get("applies_to") != "product" or coupon.get("scope") != "platform":
+            return _Resp([{"success": False, "reason": "not_applicable_to_products", "was_already_redeemed": False}])
+
+        total_limit = coupon.get("usage_limit_total")
+        if total_limit is not None and (coupon.get("used_count") or 0) >= total_limit:
+            return _Resp([{"success": False, "reason": "total_limit_reached", "was_already_redeemed": False}])
+
+        per_user_limit = coupon.get("usage_limit_per_user")
+        if per_user_limit is not None:
+            user_redemptions = len([r for r in redemptions if r["coupon_id"] == coupon_id and r["user_id"] == user_id])
+            if user_redemptions >= per_user_limit:
+                return _Resp([{"success": False, "reason": "per_user_limit_reached", "was_already_redeemed": False}])
+
+        redemptions.append({
+            "id": str(_uuid.uuid4()), "coupon_id": coupon_id, "user_id": user_id,
+            "product_order_id": order_id, "discount_amount": discount_amount,
+            "gross_discount": discount_amount, "coupon_code": coupon.get("code"),
+            "funded_by": coupon.get("funded_by"), "scope": coupon.get("scope"),
+            "redeemed_at": _dt.utcnow().isoformat(),
+        })
+        coupon["used_count"] = (coupon.get("used_count") or 0) + 1
+        return _Resp([{"success": True, "reason": "redeemed", "was_already_redeemed": False}])
+
+
 class FakeSupabase:
     def __init__(self):
         self._tables = {}
 
     def table(self, name):
         return self._tables.setdefault(name, _Table())
+
+    def rpc(self, fn_name, params):
+        return _Rpc(self, fn_name, params)
 
 
 # =====================================================================
@@ -222,6 +330,40 @@ class Handle:
         }
         row.update(fields)
         self.db.table("product_order_items").rows.append(row)
+        return row
+
+    def seed_coupon(self, **fields):
+        row = {
+            "id": fields.pop("id", str(uuid.uuid4())),
+            "code": "SAVE20",
+            "title": "20% off products",
+            "scope": "platform",
+            "salon_id": None,
+            "funded_by": "platform",
+            "applies_to": "product",
+            "discount_type": "percentage",
+            "discount_value": 20,
+            "max_discount_cap": None,
+            "min_order_amount": None,
+            "first_time_scope": None,
+            "usage_limit_total": None,
+            "usage_limit_per_user": 1,
+            "used_count": 0,
+            "valid_from": None,
+            "valid_until": None,
+            "is_active": True,
+        }
+        row.update(fields)
+        self.db.table("coupons").rows.append(row)
+        return row
+
+    def seed_salon(self, vendor_id, **fields):
+        row = {
+            "id": str(uuid.uuid4()), "vendor_id": vendor_id,
+            "registration_fee_paid": True, "registration_fee_amount": 5000.0,
+        }
+        row.update(fields)
+        self.db.table("salons").rows.append(row)
         return row
 
     def login_as(self, user_id="u1", role="customer"):
@@ -350,6 +492,84 @@ def test_create_order_requires_auth(od):
     assert r.status_code in (401, 403), r.text
 
 
+def test_create_order_insufficient_stock_is_400(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0, stock_quantity=1)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=2))
+    assert r.status_code == 400, r.text
+    assert "stock" in r.json()["message"].lower()
+    # Rejected before any order row was created.
+    assert od.db.table("product_orders").rows == []
+
+
+def test_create_order_inactive_product_is_400(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0, stock_quantity=10, is_active=False)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 400, r.text
+    assert "no longer available" in r.json()["message"].lower()
+    # Rejected before any order row was created.
+    assert od.db.table("product_orders").rows == []
+
+
+def test_create_order_allows_exact_remaining_stock(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0, stock_quantity=2)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=2))
+    assert r.status_code == 200, r.text
+
+
+def test_create_order_blocked_when_registration_fee_unpaid(od):
+    od.seed_profile("v1", role="vendor")
+    od.seed_salon("v1", registration_fee_paid=False, registration_fee_amount=2500.0)
+    p = od.seed_product(price=1000.0)
+    od.login_as("v1", role="vendor")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 403, r.text
+    assert "registration payment" in r.json()["message"].lower()
+    assert "2,500" in r.json()["message"]
+    assert od.db.table("product_orders").rows == []
+
+
+def test_create_order_allowed_when_registration_fee_paid(od):
+    od.seed_profile("v1", role="vendor")
+    od.seed_salon("v1", registration_fee_paid=True)
+    p = od.seed_product(price=1000.0)
+    od.login_as("v1", role="vendor")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 200, r.text
+
+
+def test_create_order_allowed_when_b2b_user_has_no_salon_row(od):
+    # Fail open: an inconsistent account state (B2B role, no salon row at all)
+    # isn't a reason to block every order. Also covers regular_buyer, not just
+    # vendor.
+    od.seed_profile("b1", role="regular_buyer")
+    p = od.seed_product(price=1000.0)
+    od.login_as("b1", role="regular_buyer")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 200, r.text
+
+
+def test_create_order_registration_fee_check_skipped_for_customers(od):
+    # A plain customer role has no salon at all — the B2B gate must not run for it.
+    od.seed_profile("u1", role="customer")
+    p = od.seed_product(price=1000.0)
+    od.login_as("u1", role="customer")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 200, r.text
+
+
 # =====================================================================
 # POST /product-orders/verify
 # =====================================================================
@@ -394,6 +614,42 @@ def test_verify_payment_requires_auth(od):
     assert r.status_code in (401, 403), r.text
 
 
+def test_verify_payment_decrements_stock_exactly_once(od):
+    order = od.seed_order("u1", razorpay_order_id="order_x")
+    p = od.seed_product(stock_quantity=10)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=3)
+    od.login_as("u1")
+    FakeRazorpay.valid = True
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert od.db.table("products").rows[0]["stock_quantity"] == 7
+    assert od.db.table("product_orders").rows[0]["stock_decremented"] is True
+
+    # A second confirmation of the same already-paid order (retry after a
+    # dropped response, say) must not decrement a second time.
+    r2 = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r2.status_code == 200, r2.text
+    assert od.db.table("products").rows[0]["stock_quantity"] == 7
+
+
+def test_verify_payment_oversell_race_still_confirms_order(od):
+    # Payment is already captured by the time stock is checked, so a genuine
+    # oversell race (stock changed between order creation and confirmation)
+    # must not block marking the order paid — there's no way to un-charge the
+    # buyer from here. It's logged, not raised.
+    order = od.seed_order("u1", razorpay_order_id="order_x")
+    p = od.seed_product(stock_quantity=1)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=3)
+    od.login_as("u1")
+    FakeRazorpay.valid = True
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert r.json()["success"] is True
+    assert od.db.table("products").rows[0]["stock_quantity"] == 1  # untouched
+
+
 # =====================================================================
 # POST /product-orders/dev-verify/{order_id}
 # =====================================================================
@@ -428,6 +684,59 @@ def test_dev_verify_blocked_in_production(od, monkeypatch):
 def test_dev_verify_requires_auth(od):
     r = od.client.post(f"{ORDERS}/dev-verify/{uuid.uuid4()}")
     assert r.status_code in (401, 403), r.text
+
+
+def test_dev_verify_decrements_stock(od):
+    order = od.seed_order("u1")
+    p = od.seed_product(stock_quantity=5)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=2)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/dev-verify/{order['id']}")
+    assert r.status_code == 200, r.text
+    assert od.db.table("products").rows[0]["stock_quantity"] == 3
+
+
+# =====================================================================
+# GET /product-orders/{order_id}
+# =====================================================================
+def test_get_order_by_id_happy(od):
+    order = od.seed_order("u1")
+    od.seed_order_item(order["id"], product_name="Serum A")
+    od.login_as("u1")
+
+    r = od.client.get(f"{ORDERS}/{order['id']}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == order["id"]
+    assert body["items"][0]["product_name"] == "Serum A"
+
+
+def test_get_order_by_id_404_for_another_users_order(od):
+    order = od.seed_order("u1")
+    od.login_as("u2")
+
+    r = od.client.get(f"{ORDERS}/{order['id']}")
+    assert r.status_code == 404, r.text
+
+
+def test_get_order_by_id_404_when_missing(od):
+    od.login_as("u1")
+    r = od.client.get(f"{ORDERS}/{uuid.uuid4()}")
+    assert r.status_code == 404, r.text
+
+
+def test_get_order_by_id_requires_auth(od):
+    r = od.client.get(f"{ORDERS}/{uuid.uuid4()}")
+    assert r.status_code in (401, 403), r.text
+
+
+def test_get_order_by_id_does_not_shadow_my_orders(od):
+    # /{order_id} is registered after /my-orders specifically so this keeps working.
+    od.login_as("u1")
+    r = od.client.get(f"{ORDERS}/my-orders")
+    assert r.status_code == 200, r.text
+    assert r.json() == []
 
 
 # =====================================================================
@@ -516,3 +825,185 @@ def test_admin_update_status_not_found_is_404(od):
 def test_admin_update_status_requires_admin(od):
     r = od.client.patch(f"{ADMIN_ORDERS}/{uuid.uuid4()}/status", json={"status": "shipped"})
     assert r.status_code in (401, 403), r.text
+
+
+# =====================================================================
+# Coupon support (migration 20261104000000_add_product_order_coupon_support.sql)
+# =====================================================================
+def test_create_order_with_valid_coupon_applies_discount(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0)
+    od.seed_coupon(code="SAVE20", discount_type="percentage", discount_value=20)
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=1, coupon_code="save20"),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["order"]["subtotal"] == 1000.0
+    assert body["order"]["discount_total"] == 200.0
+    assert body["order"]["total_amount"] == 800.0
+    assert body["order"]["coupon_code"] == "SAVE20"
+    assert body["coupon_reason"] is None
+
+
+def test_create_order_with_unknown_coupon_proceeds_without_discount(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0)
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=1, coupon_code="NOPE"),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["order"]["discount_total"] == 0.0
+    assert body["order"]["total_amount"] == 1000.0
+    assert body["order"]["coupon_code"] is None
+    assert body["coupon_reason"] is not None
+
+
+def test_create_order_with_service_coupon_is_rejected_for_products(od):
+    # A booking coupon (applies_to='service') must never discount a product
+    # order, even if the code is otherwise valid.
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0)
+    od.seed_coupon(code="BOOKING10", applies_to="service")
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=1, coupon_code="BOOKING10"),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["order"]["total_amount"] == 1000.0
+    assert r.json()["coupon_reason"] is not None
+
+
+def test_create_order_coupon_respects_server_computed_subtotal(od):
+    # The discount is computed against the server-priced subtotal (DB price),
+    # not anything the client could influence.
+    od.seed_profile("u1")
+    p = od.seed_product(price=500.0, discount_price=400.0)
+    od.seed_coupon(code="FLAT100", discount_type="flat_amount", discount_value=100)
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/create",
+        json=_order_payload(p["id"], quantity=2, coupon_code="FLAT100"),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()["order"]
+    assert body["subtotal"] == 800.0   # 400 * 2
+    assert body["discount_total"] == 100.0
+    assert body["total_amount"] == 700.0
+
+
+# ---- POST /product-orders/validate-coupon ----
+def test_validate_coupon_happy(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0)
+    od.seed_coupon(code="SAVE20", discount_type="percentage", discount_value=20)
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/validate-coupon",
+        json={"code": "save20", "items": [{"product_id": p["id"], "quantity": 1}]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is True
+    assert body["coupon_code"] == "SAVE20"
+    assert body["breakdown"]["subtotal"] == 1000.0
+    assert body["breakdown"]["discount_amount"] == 200.0
+    assert body["breakdown"]["total_amount"] == 800.0
+
+
+def test_validate_coupon_invalid_code(od):
+    od.seed_profile("u1")
+    p = od.seed_product(price=1000.0)
+    od.login_as("u1")
+
+    r = od.client.post(
+        f"{ORDERS}/validate-coupon",
+        json={"code": "NOPE", "items": [{"product_id": p["id"], "quantity": 1}]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is False
+    assert body["breakdown"] is None
+
+
+def test_validate_coupon_requires_auth(od):
+    r = od.client.post(
+        f"{ORDERS}/validate-coupon",
+        json={"code": "SAVE20", "items": [{"product_id": str(uuid.uuid4()), "quantity": 1}]},
+    )
+    assert r.status_code in (401, 403), r.text
+
+
+# ---- GET /product-orders/available-coupons ----
+def test_available_coupons_lists_active_platform_product_coupons(od):
+    od.seed_profile("u1")
+    od.seed_coupon(code="SAVE20")
+    od.seed_coupon(code="SERVICEONLY", applies_to="service")  # must not appear
+    od.login_as("u1")
+
+    r = od.client.get(f"{ORDERS}/available-coupons")
+    assert r.status_code == 200, r.text
+    codes = [c["code"] for c in r.json()]
+    assert codes == ["SAVE20"]
+
+
+def test_available_coupons_requires_auth(od):
+    r = od.client.get(f"{ORDERS}/available-coupons")
+    assert r.status_code in (401, 403), r.text
+
+
+# ---- Redemption at payment-captured time (verify / dev-verify / webhook) ----
+def test_verify_payment_redeems_coupon_exactly_once(od):
+    coupon = od.seed_coupon(code="SAVE20")
+    order = od.seed_order(
+        "u1", razorpay_order_id="order_x",
+        coupon_id=coupon["id"], coupon_code=coupon["code"], discount_total=200.0,
+    )
+    od.login_as("u1")
+    FakeRazorpay.valid = True
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert len(od.db.table("coupon_redemptions").rows) == 1
+    redemption = od.db.table("coupon_redemptions").rows[0]
+    assert redemption["product_order_id"] == order["id"]
+    assert redemption["discount_amount"] == 200.0
+    assert od.db.table("coupons").rows[0]["used_count"] == 1
+
+    # A second confirmation of the same already-paid order must not redeem twice.
+    r2 = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r2.status_code == 200, r2.text
+    assert len(od.db.table("coupon_redemptions").rows) == 1
+    assert od.db.table("coupons").rows[0]["used_count"] == 1
+
+
+def test_verify_payment_without_coupon_does_not_touch_redemptions(od):
+    od.seed_order("u1", razorpay_order_id="order_x")
+    od.login_as("u1")
+    FakeRazorpay.valid = True
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert od.db.table("coupon_redemptions").rows == []
+
+
+def test_dev_verify_redeems_coupon(od):
+    coupon = od.seed_coupon(code="SAVE20")
+    order = od.seed_order("u1", coupon_id=coupon["id"], discount_total=200.0)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/dev-verify/{order['id']}")
+    assert r.status_code == 200, r.text
+    assert len(od.db.table("coupon_redemptions").rows) == 1
+    assert od.db.table("coupons").rows[0]["used_count"] == 1

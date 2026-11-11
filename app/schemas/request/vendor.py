@@ -2,7 +2,7 @@
 Request Pydantic schemas for vendor management endpoints
 All vendor request models should be defined here for consistency
 """
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Optional, Dict, Any, List
 from datetime import time
 from ..domain.common import BusinessType, RequestStatus, OutletType
@@ -29,15 +29,32 @@ class CompleteRegistrationRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="Age must be between 18 and 120")
     gender: str = Field(..., description="Gender: male, female, or other")
 
+
 class VendorJoinRequestBase(BaseModel):
     """Vendor join request schema - comprehensive salon onboarding data"""
     # Business Info
     business_name: str = Field(..., min_length=2, max_length=255)
     business_type: BusinessType = Field(..., description="Type of business: salon, spa, clinic, unisex_salon, barber_shop, beauty_parlor, retail_shop, wholesale_buyer")
     owner_name: str = Field(..., min_length=2, max_length=255)
-    owner_email: EmailStr
+    # Optional for regular_buyer requests - these owners generally don't have
+    # an email on file and activate their account via phone OTP instead of an
+    # emailed registration link. Still required for normal salon/vendor requests.
+    owner_email: Optional[EmailStr] = None
     owner_phone: IndianMobileDigits
-    
+    # The next three are required for regular_buyer only (enforced below):
+    # account creation now happens at admin-approval time with no buyer-facing
+    # step left, so there's nobody left to ask for these afterwards - the RM
+    # collects them at intake instead, right alongside owner_name/owner_phone.
+    owner_age: Optional[int] = Field(None, ge=13, le=120, description="Owner's age (required for regular_buyer)")
+    owner_gender: Optional[str] = Field(None, description="Owner's gender: male, female, or other (required for regular_buyer)")
+    owner_phone_verification_token: Optional[str] = Field(
+        None,
+        description=(
+            "Proof owner_phone was OTP-verified at intake, from "
+            "POST /auth/signup/phone/verify-otp's verification_token (required for regular_buyer)"
+        ),
+    )
+
     # Location
     business_address: str = Field(..., min_length=10, description="Full business address (minimum 10 characters)")
     city: str = Field(..., max_length=100)
@@ -69,6 +86,26 @@ class VendorJoinRequestBase(BaseModel):
     working_days: Optional[List[str]] = Field(default_factory=list)
     facilities: Optional[Dict[str, bool]] = Field(default_factory=dict, description="Salon facilities availability")
 
+    @model_validator(mode="after")
+    def _require_regular_buyer_intake_fields(self):
+        if self.request_type != "regular_buyer":
+            if not self.owner_email:
+                raise ValueError("owner_email is required for salon requests")
+            return self
+
+        missing = [
+            name for name, value in (
+                ("owner_age", self.owner_age),
+                ("owner_gender", self.owner_gender),
+                ("owner_phone_verification_token", self.owner_phone_verification_token),
+            ) if value is None
+        ]
+        if missing:
+            raise ValueError(f"{', '.join(missing)} required for regular_buyer requests")
+        if self.owner_gender.lower() not in ("male", "female", "other"):
+            raise ValueError("owner_gender must be 'male', 'female', or 'other'")
+        return self
+
 class VendorJoinRequestCreate(VendorJoinRequestBase):
     pass
 
@@ -79,6 +116,10 @@ class VendorJoinRequestUpdate(PartialUpdateModel):
 class VendorApprovalRequest(BaseModel):
     """Request body for approving vendor"""
     admin_notes: Optional[str] = Field(None, max_length=500, description="Optional notes from admin")
+    custom_registration_fee_amount: Optional[float] = Field(
+        None, ge=0,
+        description="One-off registration fee for this account, overriding the global default for its type. 0 waives the fee."
+    )
 
 class VendorRejectionRequest(BaseModel):
     """Request body for rejecting vendor"""
@@ -140,6 +181,10 @@ class SalonUpdate(PartialUpdateModel):
     is_active: Optional[bool] = None
     is_verified: Optional[bool] = None
     facilities: Optional[Dict[str, bool]] = None
+    custom_registration_fee_amount: Optional[float] = Field(
+        None, ge=0,
+        description="One-off registration fee override for this account. Send null to clear it and fall back to the global default for this salon_type."
+    )
 # =====================================================
 # SERVICE REQUEST SCHEMAS
 # =====================================================

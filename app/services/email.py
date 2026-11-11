@@ -3,9 +3,11 @@ Email Service
 Handles sending emails through the Resend HTTP API with HTML templates.
 """
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
+import smtplib
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.services.activity_log_service import ActivityLogService
@@ -284,13 +286,19 @@ class EmailService:
 
     async def _deliver(self, payload: dict, to_email: str, subject: str) -> tuple:
         """
-        Hand a single message to the Resend API.
+        Hand a single message to the Resend API - or, in development, to Mailpit.
 
         Returns:
             (success, error_message, is_permanent) - is_permanent means retrying
             the same message will fail the same way (bad API key / unverified
             sender domain), so the caller should stop rather than back off.
         """
+        # Development always routes through Mailpit, never Resend - even if
+        # RESEND_API_KEY happens to hold a real key in the local .env. This is
+        # what keeps local runs from mailing real inboxes.
+        if settings.is_development:
+            return await self._deliver_via_mailpit(payload, to_email, subject)
+
         if not settings.RESEND_API_KEY:
             # No key configured (typical for local dev). Don't pretend it was
             # delivered — say so loudly and surface the recipient/subject so the
@@ -342,6 +350,44 @@ class EmailService:
             )
             return False, f"{type(e).__name__}: {e}", False
 
+    async def _deliver_via_mailpit(self, payload: dict, to_email: str, subject: str) -> tuple:
+        """
+        Hand a single message to Mailpit's SMTP listener (the [inbucket] container
+        `supabase start` runs) so local sends land in the same web inbox at
+        http://127.0.0.1:54324 as Supabase Auth's own emails, instead of a real inbox.
+
+        smtplib is synchronous, so the actual send runs in a worker thread via
+        asyncio.to_thread to keep this coroutine non-blocking.
+        """
+        def _send() -> None:
+            message = EmailMessage()
+            message["From"] = payload["from"]
+            message["To"] = ", ".join(payload["to"])
+            message["Subject"] = payload["subject"]
+            if payload.get("text"):
+                message.set_content(payload["text"])
+                message.add_alternative(payload["html"], subtype="html")
+            else:
+                message.set_content(payload["html"], subtype="html")
+
+            with smtplib.SMTP(
+                settings.MAILPIT_SMTP_HOST,
+                settings.MAILPIT_SMTP_PORT,
+                timeout=RESEND_TIMEOUT_SECONDS,
+            ) as smtp:
+                smtp.send_message(message)
+
+        try:
+            await asyncio.to_thread(_send)
+            logger.info(f"Email sent to Mailpit (dev) for {to_email}: {subject}")
+            return True, None, False
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            logger.warning(
+                f"Failed to reach Mailpit at {settings.MAILPIT_SMTP_HOST}:"
+                f"{settings.MAILPIT_SMTP_PORT} for {to_email} - is `supabase start` running? {error}"
+            )
+            return False, error, False
 
     async def send_vendor_approval_email(
         self,
@@ -401,7 +447,63 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send vendor approval email: {str(e)}")
             return False
-    
+
+    async def send_buyer_account_activated_email(
+        self,
+        to_email: str,
+        owner_name: str,
+        salon_name: str,
+        registration_fee: float,
+        salon_id: Optional[str] = None
+    ) -> bool:
+        """
+        Notify a regular_buyer that their account was approved and is already
+        active - there is no registration link to click (see
+        VendorApprovalService._activate_regular_buyer): the buyer logs in with
+        their registered phone number via OTP, same as a customer.
+
+        Args:
+            to_email: Owner email, if one was on file (optional for regular_buyer)
+            owner_name: Salon owner name
+            salon_name: Salon name
+            registration_fee: One-time fee still due before the account can order
+            salon_id: Salon ID for logging
+
+        Returns:
+            bool: Success status
+        """
+        try:
+            vendor_login_url = self._vendor_login_url()
+
+            logger.info("=" * 100)
+            logger.info("BUYER ACCOUNT ACTIVATED EMAIL")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Subject: Your account for {salon_name} is ready")
+            logger.info("=" * 100)
+
+            html_body = self._render(
+                'buyer_account_activated.html',
+                owner_name=owner_name,
+                salon_name=salon_name,
+                vendor_login_url=vendor_login_url,
+                registration_fee=registration_fee,
+            )
+
+            subject = f"Your account for {salon_name} is ready"
+
+            return await self._send_email(
+                to_email,
+                subject,
+                html_body,
+                email_type="buyer_account_activated",
+                related_entity_type="salon",
+                related_entity_id=salon_id
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to send buyer account activated email: {str(e)}")
+            return False
+
     async def send_rm_salon_approved_email(
         self,
         to_email: str,
@@ -868,7 +970,7 @@ class EmailService:
         business_name: str,
         business_type: str,
         owner_name: str,
-        owner_email: str,
+        owner_email: Optional[str],
         owner_phone: str,
         city: str,
         rm_name: str,
@@ -887,7 +989,7 @@ class EmailService:
                 ("Business Name", business_name),
                 ("Business Type", business_type),
                 ("Owner Name", owner_name),
-                ("Owner Email", owner_email),
+                ("Owner Email", owner_email or "Not provided (phone-only buyer)"),
                 ("Owner Phone", owner_phone),
                 ("City", city),
                 ("Submitted By (RM)", rm_name),

@@ -48,6 +48,7 @@ _REASON_MESSAGES = {
     "not_first_time": "This coupon is only valid for first-time customers.",
     "total_limit_reached": "This coupon has reached its usage limit.",
     "per_user_limit_reached": "You have already used this coupon.",
+    "not_applicable_to_products": "This coupon cannot be used on product orders.",
 }
 
 
@@ -129,6 +130,80 @@ class CouponService:
                 return None, _REASON_MESSAGES["per_user_limit_reached"]
 
         return coupon, None
+
+    async def get_valid_product_coupon(
+        self,
+        code: str,
+        customer_id: str,
+        order_subtotal: float,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Resolve a coupon code and check eligibility against a product order.
+
+        Only platform-scope, applies_to='product' coupons are usable here —
+        products have no vendor-owned catalog to scope a coupon to. Mirrors
+        get_valid_coupon's structure but against product_orders instead of
+        bookings (own first-time check, no salon scope).
+        """
+        if not code:
+            return None, None
+
+        normalized = code.strip().upper()
+
+        resp = (
+            await db_exec(self.db.table("coupons")
+            .select("*")
+            .eq("is_active", True)
+            .eq("code", normalized))
+        )
+        coupon = (resp.data or [None])[0]
+        if not coupon:
+            return None, _REASON_MESSAGES["not_found"]
+
+        if coupon.get("applies_to") != "product" or coupon.get("scope") != "platform":
+            return None, _REASON_MESSAGES["not_applicable_to_products"]
+
+        now = datetime.now(timezone.utc)
+        valid_from = _parse_dt(coupon.get("valid_from"))
+        valid_until = _parse_dt(coupon.get("valid_until"))
+        if valid_from and now < valid_from:
+            return None, _REASON_MESSAGES["not_started"]
+        if valid_until and now > valid_until:
+            return None, _REASON_MESSAGES["expired"]
+
+        min_order = coupon.get("min_order_amount")
+        if min_order is not None and order_subtotal < float(min_order):
+            return None, _REASON_MESSAGES["min_order_not_met"]
+
+        if coupon.get("first_time_scope") and not await self._is_first_time_product_order(customer_id):
+            return None, _REASON_MESSAGES["not_first_time"]
+
+        total_limit = coupon.get("usage_limit_total")
+        if total_limit is not None and int(coupon.get("used_count") or 0) >= int(total_limit):
+            return None, _REASON_MESSAGES["total_limit_reached"]
+
+        per_user_limit = coupon.get("usage_limit_per_user")
+        if per_user_limit is not None:
+            used_by_user = await db_exec(self.db.table("coupon_redemptions").select(
+                "id", count="exact"
+            ).eq("coupon_id", coupon["id"]).eq("user_id", customer_id))
+            if (used_by_user.count or 0) >= int(per_user_limit):
+                return None, _REASON_MESSAGES["per_user_limit_reached"]
+
+        return coupon, None
+
+    async def _is_first_time_product_order(self, customer_id: str) -> bool:
+        """
+        True if the customer has no prior *non-cancelled* product orders.
+        This is a UX pre-check; redeem_product_coupon() enforces the same rule
+        atomically. "First time" here means first product purchase, not first
+        booking — the two domains are tracked separately.
+        """
+        result = await db_exec(
+            self.db.table("product_orders").select("id", count="exact")
+            .eq("user_id", customer_id).neq("status", "cancelled")
+        )
+        return (result.count or 0) == 0
 
     async def _is_first_time(self, customer_id: str, salon_id: str, scope: str) -> bool:
         """
@@ -292,6 +367,64 @@ class CouponService:
 
         return available
 
+    async def list_available_product_coupons(self, customer_id: str) -> List[Dict[str, Any]]:
+        """
+        Platform coupons flagged for product orders that this customer can
+        currently use (the product checkout page's "available offers" list).
+        Always platform-wide — products have no vendor/salon context.
+        """
+        now = datetime.now(timezone.utc)
+        resp = await db_exec(
+            self.db.table("coupons").select("*")
+            .eq("is_active", True)
+            .eq("scope", "platform")
+            .eq("applies_to", "product")
+        )
+        candidates: List[Dict[str, Any]] = []
+        for coupon in (resp.data or []):
+            valid_from = _parse_dt(coupon.get("valid_from"))
+            valid_until = _parse_dt(coupon.get("valid_until"))
+            if valid_from and now < valid_from:
+                continue
+            if valid_until and now > valid_until:
+                continue
+            total_limit = coupon.get("usage_limit_total")
+            if total_limit is not None and int(coupon.get("used_count") or 0) >= int(total_limit):
+                continue
+            candidates.append(coupon)
+
+        if not candidates:
+            return []
+
+        coupon_ids = [c["id"] for c in candidates]
+        used_by_user: Dict[str, int] = {}
+        redemptions = (
+            await db_exec(self.db.table("coupon_redemptions")
+            .select("coupon_id")
+            .eq("user_id", customer_id)
+            .in_("coupon_id", coupon_ids))
+        )
+        for row in (redemptions.data or []):
+            cid = row.get("coupon_id")
+            used_by_user[cid] = used_by_user.get(cid, 0) + 1
+
+        is_first_time: Optional[bool] = None
+        available: List[Dict[str, Any]] = []
+        for coupon in candidates:
+            per_user_limit = coupon.get("usage_limit_per_user")
+            if per_user_limit is not None and used_by_user.get(coupon["id"], 0) >= int(per_user_limit):
+                continue
+
+            if coupon.get("first_time_scope"):
+                if is_first_time is None:
+                    is_first_time = await self._is_first_time_product_order(customer_id)
+                if not is_first_time:
+                    continue
+
+            available.append(self._to_public_coupon(coupon))
+
+        return available
+
     def _is_publicly_listable(self, coupon: Dict[str, Any], now: datetime) -> bool:
         """
         Whether an active coupon should be shown on public marketing surfaces
@@ -391,6 +524,35 @@ class CouponService:
             }
         except Exception as e:
             logger.error(f"Coupon redemption RPC failed for coupon {coupon_id}: {e}")
+            return {"success": False, "reason": "rpc_error", "was_already_redeemed": False}
+
+    async def redeem_product(
+        self,
+        coupon_id: str,
+        user_id: str,
+        product_order_id: str,
+        discount_amount: float,
+    ) -> Dict[str, Any]:
+        """
+        Atomically record a product-order redemption via redeem_product_coupon().
+        Mirrors redeem() — never raises on a limit failure; the caller logs and
+        proceeds (the discount was already validated at order-create time).
+        """
+        try:
+            resp = await db_exec(self.db.rpc("redeem_product_coupon", {
+                "p_coupon_id": coupon_id,
+                "p_user_id": user_id,
+                "p_product_order_id": product_order_id,
+                "p_discount_amount": round(float(discount_amount or 0), 2),
+            }))
+            row = resp.data[0] if resp.data else {}
+            return {
+                "success": bool(row.get("success")),
+                "reason": row.get("reason"),
+                "was_already_redeemed": bool(row.get("was_already_redeemed")),
+            }
+        except Exception as e:
+            logger.error(f"Product coupon redemption RPC failed for coupon {coupon_id}: {e}")
             return {"success": False, "reason": "rpc_error", "was_already_redeemed": False}
 
     # =====================================================

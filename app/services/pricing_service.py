@@ -164,3 +164,53 @@ class PricingService:
             "discount_source": discount_source,
             "coupon_reason": coupon_reason,
         }
+
+    async def compute_product_order_pricing(
+        self,
+        subtotal: float,
+        customer_id: str,
+        coupon_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Pricing breakdown for a product order: subtotal, optional platform
+        coupon discount, total. There is no convenience fee and no "salon sale"
+        to compete against for products, so — unlike compute_booking_pricing —
+        a valid coupon simply applies; there's nothing to be "best-of" against.
+
+        Keys: subtotal, discount_amount, total_amount, coupon_id, coupon_code,
+        coupon_reason.
+        """
+        subtotal = round(float(subtotal), 2)
+        discount_amount = 0.0
+        coupon_id: Optional[str] = None
+        applied_code: Optional[str] = None
+        coupon_reason: Optional[str] = None
+
+        if coupon_code:
+            coupon, reason = await self.coupon_service.get_valid_product_coupon(
+                code=coupon_code,
+                customer_id=customer_id,
+                order_subtotal=subtotal,
+            )
+            if not coupon:
+                coupon_reason = reason
+            else:
+                discount_amount = _discount(
+                    subtotal,
+                    coupon["discount_type"],
+                    coupon["discount_value"],
+                    coupon.get("max_discount_cap"),
+                )
+                coupon_id = coupon["id"]
+                applied_code = coupon["code"]
+
+        total_amount = round(subtotal - discount_amount, 2)
+
+        return {
+            "subtotal": subtotal,
+            "discount_amount": discount_amount,
+            "total_amount": total_amount,
+            "coupon_id": coupon_id,
+            "coupon_code": applied_code,
+            "coupon_reason": coupon_reason,
+        }

@@ -71,6 +71,8 @@ async def complete_registration(
         age=request.age,
         gender=request.gender
     )
+
+
 # =====================================================
 # PAYMENT PROCESSING (DEMO)
 # =====================================================

@@ -30,16 +30,22 @@ class ProductCartService:
             
             for item in items:
                 product = item.get("products", {})
+                is_active = product.get("is_active", True)
 
                 # Dynamic price selection (shared with the order module)
                 price = effective_unit_price(product, user_role)
 
                 quantity = item.get("quantity", 1)
                 line_total = price * quantity
-                
-                total_amount += line_total
-                item_count += quantity
-                
+
+                # A deactivated product can't actually be bought, so it doesn't
+                # count toward the total/count the checkout page charges —
+                # mirrors Amazon/Flipkart leaving an unavailable line in the
+                # cart (for the customer to remove) without pricing it in.
+                if is_active:
+                    total_amount += line_total
+                    item_count += quantity
+
                 processed_items.append({
                     "id": item.get("id"),
                     "product_id": item.get("product_id"),
@@ -49,7 +55,8 @@ class ProductCartService:
                     "image_url": product.get("image_urls", [None])[0] if product.get("image_urls") else None,
                     "image_urls": product.get("image_urls", []),
                     "total": line_total,
-                    "is_b2b_price": is_b2b and product.get('b2b_discount_price') is not None
+                    "is_b2b_price": is_b2b and product.get('b2b_discount_price') is not None,
+                    "is_active": is_active,
                 })
                 
             return {
@@ -68,10 +75,13 @@ class ProductCartService:
     async def add_to_cart(self, user_id: str, product_id: str, quantity: int = 1) -> Dict[str, Any]:
         """Add a product to the cart or increment quantity"""
         try:
-            # 1. Check that the product exists and read its available stock
-            product_resp = await db_exec(self.db.table("products").select("id, stock_quantity").eq("id", product_id).maybe_single())
+            # 1. Check that the product exists, is still active, and read its available stock
+            product_resp = await db_exec(self.db.table("products").select("id, stock_quantity, is_active").eq("id", product_id).maybe_single())
             if not product_resp or not product_resp.data:
                 raise HTTPException(status_code=404, detail="Product not found")
+
+            if not product_resp.data.get("is_active", True):
+                raise HTTPException(status_code=404, detail="Product is no longer available")
 
             stock = product_resp.data.get("stock_quantity") or 0
 
@@ -119,10 +129,13 @@ class ProductCartService:
                 raise HTTPException(status_code=404, detail="Cart item not found")
 
             product_resp = await db_exec(self.db.table("products")\
-                .select("stock_quantity")\
+                .select("stock_quantity, is_active")\
                 .eq("id", item_resp.data["product_id"])\
                 .maybe_single())
-            stock = (product_resp.data.get("stock_quantity") or 0) if (product_resp and product_resp.data) else 0
+            product_data = product_resp.data if (product_resp and product_resp.data) else {}
+            if not product_data.get("is_active", True):
+                raise HTTPException(status_code=404, detail="Product is no longer available")
+            stock = product_data.get("stock_quantity") or 0
             if quantity > stock:
                 raise HTTPException(status_code=400, detail="Requested quantity exceeds available stock")
 
