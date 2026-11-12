@@ -283,13 +283,13 @@ flowchart LR
 |---|---|---|---|
 | [Lubist customer app — README](../../lubist_mobile_application/README.md) | guide | ✅ current | Setting up or running the customer mobile app, finding your way around its code, or finding the mobile docs. |
 | [Customer app — API contract, client headers, force-update](../../lubist_mobile_application/docs/API_CONTRACT.md) | reference | ✅ current | Regenerating API types after a backend change, a type error after `npm run api:types`, the force-update / wrong-app screens, or client-identification headers. |
-| [Releasing the customer app (OTA, builds, Play Store)](../../lubist_mobile_application/docs/RELEASING.md) | runbook | ✅ current | Shipping any customer-app change — deciding OTA vs new build, building for Play, bumping versions, testing on the preview lane, or rolling back. |
+| [Releasing the customer app (OTA, builds, Play Store)](../../lubist_mobile_application/docs/RELEASING.md) | runbook | ✅ current | Shipping any customer-app change — deciding OTA vs new build, building for Play, bumping versions, testing on the preview lane, rolling back, or shipping the one-time vendor-module removal (Partner app must be live first). |
 
 ## Partner app (Expo)
 
 | Doc | Type | Status | Read when |
 |---|---|---|---|
-| [Lubist Partner (vendor app) — README](../../lubist_vendor_application/README.md) | guide | ✅ current | Working on the vendor (salon-owner) mobile app — setup, first-build prerequisites, code map, gotchas. |
+| [Lubist Partner (vendor app) — README](../../lubist_vendor_application/README.md) | guide | ✅ current | Working on the vendor (salon-owner) mobile app — setup, first-build prerequisites, code map, performance rules, what mirrors the web portal, gotchas. |
 | [Partner app — API contract, client headers, force-update](../../lubist_vendor_application/docs/API_CONTRACT.md) | reference | ✅ current | Regenerating the Partner app's API types, its force-update / customer-account redirect, or its client-identification headers. |
 
 <!-- END GENERATED: build_docs_hub.py -->

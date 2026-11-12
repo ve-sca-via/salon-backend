@@ -38,6 +38,9 @@ Feature work and product decisions live in their own docs (linked); this is only
 | Two cart subsystems: `/customers/cart` (services) and `/customers/product-cart` (products) | `app/api/customers.py` | Intentional — different checkout flows. Don't merge without a reason |
 | Coupon gaps: RLS off on coupon tables, GST-on-discounted-fee unconfirmed, float money math, three missing race/TOCTOU tests | [COUPONS.md](COUPONS.md) → *Still open* | Need product answers / hard to test against live stack |
 | Better Stack has no alert on error-rate spikes (only the `/health` uptime monitor) | [OBSERVABILITY.md](OBSERVABILITY.md) | Not set up |
+| **Product-order `verify_payment` isn't idempotent:** it updates the order to paid, then decrements stock and redeems the coupon, with no "already paid" check. A client retry after a failure that happened past the DB update (web and mobile both offer Retry) decrements stock and redeems the coupon twice | `ProductOrderService.verify_payment` (`app/services/product_order_service.py`) | Found 2026-11-12; fix: skip side effects when `payment_status` is already `completed` (filter the update on it) |
+| `GET /vendors/bookings` pages with `.range(offset, offset + limit)` — Supabase ranges are inclusive, so each page returns **limit + 1** rows. The Partner app advances by rows received, so nothing breaks; any client that steps `offset += limit` gets a duplicate per page | `VendorService.get_salon_bookings` (`app/services/vendor_service.py`) | Found 2026-11-12; fix is `offset + limit - 1` plus a client re-check |
+| The web vendor Bookings page calls `GET /vendors/bookings` with no `limit`, so it shows only the **50** bookings with the latest `booking_date`; older ones are unreachable there (the Partner app pages through all of them) | `salon_management_next` `bookings-shell.tsx` | Web change, not backend; needs paging or a date-range filter |
 
 ## Deliberately not "fixed" (client decisions)
 
