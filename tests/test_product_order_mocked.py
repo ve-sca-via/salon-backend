@@ -109,6 +109,11 @@ class _Query:
         rows = self._table.rows
 
         if op == "select":
+            cols = payload
+            if self._table.columns is not None and cols and cols != "*":
+                for col in (c.strip() for c in cols.split(",")):
+                    if col not in self._table.columns:
+                        raise Exception(f"42703: column salons.{col} does not exist")
             matched = [dict(r) for r in rows if self._match(r)]
             for col, desc in reversed(self._order):
                 matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
@@ -152,6 +157,10 @@ class _Query:
 class _Table:
     def __init__(self):
         self.rows = []
+        # Optional set of real column names. When set, a select naming any
+        # other column raises like PostgREST does (42703) — the fee gate once
+        # selected a column `salons` doesn't have and every B2B order 500'd.
+        self.columns = None
 
     def select(self, cols="*", count=None):
         return _Query(self).select(cols, count=count)
@@ -358,9 +367,16 @@ class Handle:
         return row
 
     def seed_salon(self, vendor_id, **fields):
+        salons = self.db.table("salons")
+        # Real columns the fee gate may read (db-schema + migration 20261102).
+        salons.columns = {
+            "id", "vendor_id", "registration_fee_paid", "salon_type",
+            "custom_registration_fee_amount",
+        }
         row = {
             "id": str(uuid.uuid4()), "vendor_id": vendor_id,
-            "registration_fee_paid": True, "registration_fee_amount": 5000.0,
+            "registration_fee_paid": True, "salon_type": "salon",
+            "custom_registration_fee_amount": None,
         }
         row.update(fields)
         self.db.table("salons").rows.append(row)
@@ -526,8 +542,9 @@ def test_create_order_allows_exact_remaining_stock(od):
 
 
 def test_create_order_blocked_when_registration_fee_unpaid(od):
+    # Per-account override wins; the 403 quotes the real amount owed.
     od.seed_profile("v1", role="vendor")
-    od.seed_salon("v1", registration_fee_paid=False, registration_fee_amount=2500.0)
+    od.seed_salon("v1", registration_fee_paid=False, custom_registration_fee_amount=2500.0)
     p = od.seed_product(price=1000.0)
     od.login_as("v1", role="vendor")
 
@@ -536,6 +553,46 @@ def test_create_order_blocked_when_registration_fee_unpaid(od):
     assert "registration payment" in r.json()["message"].lower()
     assert "2,500" in r.json()["message"]
     assert od.db.table("product_orders").rows == []
+
+
+def test_create_order_fee_gate_uses_config_default_for_regular_buyer(od, monkeypatch):
+    # No override -> global default for the salon_type (regular_buyer key).
+    from app.services.config_service import ConfigService
+
+    seen = {}
+
+    async def fake_value(self, key, default=None):
+        seen["key"] = key
+        return "1500"
+
+    monkeypatch.setattr(ConfigService, "get_config_value", fake_value)
+    od.seed_profile("b1", role="regular_buyer")
+    od.seed_salon("b1", registration_fee_paid=False, salon_type="regular_buyer")
+    p = od.seed_product(price=1000.0)
+    od.login_as("b1", role="regular_buyer")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 403, r.text
+    assert "1,500" in r.json()["message"]
+    assert seen["key"] == "regular_buyer_registration_fee_amount"
+
+
+def test_create_order_fee_gate_blocks_without_amount_when_config_missing(od, monkeypatch):
+    # Missing fee config must still block (not 500), just without an amount.
+    from app.services.config_service import ConfigService
+
+    async def no_value(self, key, default=None):
+        return None
+
+    monkeypatch.setattr(ConfigService, "get_config_value", no_value)
+    od.seed_profile("v1", role="vendor")
+    od.seed_salon("v1", registration_fee_paid=False)
+    p = od.seed_product(price=1000.0)
+    od.login_as("v1", role="vendor")
+
+    r = od.client.post(f"{ORDERS}/create", json=_order_payload(p["id"], quantity=1))
+    assert r.status_code == 403, r.text
+    assert "₹" not in r.json()["message"]
 
 
 def test_create_order_allowed_when_registration_fee_paid(od):

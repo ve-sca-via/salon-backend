@@ -2,7 +2,7 @@
 Vendor API Endpoints
 Handles vendor registration completion, salon management, services, and bookings
 """
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, HTTPException, Request
 from typing import List, Optional
 from supabase import Client
 
@@ -11,6 +11,7 @@ from app.core.auth import (
     TokenData
 )
 from app.core.validators import UUIDPath, BookingStatusFilter
+from app.core.client_app import enforce_client_app_role, role_from_auth_result
 
 from app.schemas import (
     SalonUpdate,
@@ -54,7 +55,9 @@ def get_vendor_service(db: Client = Depends(get_db_client)) -> VendorService:
 @router.post("/complete-registration", response_model=CompleteRegistrationResponse)
 async def complete_registration(
     request: CompleteRegistrationRequest,
-    vendor_service: VendorService = Depends(get_vendor_service)
+    http_request: Request,
+    vendor_service: VendorService = Depends(get_vendor_service),
+    db: Client = Depends(get_db_client),
 ):
     """
     Complete vendor registration after admin approval
@@ -63,7 +66,7 @@ async def complete_registration(
     - Create profile
     - Link to salon
     """
-    return await vendor_service.complete_registration(
+    result = await vendor_service.complete_registration(
         token=request.token,
         full_name=request.full_name,
         password=request.password,
@@ -71,6 +74,11 @@ async def complete_registration(
         age=request.age,
         gender=request.gender
     )
+    # The account now exists either way; this only withholds the auto-login
+    # tokens from an app the account may not use (registration links open the
+    # website, so in practice this never fires).
+    await enforce_client_app_role(http_request, role_from_auth_result(result), db)
+    return result
 
 
 # =====================================================
@@ -83,9 +91,20 @@ async def process_payment(
     vendor_service: VendorService = Depends(get_vendor_service)
 ):
     """
-    Process vendor payment and activate salon (DEMO MODE)
-    In production, this would integrate with actual payment gateway
+    DEV ONLY: mark the registration fee paid and activate the salon without
+    taking any money (DEMO MODE). Real payments go through
+    /payments/registration/create-order + /verify.
+
+    Refused outside ENVIRONMENT=development: on any deployed environment it let
+    a vendor/regular_buyer skip the registration fee with one empty POST.
+    Allow-listed on `development` rather than deny-listed on `production` so an
+    environment named e.g. "staging" can't reopen it. Only the legacy SPA ever
+    called this; no live client does.
     """
+    from app.core.config import settings
+    if not settings.is_development:
+        raise HTTPException(status_code=403, detail="Not available in this environment")
+
     vendor_id = current_user.user_id
     
     # Process payment through service

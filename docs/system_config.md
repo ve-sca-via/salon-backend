@@ -28,3 +28,7 @@ These keys represent values that we query dynamically, rather than hardcoding th
 | `rm_score_penalty_rejection` | string/number | Points deducted from an RM's performance score when an admin rejects a vendor they onboarded. |
 
 
+
+## Client Apps & Versioning (optional)
+
+Native-app version policy (`customer_app_android_min_version`, `partner_app_ios_latest_version`, `*_store_url`, `*_update_message`, ...) and the vendor-split switches (`enforce_partner_app_for_vendors`, `enforce_partner_app_roles`, `require_client_app_header_for_vendors`). All are optional - a missing key means "no policy" / "use the env default". Full list, semantics and rollout runbook: [CLIENT_APPS_AND_VERSIONING.md](CLIENT_APPS_AND_VERSIONING.md).
