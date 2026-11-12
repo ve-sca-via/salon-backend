@@ -162,13 +162,17 @@ class SalonService:
     @staticmethod
     def is_publicly_visible(salon: Dict[str, Any]) -> bool:
         """
-        The three gates a salon must pass to be shown publicly:
-        active, admin-verified, and registration fee paid.
+        The gates a salon must pass to be shown publicly: active,
+        admin-verified, registration fee paid, and a real salon — regular_buyer
+        accounts are product-only and never public (detail, services and
+        available-slots all 404 for them, matching the list query's
+        `.neq("salon_type", "regular_buyer")`).
         """
         return bool(
             salon.get("is_active")
             and salon.get("is_verified")
             and salon.get("registration_fee_paid")
+            and salon.get("salon_type") != "regular_buyer"
         )
 
     def _public_salons_query(self, select: str = "*, vendor_join_requests(business_type)"):
@@ -679,7 +683,12 @@ class SalonService:
         salon = await self.get_salon(salon_id)
 
         if not self.is_publicly_visible(salon):
-            raise ValueError("Salon not available")
+            # HTTPException, not ValueError: nothing maps ValueError to a
+            # status, so a hidden salon's /services used to answer 500.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Salon not available",
+            )
         
         # Get services from database with category and subcategory join.
         # service_subcategories is the DEEPEST taxonomy node the service points at

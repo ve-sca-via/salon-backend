@@ -19,6 +19,7 @@ removed in this cleanup.
 
 No marker -> these run in the fast (no-stack) job alongside the smoke suite.
 """
+from urllib.parse import urlparse
 import uuid
 from datetime import datetime, timedelta
 
@@ -298,7 +299,8 @@ def test_apply_happy(cr):
     assert len(rows) == 1
     saved = rows[0]
     assert saved["status"] == "pending"
-    assert saved["resume_url"].startswith("https://res.cloudinary.com")
+    resume = urlparse(saved["resume_url"])
+    assert (resume.scheme, resume.hostname) == ("https", "res.cloudinary.com")
     assert saved["aadhaar_url"]
     assert saved["photo_url"]
 

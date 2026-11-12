@@ -666,6 +666,13 @@ def test_salon_services_only_active(sa):
     assert names == ["Active"]
 
 
+def test_salon_services_hidden_salon_404_not_500(sa):
+    # Was a bare ValueError -> 500 for any non-public salon.
+    s = sa.seed_salon(business_name="Hidden", public=False)
+    r = sa.client.get(f"{SALONS}/{s['id']}/services")
+    assert r.status_code == 404, r.text
+
+
 def test_salon_services_missing_salon_404(sa):
     r = sa.client.get(f"{SALONS}/{uuid.uuid4()}/services")
     assert r.status_code == 404, r.text
@@ -692,6 +699,23 @@ def test_available_slots_happy(sa):
     assert body["available_slots"] == [
         "09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM"
     ]
+
+
+def test_available_slots_regular_buyer_404(sa):
+    # An active, paid buyer account passes the old three gates; it must still
+    # not serve booking slots (product-only, never public).
+    s = sa.seed_salon(business_name="Buyer", salon_type="regular_buyer",
+                      opening_time="09:00:00", closing_time="12:00:00")
+    r = sa.client.get(f"{SALONS}/{s['id']}/available-slots",
+                      params={"date": FUTURE_DATE})
+    assert r.status_code == 404, r.text
+
+
+def test_salon_services_regular_buyer_404(sa):
+    s = sa.seed_salon(business_name="Buyer", salon_type="regular_buyer")
+    sa.seed_service(s["id"], name="Should not leak")
+    r = sa.client.get(f"{SALONS}/{s['id']}/services")
+    assert r.status_code == 404, r.text
 
 
 def test_available_slots_keeps_booked_hour(sa):

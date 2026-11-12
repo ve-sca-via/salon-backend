@@ -13,7 +13,7 @@ from app.core.middleware import setup_middleware
 from app.core.handlers import register_exception_handlers
 from app.core.tasks import lifespan
 from app.core.rate_limit import limiter, rate_limit_exceeded_handler
-from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, partner, upload, products, product_orders, banners, blog, features, webhooks
+from app.api import location, auth, salons, admin, rm, vendors, payments, customers, careers, partner, upload, products, product_orders, banners, blog, features, webhooks, app_config
 from app.api.health import router as health_router
 
 # Setup logging
@@ -69,6 +69,7 @@ app.include_router(banners.router, prefix=settings.API_PREFIX)  # Home carousel 
 app.include_router(blog.router, prefix=settings.API_PREFIX)  # SEO blog endpoints
 app.include_router(features.router, prefix=settings.API_PREFIX)  # Feature entitlement flags
 app.include_router(webhooks.router, prefix=settings.API_PREFIX)  # Razorpay payment webhooks (signature-authenticated)
+app.include_router(app_config.router, prefix=settings.API_PREFIX)  # Native app version policy (public; see docs/CLIENT_APPS_AND_VERSIONING.md)
 
 # Include health check and status endpoints
 app.include_router(health_router)

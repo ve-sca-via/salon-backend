@@ -392,7 +392,9 @@ def test_clear_cart(cs):
 def test_checkout_empty_cart_400(cs):
     cs.login()
     r = cs.client.post(f"{CUST}/cart/checkout",
-                       json={"booking_date": "2026-07-01", "time_slots": ["10:00"]})
+                       json={"booking_date": "2026-07-01", "time_slots": ["10:00"],
+                             "razorpay_order_id": "order_X", "razorpay_payment_id": "pay_X",
+                             "razorpay_signature": "sig_X"})
     assert r.status_code == 400, r.text
     assert "empty" in r.text.lower()
 
@@ -586,6 +588,27 @@ def test_checkout_happy_records_the_pinned_amounts(cs, monkeypatch):
     assert {p["payment_type"] for p in cs.db.table("payments").rows} == {
         "convenience_fee", "service_payment"
     }
+
+
+@pytest.mark.parametrize("missing", [
+    ("razorpay_order_id", "razorpay_payment_id", "razorpay_signature"),  # no payment at all
+    ("razorpay_signature",),  # payment id without proof: used to record "paid" unverified
+    ("razorpay_order_id",),
+    ("razorpay_payment_id",),
+])
+def test_checkout_without_full_payment_proof_is_400(cs, monkeypatch, missing):
+    # Every booking pays at least the ₹1 floor online; there is no unpaid path.
+    salon, service = _seed_checkout_state(cs)
+    _install_fake_razorpay(cs, monkeypatch, service)
+    _stub_booking_emails(monkeypatch)
+    cs.login()
+
+    r = cs.client.post(f"{CUST}/cart/checkout",
+                       json=_checkout_payload(**{k: None for k in missing}))
+    assert r.status_code == 400, r.text
+    assert "payment is required" in r.json()["message"].lower()
+    assert cs.db.table("bookings").rows == []
+    assert cs.db.table("cart_items").rows != []  # cart untouched
 
 
 def test_checkout_reads_each_row_once(cs, monkeypatch):

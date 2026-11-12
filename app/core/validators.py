@@ -8,7 +8,7 @@ to Postgres, so an id segment that is not a well-formed UUID makes Postgres
 reject the comparison with SQLSTATE 22P02, "invalid input syntax for type
 uuid". That is not an HTTPException, so it fell through every service's
 `except Exception` and surfaced as a 500 -- on public, unauthenticated routes.
-See docs/INCIDENT_salon_id_500.md.
+See docs/incidents/2026-09-23_salon_id_500.md.
 
 Declaring a parameter with one of the types below moves the check to the
 routing layer: FastAPI rejects a malformed id with 422 before any database call

@@ -154,13 +154,25 @@ class ProductOrderService:
         if is_b2b_role(user_role):
             salon_resp = await db_exec(
                 self.db.table("salons")
-                .select("registration_fee_paid, registration_fee_amount")
+                # `salons` has no registration_fee_amount column (selecting it
+                # 500'd every B2B order — 42703). The amount owed is resolved
+                # the same way checkout does: per-account override, else the
+                # global default for the salon_type.
+                .select("registration_fee_paid, salon_type, custom_registration_fee_amount")
                 .eq("vendor_id", user_id)
                 .maybe_single()
             )
             salon = salon_resp.data if salon_resp else None
             if salon and not salon.get("registration_fee_paid"):
-                fee = salon.get("registration_fee_amount")
+                from app.services.config_service import ConfigService
+
+                try:
+                    fee = await ConfigService(self.db).get_registration_fee_for_salon(salon)
+                except ValueError:
+                    # Missing fee config must not turn the gate into a 500;
+                    # still block, just without quoting an amount.
+                    logger.warning("Registration fee config missing; gating order without amount")
+                    fee = None
                 fee_text = f" (₹{fee:,.0f})" if fee else ""
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

@@ -11,7 +11,13 @@ Final request flow (outer -> inner):
       -> TrustedHostMiddleware      (production only)
       -> SlowAPIMiddleware          (rate limiting)
       -> LoggingMiddleware          (per-request timing logs)
+      -> ClientVersionMiddleware    (426 for native apps below min version)
       -> application
+
+CORS uses allow_headers=["*"], so the client identification headers
+(X-Client-App, X-App-Version, X-App-Platform) pass preflight without being
+listed. Starlette echoes the requested headers back, which also works with
+allow_credentials=True. If that is ever narrowed, add those three.
 
 Note: we deliberately do NOT use HTTPSRedirectMiddleware. Our platforms
 (DigitalOcean in production, Railway in staging) terminate TLS at the edge and
@@ -29,6 +35,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from app.core.client_app import ClientVersionMiddleware
 from app.core.config import settings
 from app.core.request_context import (
     REQUEST_ID_HEADER,
@@ -143,7 +150,11 @@ def setup_middleware(app):
     so it can attach headers to every response, including those produced by
     exception handlers.
     """
-    # Innermost: per-request logging
+    # Innermost: minimum-app-version gate. Inside LoggingMiddleware so a 426 is
+    # logged with its request ID, and inside CORS so it carries CORS headers.
+    app.add_middleware(ClientVersionMiddleware)
+
+    # Per-request logging
     app.add_middleware(LoggingMiddleware)
 
     # Rate limiting

@@ -758,7 +758,8 @@ class CustomerService:
         - Clears cart after successful booking
         
         Payment Verification:
-        - If razorpay_payment_id provided: Verifies signature with Razorpay API
+        - razorpay_order_id, razorpay_payment_id and razorpay_signature are all
+          REQUIRED (400 otherwise) — there is no unpaid checkout path
         - If signature invalid: Rejects checkout (prevents fraud)
         - If signature valid: Proceeds to create booking
         
@@ -809,6 +810,25 @@ class CustomerService:
                         "booking_id": existing.get("id"),
                         "booking_number": existing.get("booking_number")
                     }
+
+            # PAYMENT IS MANDATORY. Every booking pays the convenience fee online
+            # first: /payments/cart/create-order floors the charge to Razorpay's
+            # ₹1 minimum (even a 100%-off fee coupon pays the floor), so there is
+            # no legitimate zero-charge checkout. Previously the signature was
+            # only checked *when* the payment fields were sent — omitting them
+            # created a "pending" booking with no fee ever collected, and sending
+            # a payment_id without a signature recorded it as "paid" unverified.
+            # The schema keeps the fields Optional so the contract is unchanged;
+            # the rule is enforced here.
+            if not (
+                checkout_data.get("razorpay_order_id")
+                and checkout_data.get("razorpay_payment_id")
+                and checkout_data.get("razorpay_signature")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Payment is required to confirm a booking. Please complete payment and try again."
+                )
 
             # Get cart items
             cart_response = await self.get_cart(customer_id)
@@ -959,24 +979,23 @@ class CustomerService:
 
                 logger.info("Cart validation passed: snapshot matches current cart")
 
-            # Verify Razorpay payment signature if payment details provided
-            if checkout_data.get("razorpay_payment_id") and checkout_data.get("razorpay_signature"):
-                try:
-                    await payment_service.verify_cart_payment(
-                        razorpay_order_id=checkout_data["razorpay_order_id"],
-                        razorpay_payment_id=checkout_data["razorpay_payment_id"],
-                        razorpay_signature=checkout_data["razorpay_signature"]
-                    )
-                    logger.info(f"Payment verified for customer {customer_id}")
-                except HTTPException:
-                    # Re-raise HTTPException as-is
-                    raise
-                except Exception as e:
-                    logger.error(f"Payment verification failed: {str(e)}")
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Payment verification failed. Please contact support."
-                    )
+            # Verify the Razorpay payment signature (presence enforced above).
+            try:
+                await payment_service.verify_cart_payment(
+                    razorpay_order_id=checkout_data["razorpay_order_id"],
+                    razorpay_payment_id=checkout_data["razorpay_payment_id"],
+                    razorpay_signature=checkout_data["razorpay_signature"]
+                )
+                logger.info(f"Payment verified for customer {customer_id}")
+            except HTTPException:
+                # Re-raise HTTPException as-is
+                raise
+            except Exception as e:
+                logger.error(f"Payment verification failed: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Payment verification failed. Please contact support."
+                )
             
             # Create booking using BookingService
             from app.services.booking_service import BookingService

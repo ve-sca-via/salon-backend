@@ -71,6 +71,14 @@ def clear_config_cache(config_key: Optional[str] = None) -> None:
     else:
         _config_cache.pop(config_key, None)
 
+    # The client-app version policy and vendor-split flags keep their own
+    # snapshot (app/core/client_app.py); an admin edit to one of those keys must
+    # also be visible on the next request.
+    from app.core.client_app import CLIENT_POLICY_KEYS, clear_client_policy_cache
+
+    if config_key is None or config_key in CLIENT_POLICY_KEYS:
+        clear_client_policy_cache()
+
 
 def _cache_read(config_key: str) -> Any:
     """Return the cached value for a key, or None if absent/expired."""
@@ -95,6 +103,76 @@ def _cache_write(config_key: str, value: Any) -> None:
     if value is None or config_key not in CACHEABLE_CONFIG_KEYS:
         return
     _config_cache[config_key] = (monotonic() + CONFIG_CACHE_TTL_SECONDS, value)
+
+
+def _client_app_config_entries() -> List[Dict[str, Any]]:
+    """
+    Admin-editable keys for the native-app version policy and the vendor-split
+    switches. See docs/CLIENT_APPS_AND_VERSIONING.md. Leaving a key unset (or
+    setting it to an empty string / inactive) means "no policy".
+    """
+    from app.core.client_app import (
+        NATIVE_CLIENT_APPS, NATIVE_PLATFORMS,
+        min_version_key, latest_version_key, store_url_key, update_message_key,
+        FLAG_ENFORCE_PARTNER_APP_FOR_VENDORS, FLAG_ENFORCE_PARTNER_APP_ROLES,
+        FLAG_REQUIRE_CLIENT_APP_HEADER,
+    )
+
+    app_labels = {"customer-app": "Customer App", "partner-app": "Partner App"}
+    platform_labels = {"android": "Android", "ios": "iOS"}
+    entries: List[Dict[str, Any]] = []
+    for app_name in NATIVE_CLIENT_APPS:
+        app_label = app_labels[app_name]
+        for platform in NATIVE_PLATFORMS:
+            label = f"{app_label} ({platform_labels[platform]})"
+            entries += [
+                {
+                    "config_key": min_version_key(app_name, platform),
+                    "label": f"{label} Minimum Supported Version",
+                    "config_type": "string",
+                    "description": f"Semver, e.g. 1.2.0. {label} builds below this get HTTP 426 on every API call and must update. Leave unset for no floor.",
+                },
+                {
+                    "config_key": latest_version_key(app_name, platform),
+                    "label": f"{label} Latest Version",
+                    "config_type": "string",
+                    "description": f"Semver of the newest {label} release in the store. Older builds are offered an optional update.",
+                },
+                {
+                    "config_key": store_url_key(app_name, platform),
+                    "label": f"{label} Store URL",
+                    "config_type": "string",
+                    "description": f"Store listing the {label} update prompt opens.",
+                },
+            ]
+        entries.append({
+            "config_key": update_message_key(app_name),
+            "label": f"{app_label} Update Message",
+            "config_type": "string",
+            "description": f"Optional text shown on the {app_label} update prompt and in the 426 response.",
+        })
+
+    entries += [
+        {
+            "config_key": FLAG_ENFORCE_PARTNER_APP_FOR_VENDORS,
+            "label": "Block Vendors In Customer App",
+            "config_type": "boolean",
+            "description": "true/false. Overrides the ENFORCE_PARTNER_APP_FOR_VENDORS env setting. When true, vendor and regular-buyer accounts using the customer app get 403 USE_PARTNER_APP.",
+        },
+        {
+            "config_key": FLAG_ENFORCE_PARTNER_APP_ROLES,
+            "label": "Partner App Is Vendor-Only",
+            "config_type": "boolean",
+            "description": "true/false. Overrides ENFORCE_PARTNER_APP_ROLES. When true, the Partner app only accepts vendor accounts (others get 403 USE_CUSTOMER_APP).",
+        },
+        {
+            "config_key": FLAG_REQUIRE_CLIENT_APP_HEADER,
+            "label": "Require Client Header For Vendors (strict)",
+            "config_type": "boolean",
+            "description": "true/false. Overrides REQUIRE_CLIENT_APP_HEADER_FOR_VENDORS. When true, vendor requests that do not identify their app are rejected. Only turn on after web + Partner app send X-Client-App and old customer-app builds are gone.",
+        },
+    ]
+    return entries
 
 
 # Predefined platform-native configuration schema available for admins to set
@@ -159,7 +237,7 @@ AVAILABLE_SYSTEM_CONFIGS = [
         "config_type": "string",
         "description": "Secret from the Razorpay webhook settings, used to authenticate payment.captured deliveries. Without it, a payment whose browser callback is lost never becomes a booking. Protected and encrypted."
     }
-]
+] + _client_app_config_entries()
 
 
 class ConfigService:

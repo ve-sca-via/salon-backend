@@ -386,7 +386,7 @@ class PaymentService:
         try:
             # Verify vendor request exists
             request_check = await db_exec(self.db.table("vendor_join_requests").select(
-                "id, status, rm_id"
+                "id, status, rm_id, owner_email"
             ).eq("id", vendor_request_id).single())
             
             if not request_check.data:
@@ -397,6 +397,20 @@ class PaymentService:
             
             request_data = request_check.data
             
+            # The salon approval created for this request (also needed for the fee).
+            salon_response = await db_exec(self.db.table("salons").select(
+                "vendor_id, salon_type, custom_registration_fee_amount"
+            ).eq("join_request_id", vendor_request_id).maybe_single())
+            salon_for_fee = (salon_response.data if salon_response else None) or {}
+
+            # Ownership: only the account that owns this request may open a
+            # payment for it. Without this any signed-in user could open orders
+            # against someone else's approved request id. The salon row is the
+            # source of truth (the web app reads join_request_id off the vendor's
+            # own salon); a request with no salon row yet falls back to matching
+            # the request's owner_email against the caller's profile email.
+            await self._assert_owns_vendor_request(user_id, request_data, salon_for_fee)
+
             # Verify request is approved
             if request_data["status"] != "approved":
                 raise HTTPException(
@@ -434,10 +448,6 @@ class PaymentService:
             # Get registration fee: this account's own override if an admin set
             # one, else the salon_type-specific global default (no fallback -
             # one of the two must exist in database).
-            salon_response = await db_exec(self.db.table("salons").select(
-                "salon_type, custom_registration_fee_amount"
-            ).eq("join_request_id", vendor_request_id).maybe_single())
-            salon_for_fee = salon_response.data or {}
             registration_fee = await self.config_service.get_registration_fee_for_salon(salon_for_fee)
             
             # Create Razorpay order
@@ -483,6 +493,34 @@ class PaymentService:
                 detail=f"Failed to create payment order: {str(e)}"
             )
     
+    async def _assert_owns_vendor_request(
+        self,
+        user_id: str,
+        request_data: Dict[str, Any],
+        salon: Dict[str, Any],
+    ) -> None:
+        """403 unless `user_id` owns the vendor join request (see caller)."""
+        if salon.get("vendor_id"):
+            if salon["vendor_id"] == user_id:
+                return
+        else:
+            owner_email = (request_data.get("owner_email") or "").strip().lower()
+            if owner_email:
+                profile = await db_exec(
+                    self.db.table("profiles").select("email").eq("id", user_id).maybe_single()
+                )
+                email = ((profile.data if profile else None) or {}).get("email") or ""
+                if email.strip().lower() == owner_email:
+                    return
+        logger.warning(
+            "Registration order refused: user does not own vendor request",
+            extra={"user_id": user_id, "vendor_request_id": request_data.get("id")},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This registration request does not belong to your account",
+        )
+
     async def _finish_vendor_registration(
         self,
         payment_data: Dict[str, Any],

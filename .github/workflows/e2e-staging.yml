@@ -1,0 +1,85 @@
+name: E2E (staging)
+
+# Manual only: this suite creates/deletes data on the deployed STAGING
+# environment and sends a few real admin-notification emails, so it must never
+# run on every push/PR. Trigger it from Actions -> "E2E (staging)" -> Run workflow.
+# See docs/E2E_TESTING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      flow:
+        description: "Comma-separated flows (blank = all): public,auth,boundaries,rm,admin,buyer,products,booking,vendor,forms"
+        required: false
+        default: ""
+      keep_data:
+        description: "Keep this run's data on staging (skip cleanup)"
+        type: boolean
+        default: false
+      sweep_stale:
+        description: "Also delete leftovers of older E2E runs"
+        type: boolean
+        default: false
+      razorpay:
+        description: "Run payment steps (needs Razorpay TEST keys in staging system_config + E2E_RAZORPAY_KEY_SECRET secret)"
+        type: boolean
+        default: false
+
+# Least privilege: the job only checks out code and uploads an artifact
+# (artifacts use their own token, not GITHUB_TOKEN's repo scopes).
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-staging   # two runs at once would fight over the fixed accounts
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL || 'https://salon-backend-staging.up.railway.app' }}
+      E2E_SUPABASE_URL: ${{ secrets.E2E_SUPABASE_URL }}
+      E2E_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.E2E_SUPABASE_SERVICE_ROLE_KEY }}
+      E2E_SUPABASE_ANON_KEY: ${{ secrets.E2E_SUPABASE_ANON_KEY }}
+      E2E_JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD || 'Test@1234' }}
+      E2E_RAZORPAY_ENABLED: ${{ inputs.razorpay && '1' || '0' }}
+      E2E_RAZORPAY_KEY_SECRET: ${{ secrets.E2E_RAZORPAY_KEY_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.4'
+          cache: 'pip'
+
+      # The suite only needs an HTTP client, the Supabase client, python-jose
+      # and pytest - not the whole app (it never imports `app`).
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "supabase==2.0.3" "httpx==0.24.1" "python-jose[cryptography]==3.3.0" \
+                      "python-dotenv==1.0.0" "pytest==8.3.4" "pytest-asyncio==0.24.0"
+
+      - name: Run E2E suite
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.flow }}" ]; then ARGS="$ARGS --flow ${{ inputs.flow }}"; fi
+          if [ "${{ inputs.keep_data }}" = "true" ]; then ARGS="$ARGS --keep-data"; fi
+          if [ "${{ inputs.sweep_stale }}" = "true" ]; then ARGS="$ARGS --sweep-stale"; fi
+          python scripts/run_e2e.py $ARGS
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          f=$(ls -t tests/e2e/reports/*.md 2>/dev/null | head -1)
+          if [ -n "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ github.run_number }}
+          path: tests/e2e/reports/*.md
+          if-no-files-found: warn

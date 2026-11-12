@@ -8,6 +8,12 @@ on:
       - staging
       - main
 
+# Least privilege. pull-requests: read is for the breaking-API step, which
+# reads the PR's labels with `gh pr view`.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Fast gate: app boots with a full (dummy) config; DB-free endpoints respond.
@@ -17,9 +23,12 @@ jobs:
     runs-on: ubuntu-24.04  # pinned: ubuntu-latest (26.04) has no prebuilt Python 3.13.4
     
     steps:
-      # 1. Checkout the code
+      # 1. Checkout the code. Full history: the API breaking-change check reads
+      #    the base branch's contract and this PR's commit messages.
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # 2. Set up Python 3.13.4
       # NOTE: runtime.txt pins python-3.11.9 — these two disagree. Align them
@@ -54,6 +63,26 @@ jobs:
       - name: Run smoke tests
         run: |
           python -m pytest tests/ -v -m "not integration"
+
+      # 6. The committed API contract (openapi/openapi.json) must match the
+      #    code. Mobile apps generate their types from it, so a stale file means
+      #    a client built against an API that doesn't exist.
+      #    Fix: `python scripts/export_openapi.py` and commit the result.
+      - name: Check OpenAPI contract is up to date
+        run: python scripts/export_openapi.py --check
+
+      # 7. Installed app builds live for months: the contract may only grow.
+      #    Fails on removed paths/methods/response fields, newly-required
+      #    inputs and type changes vs the base branch. Intentional break:
+      #    `[breaking-api-ok]` in a commit message, or the `breaking-api-ok`
+      #    PR label (read at run time, so re-run the job after labelling).
+      #    See docs/CLIENT_APPS_AND_VERSIONING.md.
+      - name: Check for breaking API changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export PR_LABELS="$(gh pr view ${{ github.event.pull_request.number }} --json labels -q '[.labels[].name] | join(",")' 2>/dev/null || true)"
+          python scripts/check_api_breaking.py --base-ref origin/${{ github.base_ref }}
 
   # ---------------------------------------------------------------------------
   # Thorough gate: spin up a real local Supabase stack, APPLY ALL MIGRATIONS,
