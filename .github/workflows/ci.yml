@@ -8,6 +8,12 @@ on:
       - staging
       - main
 
+# Least privilege. pull-requests: read is for the breaking-API step, which
+# reads the PR's labels with `gh pr view`.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Fast gate: app boots with a full (dummy) config; DB-free endpoints respond.

@@ -24,6 +24,11 @@ on:
         type: boolean
         default: false
 
+# Least privilege: the job only checks out code and uploads an artifact
+# (artifacts use their own token, not GITHUB_TOKEN's repo scopes).
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-staging   # two runs at once would fight over the fixed accounts
   cancel-in-progress: false
