@@ -43,7 +43,7 @@ VENDORS = f"{API}/vendors"
 # Taxonomy ids the fake DB is seeded with. These are real UUIDs, not "cat-1"
 # labels: service_categories.id and service_subcategories.id are uuid columns,
 # and the request schemas now reject anything else at the routing layer (see
-# app/core/validators.py and docs/INCIDENT_salon_id_500.md). Readable-but-wrong
+# app/core/validators.py and docs/incidents/2026-09-23_salon_id_500.md). Readable-but-wrong
 # ids would make these tests pass against a contract production does not have.
 CAT_HAIR = "11111111-1111-4111-8111-111111111111"
 CAT_SKIN = "22222222-2222-4222-8222-222222222222"
@@ -664,7 +664,7 @@ def test_get_bookings_unknown_status_filter_is_422_not_500(vd):
     """
     bookings.status is a Postgres enum, so an unknown label made the query fail
     with SQLSTATE 22P02 -- the same fault as a malformed uuid, and the same 500.
-    See docs/INCIDENT_salon_id_500.md and app/core/validators.py.
+    See docs/incidents/2026-09-23_salon_id_500.md and app/core/validators.py.
     """
     vd.seed_salon()
     r = vd.client.get(f"{VENDORS}/bookings", params={"status_filter": "bogus"})

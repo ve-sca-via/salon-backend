@@ -236,7 +236,7 @@ def test_app_config_update_required(client, policy_rows):
     assert body["latest_version"] == "1.6.0"
     assert body["update_required"] is True
     assert body["update_available"] is True
-    assert body["store_url"].startswith("https://play.google.com")
+    assert body["store_url"] == "https://play.google.com/store/apps/details?id=com.lubist"
     assert body["message"] == "Please update."
 
 

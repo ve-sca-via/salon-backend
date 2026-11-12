@@ -1,34 +1,76 @@
-# System Configuration
+---
+title: system_config keys
+area: backend
+type: reference
+status: current
+updated: 2026-11-12
+read_when: Changing a fee, Razorpay keys, booking rules, RM scoring or app version policy — or a payment fails because a key is missing on a fresh environment.
+related:
+  - backend/docs/environment-keys-guide.md
+  - backend/docs/CLIENT_APPS_AND_VERSIONING.md
+  - backend/docs/REGULAR_BUYER_WORKFLOW.md
+tags: [backend, reference, current, config]
+---
 
-This document outlines the system configuration keys that are required to be present in the `system_config` table for the backend to function properly.
+# `system_config` keys
 
-These keys represent values that we query dynamically, rather than hardcoding them in `.env` files. Ensure these exist in your database and are marked as `is_active = true`.
+Runtime settings stored in the `system_config` table so an admin can change them in the
+admin panel (**System Config** page) without a redeploy. Rows must have `is_active = true`.
 
-## Financial & Fee Configurations
+**Source of truth:** the known-keys list at the bottom of `app/services/config_service.py`.
+Keys marked 🔒 are Fernet-encrypted at rest (`SENSITIVE_CONFIG_KEYS`). The Razorpay keys and
+the convenience fee are cached for 60 s per process; an admin-panel write clears the cache
+immediately.
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `registration_fee_amount` | string/number | The one-time registration fee charged to vendors when joining the platform. Used during checkout and approval flows. |
-| `convenience_fee_percentage` | string/number | The additional platform fee percentage charged to the customer at booking checkout. |
+## Fees
 
-## Third-Party Aggregation & Booking Rules
+| Key | Meaning |
+|---|---|
+| `registration_fee_amount` | One-time fee a **salon** vendor pays to go live |
+| `regular_buyer_registration_fee_amount` | Same, for a **regular buyer** (B2B). `0` waives it |
+| `convenience_fee_percentage` | Platform fee % the customer pays online at booking checkout |
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `razorpay_key_id` | string | Used to initialize the Razorpay SDK to generate orders. |
-| `razorpay_key_secret` | string | Used to validate signatures on incoming Razorpay payments. Changes take effect immediately on the next payment request. |
-| `max_booking_advance_days` | string/number | Public configuration limits how many days in advance a user can book a service. |
-| `cancellation_window_hours` | string/number | Public configuration determining the cutoff for allowing cancellations. |
+A salon's own `custom_registration_fee_amount` (set by an admin, or at approval time)
+always overrides the two registration-fee keys.
 
-## RM Scoring & Penalty 
+## Razorpay
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `rm_score_per_approval` | string/number | Points awarded to an RM when a joined vendor is approved. |
-| `rm_score_penalty_rejection` | string/number | Points deducted from an RM's performance score when an admin rejects a vendor they onboarded. |
+| Key | Meaning |
+|---|---|
+| `razorpay_key_id` 🔒 | Public key id; sent to the frontend to open checkout |
+| `razorpay_key_secret` 🔒 | Signature verification. Bookings and vendor registration have **no env fallback** — missing = payments fail |
+| `razorpay_webhook_secret` 🔒 | Authenticates `payment.captured` webhooks. Without it a payment whose browser callback is lost never becomes a booking |
 
+## Booking rules
 
+| Key | Default in code | Meaning |
+|---|---|---|
+| `max_booking_advance_days` | 30 | How far ahead a customer can book |
+| `cancellation_window_hours` | 24 | Cut-off before the appointment for free cancellation |
 
-## Client Apps & Versioning (optional)
+## RM scoring
 
-Native-app version policy (`customer_app_android_min_version`, `partner_app_ios_latest_version`, `*_store_url`, `*_update_message`, ...) and the vendor-split switches (`enforce_partner_app_for_vendors`, `enforce_partner_app_roles`, `require_client_app_header_for_vendors`). All are optional - a missing key means "no policy" / "use the env default". Full list, semantics and rollout runbook: [CLIENT_APPS_AND_VERSIONING.md](CLIENT_APPS_AND_VERSIONING.md).
+| Key | Default in code | Meaning |
+|---|---|---|
+| `rm_score_per_approval` | — | Points an RM earns when a vendor they onboarded is approved |
+| `rm_rejection_penalty` | 5 | Points deducted when an admin rejects their submission |
+
+## Client apps & versioning (optional)
+
+Per-app, per-platform version policy (`customer_app_android_min_version`,
+`partner_app_ios_latest_version`, `*_store_url`, `*_update_message`, …) and the vendor-split
+switches (`enforce_partner_app_for_vendors`, `enforce_partner_app_roles`,
+`require_client_app_header_for_vendors`). A missing key means "no policy" / "use the env
+default". Full list and rollout runbook: [CLIENT_APPS_AND_VERSIONING.md](CLIENT_APPS_AND_VERSIONING.md).
+
+<!-- BEGIN RELATED: generated by backend/scripts/build_docs_hub.py from the header's `related:` -->
+
+---
+
+**Related:** [Backend environment variables](environment-keys-guide.md) · [Client apps & versioning (force-update, Partner split)](CLIENT_APPS_AND_VERSIONING.md) · [Regular buyer (B2B) workflow](REGULAR_BUYER_WORKFLOW.md)
+
+**Referenced by:** [Payment flow audit & open payment incident](PAYMENT_FLOW_AUDIT.md)
+
+[↑ All docs](DOCS_HUB.md)
+
+<!-- END RELATED -->

@@ -1,122 +1,78 @@
-# Rate Limiting Guide
-
-## Overview
-
-Rate limiting is implemented using **SlowAPI** (FastAPI wrapper around Flask-Limiter) with a two-layer approach:
-
-1. **Global SlowAPI middleware** - Client IP-based throttling
-2. **Route-level decorators** - Specific limits on sensitive endpoints
-3. **Service-level throttling** - Rate limiting at the service level (e.g., Geocoding, OTP)
-
+---
+title: Rate limiting
+area: backend
+type: reference
+status: current
+updated: 2026-11-12
+read_when: A client or test gets 429s, scripted logins start failing, or you're adding a sensitive endpoint that needs a limit.
+related:
+  - backend/docs/TECH_DEBT.md
+  - backend/docs/E2E_TESTING.md
+tags: [backend, reference, current, security]
 ---
 
-## Current Setup
+# Rate limiting
 
-### Global Configuration
-- **Backend**: In-memory storage (fixed-window strategy)
-- **Key**: Client IP address
-- **Default limit**: 100 requests/minute
-- **Initialization**: `app/core/rate_limit.py` (loaded in `main.py` and `app/core/middleware.py`)
+**SlowAPI**, keyed on client IP, **in-memory fixed window** — so limits are per process
+and reset on every deploy/restart. Setup: `app/core/rate_limit.py`; wired in `main.py`
+(`app.state.limiter` + the 429 handler).
 
-### Route-Level Limits (Authentication Endpoints)
+## Limits in force
 
-**Email-based auth** (`app/api/auth.py`):
-- Login: **5 requests/minute**
-- Signup: **3 requests/minute**
-- Password reset: **3 requests/hour**
-- Token refresh: **10 requests/minute**
-- Resend verification email: **3 requests/hour**
+| Scope | Limit | Where |
+|---|---|---|
+| Every route (default) | 100 / minute | `Limiter(default_limits=…)` |
+| Login (email + phone) | 5 / minute | `RateLimits.AUTH_LOGIN` |
+| Signup | 3 / minute | `RateLimits.AUTH_SIGNUP` |
+| Token refresh | 10 / minute | `RateLimits.AUTH_REFRESH` |
+| Password reset (request + confirm) | 3 / hour | `RateLimits.AUTH_PASSWORD_RESET` |
+| Delete own account | 5 / hour | `RateLimits.AUTH_ACCOUNT_DELETE` |
+| OTP **send** routes | 3 per 5 minutes | literal in `app/api/auth.py` |
+| OTP **verify** routes | 5 per 5 minutes | literal in `app/api/auth.py` |
+| Booking create | 20 / minute | `RateLimits.BOOKING_CREATE` |
+| Coupon validate | 15 / minute | `RateLimits.COUPON_VALIDATE` (stops code enumeration) |
 
-**Phone/OTP auth** (`app/api/auth.py`):
-- OTP send (signup/login/verification): **5 requests/minute**
-- OTP verify: **5 requests/minute**
+Other `RateLimits` constants (`FILE_UPLOAD`, `PAYMENT_CREATE`, `READ_*`, `PUBLIC_API`)
+exist but are **not applied to any route** — tracked in [TECH_DEBT.md](TECH_DEBT.md).
 
-**Other endpoints** (`app/api/*.py`):
-- Booking create: **20 requests/minute**
-- Payment create: **10 requests/minute**
-- File upload: **10 requests/minute**
-- Read-heavy: **60 requests/minute**
-- Read-light: **100 requests/minute**
-- Public API: **30 requests/minute**
+Upstream throttles: Nominatim geocoding is held to 1 req/s in
+`app/services/geocoding.py`; MessageCentral's own 429s are passed through.
 
-### Service-Level Rate Limiting
+**Practical consequence:** scripts and E2E runs that log in repeatedly must pace
+themselves — 5 logins/minute per IP.
 
-**Geocoding** (`app/services/geocoding.py`):
-- Uses Nominatim (OpenStreetMap) which enforces **1 request/second**
-- Rate limiting is built-in (enforced in `_rate_limit()` method)
+## 429 response
 
-**OTP Service** (`app/services/otp_service.py`):
-- Respects MessageCentral API rate limits
-- Returns 429 errors from upstream API
-
----
-
-## How to Configure
-
-### 1. Modify Global Default (All Endpoints)
-Edit `app/core/rate_limit.py`:
-```python
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri="memory://",
-    strategy="fixed-window",
-    default_limits=["100 per minute"]  # ← Change here
-)
-```
-
-### 2. Add/Modify Route-Level Limits
-In endpoint files (e.g., `app/api/auth.py`):
-```python
-@router.post("/login", response_model=...)
-@limiter.limit("10/minute")  # ← Change this value
-async def login(credentials: LoginSchema):
-    ...
-```
-
-**Limit Format**: `"<count>/<period>"` where period can be:
-- `second`
-- `minute` (most common)
-- `hour`
-- `day`
-
-
-### 3. Service-Level Rate Limiting
-**Geocoding**: Edit `_rate_limit()` in `app/services/geocoding.py`:
-```python
-self._rate_limit_delay = 1.0  # seconds between requests (Nominatim requires 1.0)
-```
-
----
-
-## Response Format (429 - Too Many Requests)
-
-When rate limit is exceeded, clients receive:
 ```json
 {
-  "detail": "429 Too Many Requests: 5 per 1 minute"
+  "success": false,
+  "error": "rate_limit_exceeded",
+  "message": "Too many login attempts. Please wait a minute and try again.",
+  "detail": "Too many login attempts. Please wait a minute and try again."
 }
 ```
 
+The message is chosen from the path (signup / login / password-reset / generic).
+
+## Adding a limit
+
+```python
+from app.core.rate_limit import limiter, RateLimits
+
+@router.post("/something-sensitive")
+@limiter.limit(RateLimits.PAYMENT_CREATE)   # or a literal like "5/hour"
+async def handler(request: Request, ...):   # SlowAPI needs `request` in the signature
+    ...
+```
+
+Prefer a `RateLimits` constant over a literal so the table above stays true.
+
+<!-- BEGIN RELATED: generated by backend/scripts/build_docs_hub.py from the header's `related:` -->
+
 ---
 
-## Files to Know
+**Related:** [Backend tech debt & open loose ends](TECH_DEBT.md) · [Staging end-to-end flow tests](E2E_TESTING.md)
 
-| File | Purpose |
-|------|---------|
-| `app/core/rate_limit.py` | Global SlowAPI setup & limit buckets |
-| `app/core/middleware.py` | Middleware registration (line 79-80) |
-| `app/core/handlers.py` | 429 error handler (line 105-111) |
-| `app/api/auth.py` | Route decorators on auth endpoints |
-| `app/services/geocoding.py` | Service-level throttling for Nominatim |
-| `main.py` | SlowAPI initialization (line 46-49) |
+[↑ All docs](DOCS_HUB.md)
 
----
-
-## Notes
-
-- **Client detection**: Based on client IP (set by `get_remote_address()`)
-- **Storage**: In-memory (resets on app restart)
-- **No persistence**: Limits are not persisted across server restarts
-- **For production**: Consider implementing Redis storage for distributed rate limiting
-
-For detailed configuration or to implement Redis-backed rate limiting, see SlowAPI documentation.
+<!-- END RELATED -->
