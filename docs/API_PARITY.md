@@ -68,6 +68,15 @@ report reflects that branch.
 - **Unresolved dynamic calls** - helper calls whose path is not a literal/template/
   file-local constant. Check by hand; they can hide real usages.
 
+### Accepted gaps (triaged - don't re-open without a reason)
+
+| Client | Gap | Decision (2026-11-12) |
+|---|---|---|
+| Customer app | `/blog*`, `POST /careers/apply`, `POST /partners/apply` | Linked: Profile -> "Lubist" opens the web pages in the in-app web view, so the scanner sees no call |
+| Customer app | `GET/POST /salons/{id}/feedback` | Not a salon-page feature: it's the token-authenticated page from the post-booking review email. The app has its own signed-in review flow. Deep-linking that email into the app is a possible follow-up |
+| Customer app | `GET /salons/popular-cities` | The app has no city picker |
+| Partner app | registration payment, `POST /vendors/complete-registration` | Web-only by design |
+
 ### Known scanner limitations
 
 - Static, regex/lexer based (no TypeScript compiler). Paths are recognised in
@@ -121,7 +130,7 @@ A feature touching the API is done when every box that applies is ticked:
 
 <!-- BEGIN GENERATED: api_parity_report.py -->
 
-_Generated 2026-11-12 17:44 UTC by `scripts/api_parity_report.py` - do not edit by hand (everything between the GENERATED markers is overwritten on each run)._
+_Generated 2026-11-12 18:04 UTC by `scripts/api_parity_report.py` - do not edit by hand (everything between the GENERATED markers is overwritten on each run)._
 
 Scanned: **Web (Next)** `salon_management_next`; **Admin panel** `salon-admin-panel`; **Customer app** `lubist_mobile_application`; **Partner app** `lubist_vendor_application`
 
@@ -130,18 +139,18 @@ Scanned: **Web (Next)** `salon_management_next`; **Admin panel** `salon-admin-pa
 - Endpoints in contract: **183** (method + path)
 - Used by Web (Next): **101**
 - Used by Admin panel: **76**
-- Used by Customer app: **63**
+- Used by Customer app: **68**
 - Used by Partner app: **28**
 - Used by no client (excl. infra): **4**
 - Client calls with no matching endpoint/method (stale): **0**
 - Helper calls whose path could not be resolved statically: **0**
-- API references in dead files (imported by nothing; not counted as usage): **3**
+- API references in dead files (imported by nothing; not counted as usage): **0**
 
 ## Gaps (expected-audience heuristic)
 
 Audience: admin -> admin panel; rm -> web; vendor -> web + partner app; customer/public -> web + customer app; mobile -> both apps; shared (any logged-in role) and infra -> no expectation.
 
-### Customer app behind web (customer/public endpoint used by web, not by customer app) (14)
+### Customer app behind web (customer/public endpoint used by web, not by customer app) (9)
 
 | Endpoint | Feature | Role | Used by |
 |---|---|---|---|
@@ -151,11 +160,6 @@ Audience: admin -> admin panel; rm -> web; vendor -> web + partner app; customer
 | `GET /blog/sitemap-data` | blog | public | Web (Next) |
 | `GET /blog/tags` | blog | public | Web (Next), Admin panel |
 | `GET /blog/{slug}` | blog | public | Web (Next) |
-| `GET /location/pincode/{pincode}` | location | public | Web (Next) |
-| `GET /product-orders/available-coupons` | product-orders | authenticated | Web (Next) |
-| `GET /product-orders/my-orders` | product-orders | authenticated | Web (Next) |
-| `POST /product-orders/validate-coupon` | product-orders | authenticated | Web (Next) |
-| `GET /product-orders/{order_id}` | product-orders | authenticated | Web (Next) |
 | `GET /salons/popular-cities` | salons | public | Web (Next) |
 | `GET /salons/{salon_id}/feedback` | salons | public | Web (Next) |
 | `POST /salons/{salon_id}/feedback` | salons | public | Web (Next) |
@@ -183,8 +187,6 @@ Audience: admin -> admin panel; rm -> web; vendor -> web + partner app; customer
 _none_
 
 ### Vendor/RM/admin endpoints still referenced in the customer app (should be gone after the vendor split) (0)
-
-_Plus 3 reference(s) in dead customer-app files - see "API references in dead files" below._
 
 _none_
 
@@ -219,11 +221,7 @@ _none_
 
 These files are imported by no other source file and are not framework entry points, so their calls are NOT counted above. Delete the file, or wire it up.
 
-| Client | Call | Where |
-|---|---|---|
-| Customer app | `POST /upload/salon-image` | `src/services/upload/uploadService.ts:111` |
-| Customer app | `POST /upload/agreement-document` | `src/services/upload/uploadService.ts:126` |
-| Customer app | `GET /upload/agreement-document/signed-url` | `src/services/upload/uploadService.ts:132` |
+_none_
 
 ## Coverage by feature (OpenAPI tag)
 
@@ -245,8 +243,8 @@ Counts are endpoints in the tag used by each client.
 | banners | 6 | 1 | 5 | 1 | 0 | 0 |
 | blog | 9 | 4 | 6 | 0 | 0 | 0 |
 | features | 3 | 0 | 3 | 0 | 0 | 0 |
-| location | 3 | 3 | 0 | 2 | 0 | 0 |
-| product-orders | 7 | 7 | 0 | 3 | 0 | 0 |
+| location | 3 | 3 | 0 | 3 | 0 | 0 |
+| product-orders | 7 | 7 | 0 | 7 | 0 | 0 |
 | products | 9 | 4 | 5 | 5 | 0 | 0 |
 | salons | 11 | 11 | 0 | 8 | 0 | 0 |
 
@@ -481,7 +479,7 @@ Counts are endpoints in the tag used by each client.
 
 | Endpoint | Role | Audience | Web (Next) | Admin panel | Customer app | Partner app |
 |---|---|---|---|---|---|---|
-| `GET /location/pincode/{pincode}` | public | public | Y |  |  |  |
+| `GET /location/pincode/{pincode}` | public | public | Y |  | Y |  |
 | `GET /location/reverse-geocode` | public | public | Y |  | Y |  |
 | `GET /location/salons/nearby` | public | public | Y |  | Y |  |
 
@@ -489,13 +487,13 @@ Counts are endpoints in the tag used by each client.
 
 | Endpoint | Role | Audience | Web (Next) | Admin panel | Customer app | Partner app |
 |---|---|---|---|---|---|---|
-| `GET /product-orders/available-coupons` | authenticated | customer | Y |  |  |  |
+| `GET /product-orders/available-coupons` | authenticated | customer | Y |  | Y |  |
 | `POST /product-orders/create` | authenticated | customer | Y |  | Y |  |
 | `POST /product-orders/dev-verify/{order_id}` | authenticated | customer | Y |  | Y |  |
-| `GET /product-orders/my-orders` | authenticated | customer | Y |  |  |  |
-| `POST /product-orders/validate-coupon` | authenticated | customer | Y |  |  |  |
+| `GET /product-orders/my-orders` | authenticated | customer | Y |  | Y |  |
+| `POST /product-orders/validate-coupon` | authenticated | customer | Y |  | Y |  |
 | `POST /product-orders/verify` | authenticated | customer | Y |  | Y |  |
-| `GET /product-orders/{order_id}` | authenticated | customer | Y |  |  |  |
+| `GET /product-orders/{order_id}` | authenticated | customer | Y |  | Y |  |
 
 ### products
 
