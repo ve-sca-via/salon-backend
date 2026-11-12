@@ -373,6 +373,41 @@ def test_list_b2b_pricing_not_applied_for_anonymous(pr):
     assert p["discount_price"] == 900.0            # standard price unchanged
 
 
+def _seed_wholesale(pr):
+    return pr.seed_product(name="Wholesale Item", slug="wholesale-item", price=1000.0,
+                           discount_price=900.0, b2b_discount_price=700.0,
+                           b2b_discount_percentage=30.0)
+
+
+def test_wholesale_fields_hidden_from_anonymous_on_every_public_route(pr):
+    """Client decision 2026-11-12: visitors must never see wholesale prices."""
+    p = _seed_wholesale(pr)
+    other = pr.seed_product(name="Other Item", category=p.get("category"))
+    responses = [
+        pr.client.get(PRODUCTS).json()["products"],
+        [pr.client.get(f"{PRODUCTS}/slug/wholesale-item").json()["product"]],
+        [pr.client.get(f"{PRODUCTS}/{p['id']}").json()["product"]],
+        pr.client.get(f"{PRODUCTS}/{other['id']}/related").json()["products"],
+    ]
+    seen = 0
+    for products in responses:
+        for prod in products:
+            seen += 1
+            assert "b2b_discount_price" not in prod
+            assert "b2b_discount_percentage" not in prod
+            assert 700.0 not in prod.values()
+    assert seen >= 4
+
+
+def test_wholesale_fields_visible_to_logged_in_customer(pr):
+    p = _seed_wholesale(pr)
+    pr.as_optional_user("customer")
+    prod = pr.client.get(f"{PRODUCTS}/{p['id']}").json()["product"]
+    assert prod["b2b_discount_price"] == 700.0
+    assert prod["discount_price"] == 900.0          # customers still pay retail
+    assert prod["is_b2b_price"] is False
+
+
 # =====================================================================
 # GET /products/categories
 # =====================================================================

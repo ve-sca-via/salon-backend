@@ -6,7 +6,7 @@ RM intake (age/gender/OTP-verified phone) -> admin approves with a fee override
 import pytest
 
 from .support.builders import approve, submit_request
-from .support.client import detail, expect, xfail_if
+from .support.client import detail, expect
 from .support.tokens import razorpay_signature
 
 FLOW = "buyer"
@@ -177,11 +177,9 @@ def test_b2b_price_visible(api, world, flow):
     anon = expect(api.get(f"/products/{product['id']}"), 200)["product"]
     assert mine.get("is_b2b_price") is True and float(mine["discount_price"]) == B2B, mine
     assert anon.get("is_b2b_price") is False and float(anon["discount_price"]) == SALE, anon
-    xfail_if(anon.get("b2b_discount_price") is not None,
-             "BUG: (data exposure - confirm with product owner) GET /products and /products/{id} return "
-             "b2b_discount_price/b2b_discount_percentage to anonymous and customer callers, so the wholesale "
-             "price is visible to anyone inspecting the API (app/services/product_service.py:66 "
-             "_apply_b2b_pricing only swaps the display price, it never strips the B2B fields)")
+    # Client decision 2026-11-12: wholesale prices are for logged-in users only.
+    assert "b2b_discount_price" not in anon and "b2b_discount_percentage" not in anon, \
+        f"wholesale price exposed to an anonymous visitor: {anon}"
 
 
 def test_buyer_product_cart(api, flow):

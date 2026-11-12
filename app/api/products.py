@@ -45,6 +45,20 @@ def get_product_service(db: Client = Depends(get_db_client)) -> ProductService:
     return ProductService(db_client=db)
 
 
+#: Raw wholesale (B2B) price columns. Logged-in users may see them; anonymous
+#: visitors may not (client decision, 2026-11-12). B2B roles already get these
+#: values swapped into discount_price by the service.
+WHOLESALE_PRICE_FIELDS = ("b2b_discount_price", "b2b_discount_percentage")
+
+
+def _hide_wholesale_from_visitors(product: dict, current_user: Optional[TokenData]) -> dict:
+    """Drop the wholesale price columns from a product when the caller is anonymous."""
+    if current_user is None:
+        for field in WHOLESALE_PRICE_FIELDS:
+            product.pop(field, None)
+    return product
+
+
 # ========================================
 # PUBLIC ENDPOINTS (static paths first)
 # ========================================
@@ -84,6 +98,8 @@ async def list_products(
         include_inactive=False,
         user_role=current_user.user_role if current_user else None,
     )
+    for product in result["products"]:
+        _hide_wholesale_from_visitors(product, current_user)
 
     return {
         "success": True,
@@ -125,9 +141,10 @@ async def get_product_by_slug(
     - e.g. /products/slug/hair-serum-250ml
     """
     product = await product_service.get_product_by_slug(
-        slug, 
+        slug,
         user_role=current_user.user_role if current_user else None
     )
+    _hide_wholesale_from_visitors(product, current_user)
     return {"success": True, "product": product}
 
 
@@ -223,6 +240,8 @@ async def get_related_products(
         limit=limit,
         user_role=current_user.user_role if current_user else None,
     )
+    for product in products:
+        _hide_wholesale_from_visitors(product, current_user)
 
     return {
         "success": True,
@@ -259,6 +278,7 @@ async def get_product_by_id(
             detail=f"Product not found: {product_id}",
         )
 
+    _hide_wholesale_from_visitors(product, current_user)
     return {"success": True, "product": product}
 
 
