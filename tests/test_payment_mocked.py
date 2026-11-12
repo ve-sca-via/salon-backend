@@ -571,6 +571,7 @@ def test_razorpay_credentials_come_from_one_pair_of_reads(pm):
 def test_registration_create_order_happy(pm):
     pm.seed_vendor_request("vr1", status="approved")
     pm.seed_config("registration_fee_amount", "1500")
+    pm.seed_salon(vendor_id="u1")  # caller owns the request
     pm.login_as("u1", role="vendor")
 
     r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
@@ -587,6 +588,7 @@ def test_registration_create_order_happy(pm):
 def test_registration_create_order_not_approved_is_400(pm):
     pm.seed_vendor_request("vr1", status="pending")
     pm.seed_config("registration_fee_amount", "1500")
+    pm.seed_salon(vendor_id="u1")  # caller owns the request
     pm.login_as("u1", role="vendor")
 
     r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
@@ -597,10 +599,44 @@ def test_registration_create_order_already_paid_is_400(pm):
     pm.seed_vendor_request("vr1", status="approved")
     pm.seed_config("registration_fee_amount", "1500")
     pm.seed_reg_payment(vendor_request_id="vr1", status="success")
+    pm.seed_salon(vendor_id="u1")  # caller owns the request
     pm.login_as("u1", role="vendor")
 
     r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
     assert r.status_code == 400, r.text
+
+
+def test_registration_create_order_other_users_request_is_403(pm):
+    # The salon behind vr1 belongs to someone else: no order may be opened.
+    pm.seed_vendor_request("vr1", status="approved")
+    pm.seed_config("registration_fee_amount", "1500")
+    pm.seed_salon(vendor_id="victim")
+    pm.login_as("attacker", role="vendor")
+
+    r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
+    assert r.status_code == 403, r.text
+    assert pm.db.table("vendor_registration_payments").rows == []
+
+
+def test_registration_create_order_no_salon_owner_email_match_ok(pm):
+    # No salon row linked yet: fall back to the request's owner_email.
+    pm.seed_vendor_request("vr1", status="approved", owner_email="Owner@Example.com")
+    pm.seed_config("registration_fee_amount", "1500")
+    pm.db.table("profiles").rows.append({"id": "u1", "email": "owner@example.com"})
+    pm.login_as("u1", role="vendor")
+
+    r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
+    assert r.status_code == 200, r.text
+
+
+def test_registration_create_order_no_salon_email_mismatch_is_403(pm):
+    pm.seed_vendor_request("vr1", status="approved", owner_email="owner@example.com")
+    pm.seed_config("registration_fee_amount", "1500")
+    pm.db.table("profiles").rows.append({"id": "u2", "email": "someone@example.com"})
+    pm.login_as("u2", role="vendor")
+
+    r = pm.client.post(f"{PAYMENTS}/registration/create-order?vendor_request_id=vr1")
+    assert r.status_code == 403, r.text
 
 
 def test_registration_create_order_requires_auth(pm):

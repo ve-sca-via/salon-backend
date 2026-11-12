@@ -26,6 +26,19 @@ from app.services.service_taxonomy import ServiceTaxonomyResolver
 
 logger = logging.getLogger(__name__)
 
+# Fields a vendor may change on their own salon via PUT /vendors/salon. An
+# allowlist (not a denylist) so admin-only fields added to the shared
+# `SalonUpdate` schema later are protected by default. Deliberately excluded:
+# is_active, is_verified, custom_registration_fee_amount (admin-controlled).
+VENDOR_EDITABLE_SALON_FIELDS = frozenset({
+    "business_name", "description", "phone", "email",
+    "address", "city", "state", "pincode", "latitude", "longitude",
+    "outlet", "is_gst", "gst_number", "pan_number",
+    "logo_url", "cover_images", "agreement_document_url",
+    "business_hours", "opening_time", "closing_time", "working_days",
+    "accepting_bookings", "facilities",
+})
+
 
 #: How Supabase Auth reports an email that already has a user. It answers with an
 #: `email_exists` code on newer versions and only the prose on older ones, so both
@@ -129,8 +142,24 @@ class VendorService:
             # Verify salon exists
             await self.get_vendor_salon(vendor_id)
             
-            # Update salon
-            update_data = update.model_dump(exclude_unset=True)
+            # Update salon. `SalonUpdate` is shared with the admin endpoint and
+            # carries admin-only fields; a vendor could previously mark their own
+            # salon verified/active or zero their registration fee with a plain
+            # PUT. Only VENDOR_EDITABLE_SALON_FIELDS are written — anything else
+            # is dropped (not 422: vendor clients may echo whole salon objects,
+            # and none of them sends these fields today) and logged.
+            requested = update.model_dump(exclude_unset=True)
+            update_data = {k: v for k, v in requested.items() if k in VENDOR_EDITABLE_SALON_FIELDS}
+            dropped = sorted(set(requested) - set(update_data))
+            if dropped:
+                logger.warning(
+                    f"Vendor {vendor_id} tried to set non-editable salon fields; ignored: {dropped}",
+                    extra={"vendor_id": vendor_id, "dropped_fields": dropped},
+                )
+            if not update_data:
+                # Nothing the vendor may change: return the salon as it is
+                # rather than issuing an empty UPDATE.
+                return await self.get_vendor_salon(vendor_id)
             
             # Convert time objects to strings for JSON serialization
             if 'opening_time' in update_data and update_data['opening_time'] is not None:

@@ -431,6 +431,49 @@ def test_update_salon_happy(vd):
     assert vd.db.table("salons").rows[0]["business_name"] == "New Name"
 
 
+def test_update_salon_ignores_admin_only_fields(vd):
+    # A vendor must not be able to verify/activate their own salon or zero
+    # their registration fee; allowed fields in the same request still apply.
+    vd.seed_config()
+    vd.seed_salon(business_name="Old Name", is_verified=False, is_active=False,
+                  custom_registration_fee_amount=None)
+
+    r = vd.client.put(f"{VENDORS}/salon", json={
+        "business_name": "New Name",
+        "is_verified": True,
+        "is_active": True,
+        "custom_registration_fee_amount": 0,
+    })
+    assert r.status_code == 200, r.text
+    row = vd.db.table("salons").rows[0]
+    assert row["business_name"] == "New Name"
+    assert row["is_verified"] is False
+    assert row["is_active"] is False
+    assert row["custom_registration_fee_amount"] is None
+
+
+def test_update_salon_only_admin_fields_is_noop(vd):
+    vd.seed_config()
+    vd.seed_salon(business_name="Same", is_verified=False)
+
+    r = vd.client.put(f"{VENDORS}/salon", json={"is_verified": True})
+    assert r.status_code == 200, r.text
+    assert vd.db.table("salons").rows[0]["is_verified"] is False
+
+
+def test_vendor_editable_fields_cover_partner_and_web_payloads():
+    # Every field the Next vendor profile form and the Partner app send must
+    # stay editable, or the allowlist would silently drop real edits.
+    from app.services.vendor_service import VENDOR_EDITABLE_SALON_FIELDS
+    sent_by_clients = {
+        "business_name", "phone", "address", "city", "state", "pincode",
+        "description", "outlet", "is_gst", "gst_number", "latitude", "longitude",
+        "logo_url", "cover_images", "agreement_document_url", "opening_time",
+        "closing_time", "business_hours", "facilities", "accepting_bookings",
+    }
+    assert sent_by_clients <= VENDOR_EDITABLE_SALON_FIELDS
+
+
 def test_update_salon_missing_404(vd):
     vd.seed_config()
     r = vd.client.put(f"{VENDORS}/salon", json={"business_name": "New Name"})
@@ -727,6 +770,23 @@ def test_process_payment_uses_config_fee(vd):
     row = vd.db.table("salons").rows[0]
     assert row["registration_fee_paid"] is True
     assert row["is_active"] is True
+
+
+@pytest.mark.parametrize("env", ["production", "staging", "PRODUCTION"])
+def test_process_payment_refused_outside_development(vd, monkeypatch, env):
+    # The demo endpoint marked the fee paid with no money taken; on any
+    # deployed environment it must refuse and leave the salon untouched.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", env)
+    vd.seed_config(value="2999")
+    vd.seed_salon(business_name="Freeloader", registration_fee_paid=False, is_active=False)
+
+    r = vd.client.post(f"{VENDORS}/process-payment")
+    assert r.status_code == 403, r.text
+    row = vd.db.table("salons").rows[0]
+    assert row["registration_fee_paid"] is False
+    assert row["is_active"] is False
 
 
 # =====================================================================

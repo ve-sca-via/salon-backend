@@ -190,6 +190,24 @@ class Settings(BaseSettings):
     CAREER_CLOUDINARY_SIGNED_URL_TTL: int
 
     # =====================================================
+    # CLIENT APPS & VERSIONING (docs/CLIENT_APPS_AND_VERSIONING.md)
+    # =====================================================
+    # All default OFF so a deploy without these vars changes nothing. Each can
+    # also be overridden at runtime through a system_config row of the same name
+    # in lower case (e.g. `enforce_partner_app_for_vendors` = "true"), so the
+    # vendor split can be switched on - and rolled back - without a redeploy.
+    #
+    # vendor / regular_buyer + `X-Client-App: customer-app` -> 403 USE_PARTNER_APP
+    ENFORCE_PARTNER_APP_FOR_VENDORS: bool = False
+    # `X-Client-App: partner-app` only accepts `vendor` accounts.
+    ENFORCE_PARTNER_APP_ROLES: bool = False
+    # vendor / regular_buyer with NO recognised X-Client-App -> 403 USE_PARTNER_APP.
+    # Only safe once the web app and partner app both send the header.
+    REQUIRE_CLIENT_APP_HEADER_FOR_VENDORS: bool = False
+    # How long the version policy + the flags above are cached per process.
+    CLIENT_POLICY_CACHE_SECONDS: int = 60
+
+    # =====================================================
     # FIELD VALIDATORS
     # =====================================================
     

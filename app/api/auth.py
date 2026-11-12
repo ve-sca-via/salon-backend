@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, status, Request
 from supabase import Client
 from app.core.config import settings
 from app.core.auth import get_current_user, TokenData
+from app.core.client_app import enforce_client_app_role, role_from_auth_result
 from app.core.rate_limit import limiter, RateLimits
 from app.schemas import (
     LoginRequest,
@@ -62,6 +63,7 @@ async def login(
         email=credentials.email,
         password=credentials.password
     )
+    await enforce_client_app_role(request, role_from_auth_result(result), db)
     return LoginResponse(**result)
 
 
@@ -91,6 +93,7 @@ async def signup(
         user_role=signup_data.user_role,
         verification_token=signup_data.verification_token
     )
+    await enforce_client_app_role(request, role_from_auth_result(result), db)
     return SignupResponse(**result)
 
 
@@ -110,7 +113,9 @@ async def refresh_access_token(
     - Rate limited: 10 refreshes per minute
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
-    return await auth_service.refresh_user_session(refresh_data.refresh_token)
+    result = await auth_service.refresh_user_session(refresh_data.refresh_token)
+    await enforce_client_app_role(request, role_from_auth_result(result), db)
+    return result
 
 
 @router.get("/me")
@@ -275,6 +280,7 @@ async def initiate_password_reset(
 @router.post("/password-reset/confirm", response_model=PasswordResetConfirmResponse)
 async def confirm_password_reset(
     request: PasswordResetConfirm,
+    http_request: Request,
     db: Client = Depends(get_db_client),
     auth_client: Client = Depends(get_auth_client)
 ):
@@ -285,10 +291,14 @@ async def confirm_password_reset(
     Returns new access tokens for immediate login
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
-    return await auth_service.confirm_password_reset(
+    result = await auth_service.confirm_password_reset(
         token=request.token,
         new_password=request.new_password
     )
+    # The password change above has already happened; this only withholds the
+    # auto-login tokens from an app the account may not use.
+    await enforce_client_app_role(http_request, role_from_auth_result(result), db)
+    return result
 
 
 @router.post("/resend-verification")
@@ -402,12 +412,14 @@ async def verify_phone_login_otp(
     **Note**: Only customer and regular_buyer accounts can log in via phone.
     """
     auth_service = AuthService(db_client=db, auth_client=auth_client)
-    return await auth_service.verify_phone_login_otp(
+    result = await auth_service.verify_phone_login_otp(
         phone=verify_data.phone,
         otp=verify_data.otp,
         verification_id=verify_data.verification_id,
         country_code=verify_data.country_code or "91"
     )
+    await enforce_client_app_role(request, role_from_auth_result(result), db)
+    return result
 
 
 # =====================================================

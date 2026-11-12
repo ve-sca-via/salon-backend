@@ -2,7 +2,7 @@
 Authentication and Authorization Module
 Handles JWT token verification and role-based access control
 """
-from fastapi import HTTPException, Security, Depends, status
+from fastapi import HTTPException, Request, Security, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.database import db_exec, get_db_client
 from app.core.features import is_feature_visible_to
+from app.core.client_app import enforce_client_app_role
 import logging
 import uuid
 
@@ -54,6 +55,33 @@ class TokenPayload(BaseModel):
 # JWT TOKEN FUNCTIONS
 # =====================================================
 
+# `type` claim distinguishing session tokens. Access and refresh tokens used to
+# carry identical claims, so each verifier accepted the other kind: an access
+# token could be traded at /auth/refresh for fresh tokens (outliving its 30-min
+# life), and a 7-day refresh token worked as a Bearer token. Other token kinds
+# (registration, phone_verification, review_feedback) already set `type`.
+ACCESS_TOKEN_TYPE = "access"
+REFRESH_TOKEN_TYPE = "refresh"
+
+
+def _reject_wrong_token_type(payload: dict, expected: str, detail: str) -> None:
+    """
+    401 if the token declares a `type` other than `expected`.
+
+    LEGACY ALLOWANCE: a token with NO `type` claim is still accepted by both
+    verifiers, because every session issued before this change has none and
+    rejecting them would log everyone out on deploy. Untyped tokens stop
+    existing REFRESH_TOKEN_EXPIRE_DAYS after this deploys (access tokens much
+    sooner); after that, make `type` mandatory here (treat None as invalid).
+    """
+    token_type = payload.get("type")
+    if token_type is not None and token_type != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
     Create JWT access token with JTI (JWT ID) for revocation support
@@ -81,7 +109,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({
         "jti": jti,
         "iat": now,
-        "exp": expire
+        "exp": expire,
+        "type": ACCESS_TOKEN_TYPE,
     })
     
     encoded_jwt = jwt.encode(
@@ -107,7 +136,7 @@ def create_refresh_token(data: dict) -> str:
     
     # Generate unique JWT ID (jti) for token revocation
     jti = str(uuid.uuid4())
-    to_encode.update({"jti": jti})
+    to_encode.update({"jti": jti, "type": REFRESH_TOKEN_TYPE})
     
     expire = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire})
@@ -150,6 +179,8 @@ async def verify_token(token: str, db) -> TokenPayload:
         user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
         iat: int = payload.get("iat")  # Issued-at timestamp (Unix timestamp)
+
+        _reject_wrong_token_type(payload, ACCESS_TOKEN_TYPE, "Invalid token type")
         
         if user_id is None:
             raise HTTPException(
@@ -269,6 +300,8 @@ async def verify_refresh_token(token: str, db) -> dict:
         user_role: str = payload.get("user_role")
         jti: str = payload.get("jti")
         iat: int = payload.get("iat")  # Issued-at timestamp
+
+        _reject_wrong_token_type(payload, REFRESH_TOKEN_TYPE, "Invalid refresh token")
         
         if user_id is None:
             raise HTTPException(
@@ -502,11 +535,17 @@ async def cleanup_expired_tokens(db) -> int:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security),
-    db = Depends(get_db_client)
+    db = Depends(get_db_client),
+    request: Request = None,
 ) -> TokenData:
     """
     Dependency to get current authenticated user from JWT token
-    
+
+    Also applies the client-app role rules (app/core/client_app.py): with the
+    vendor split switched on, a vendor session restored in the customer app is
+    refused here even though its token is valid. `request` defaults to None so
+    direct calls (tests, scripts) skip that check.
+
     Args:
         credentials: Bearer token from Authorization header
     
@@ -552,7 +591,9 @@ async def get_current_user(
                 detail="Account is inactive",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
+        await enforce_client_app_role(request, user.get("user_role"), db)
+
         return TokenData(
             user_id=user["id"],
             email=user["email"],
