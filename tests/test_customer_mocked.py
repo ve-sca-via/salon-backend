@@ -684,11 +684,13 @@ def test_checkout_makes_nine_round_trips_before_responding(cs, monkeypatch):
     assert orders.fetched == []
 
     # Closing the intent out is bookkeeping for reconciliation, so it waits with
-    # the two profile reads the confirmation emails need. (Order follows the
-    # queue: create_booking adds the emails, checkout_cart adds the intent
-    # update after it returns.)
+    # the two profile reads the confirmation emails need, plus the one read of the
+    # salon owner's push tokens (the new-booking banner; runs before the vendor
+    # email lookup). (Order follows the queue: create_booking adds the emails,
+    # checkout_cart adds the intent update after it returns.)
     assert deferred == [
         ("profiles", "select"),
+        ("device_tokens", "select"),
         ("profiles", "select"),
         ("payment_intents", "update"),
     ], deferred

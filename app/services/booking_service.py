@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.database import db_exec
 from app.schemas import BookingCreate
 from app.services.email import email_service
+from app.services.push_service import PushService
 from app.services.activity_log_service import ActivityLogService
 from app.services.pricing_service import PricingService, LineItem, effective_service_price
 
@@ -171,6 +172,10 @@ class BookingService:
         try:
             customer_data = await self._get_customer_profile(customer_id)
         except Exception as profile_error:
+            # The vendor still wants to know a booking arrived, name or not.
+            await self._push_new_booking_to_vendor(
+                salon_data, "A customer", booking_number, booking_date, booking_time, services, booking_id
+            )
             # No recipient and no caller to tell: there is no response left to
             # fail, and the booking itself is already recorded.
             logger.error(
@@ -201,6 +206,11 @@ class BookingService:
         except Exception as email_error:
             logger.error(f"Failed to send booking confirmation to customer: {email_error}")
 
+        # Push first: it is the fast channel, and an email failure below must not skip it.
+        await self._push_new_booking_to_vendor(
+            salon_data, customer_data["full_name"], booking_number, booking_date, booking_time, services, booking_id
+        )
+
         # Sent independently of the customer's: one failing must not skip the other.
         vendor_email = salon_data.get("vendor_email") or await self._get_vendor_email(salon_data)
         if not vendor_email:
@@ -223,6 +233,33 @@ class BookingService:
             logger.info(f"Booking notification email sent to vendor {vendor_email}")
         except Exception as email_error:
             logger.error(f"Failed to send booking notification to vendor: {email_error}")
+
+    async def _push_new_booking_to_vendor(
+        self,
+        salon_data: Dict[str, Any],
+        customer_name: str,
+        booking_number: str,
+        booking_date: str,
+        booking_time: str,
+        services: List[Dict[str, Any]],
+        booking_id: str,
+    ) -> None:
+        """Push banner to the salon owner's phone(s). Never raises."""
+        try:
+            names = [s["name"] for s in services]
+            what = names[0] if len(names) == 1 else f"{names[0]} +{len(names) - 1} more" if names else "a service"
+            await PushService(self.db).send_to_user(
+                salon_data.get("vendor_id"),
+                title="New booking",
+                body=f"{customer_name} booked {what} · {booking_date} at {booking_time}",
+                data={
+                    "type": "booking",
+                    "booking_id": booking_id,
+                    "booking_number": booking_number,
+                },
+            )
+        except Exception as push_error:
+            logger.warning(f"Booking {booking_number}: vendor push failed: {push_error}")
 
     async def create_booking(
         self,
@@ -991,8 +1028,15 @@ class BookingService:
             except Exception as e:
                 logger.warning(f"Error sending customer cancellation email: {e}")
 
-        vendor_email = None
         vendor_id = salon.get("vendor_id")
+        await PushService(self.db).send_to_user(
+            vendor_id,
+            title="Booking cancelled",
+            body=f"{customer_name} cancelled {service_name} · {booking_date} at {booking_time}",
+            data={"type": "booking", "booking_id": booking_id, "booking_number": booking_number},
+        )
+
+        vendor_email = None
         if vendor_id:
             try:
                 vendor_response = await db_exec(self.db.table("profiles").select("email").eq("id", vendor_id))

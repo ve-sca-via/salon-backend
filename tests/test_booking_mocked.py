@@ -762,3 +762,43 @@ def test_admin_bookings_requires_admin(bk):
     bk.login_as(str(uuid.uuid4()), role="customer")
     r = bk.client.get(f"{API}/admin/bookings/")
     assert r.status_code == 403, r.text
+
+
+# =====================================================================
+# Push to the salon owner
+# =====================================================================
+def test_new_booking_pushes_to_the_salon_owner(bk, monkeypatch):
+    sent = []
+
+    async def _capture(self, user_id, title, body, data=None, channel_id="bookings"):
+        sent.append({"user_id": user_id, "title": title, "body": body, "data": data})
+        return 1
+
+    monkeypatch.setattr(booking_service_module.PushService, "send_to_user", _capture)
+
+    async def _profile(self, customer_id):
+        return {"full_name": "Priya", "email": "p@example.com", "phone": "+919000000000"}
+
+    monkeypatch.setattr(BookingService, "_get_customer_profile", _profile)
+
+    import asyncio
+    asyncio.run(bk.service()._send_booking_created_emails(
+        customer_id="c1",
+        salon_data={"id": "s1", "vendor_id": "owner-1", "business_name": "Glow", "vendor_email": "v@example.com"},
+        booking_number="BK-1",
+        booking_date="2026-11-20",
+        booking_time="16:30",
+        processed_services=[
+            {"service_details": {"name": "Haircut"}, "unit_price": 500, "quantity": 1},
+            {"service_details": {"name": "Spa"}, "unit_price": 900, "quantity": 1},
+        ],
+        totals={"total_amount": 1400, "convenience_fee": 0},
+        total_service_price=1400,
+        pricing={},
+        booking_id="b1",
+    ))
+
+    assert len(sent) == 1
+    assert sent[0]["user_id"] == "owner-1"
+    assert "Priya" in sent[0]["body"] and "Haircut +1 more" in sent[0]["body"]
+    assert sent[0]["data"]["booking_id"] == "b1"

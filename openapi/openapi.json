@@ -2978,6 +2978,66 @@
         "title": "CustomerReviewsResponse",
         "type": "object"
       },
+      "DeviceRegister": {
+        "description": "A phone's Expo push token, sent by the mobile app after sign-in.",
+        "properties": {
+          "app": {
+            "enum": [
+              "partner-app",
+              "customer-app"
+            ],
+            "title": "App",
+            "type": "string"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "expo_push_token": {
+            "description": "ExponentPushToken[...] from expo-notifications",
+            "maxLength": 200,
+            "title": "Expo Push Token",
+            "type": "string"
+          },
+          "platform": {
+            "enum": [
+              "android",
+              "ios"
+            ],
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expo_push_token",
+          "platform",
+          "app"
+        ],
+        "title": "DeviceRegister",
+        "type": "object"
+      },
+      "DeviceUnregister": {
+        "properties": {
+          "expo_push_token": {
+            "maxLength": 200,
+            "title": "Expo Push Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expo_push_token"
+        ],
+        "title": "DeviceUnregister",
+        "type": "object"
+      },
       "FaqItem": {
         "description": "One collapsible question/answer pair. Plain text — no HTML allowed.",
         "properties": {
@@ -15671,6 +15731,94 @@
         "summary": "Get Salons Nearby",
         "tags": [
           "location"
+        ]
+      }
+    },
+    "/api/v1/notifications/devices": {
+      "delete": {
+        "description": "Remove a push token for the signed-in user (call before signing out).",
+        "operationId": "unregister_device_api_v1_notifications_devices_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUnregister"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unregister Device",
+        "tags": [
+          "notifications"
+        ]
+      },
+      "post": {
+        "description": "Register (or move to the signed-in user) a phone's push token.",
+        "operationId": "register_device_api_v1_notifications_devices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegister"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Register Device",
+        "tags": [
+          "notifications"
         ]
       }
     },
