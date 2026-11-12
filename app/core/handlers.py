@@ -212,7 +212,7 @@ async def invalid_identifier_response(request: Request, exc) -> JSONResponse:
     runs. But an id can still reach Postgres from somewhere with no such
     declaration -- a webhook payload, a stored reference, a route added later
     without `UUIDPath`. Without this, any of those is a 500 on a public
-    endpoint, which is what docs/INCIDENT_salon_id_500.md was about.
+    endpoint, which is what docs/incidents/2026-09-23_salon_id_500.md was about.
 
     It only catches what reaches here uncaught. A service that wraps the call in
     `except Exception` and raises its own HTTPException(500) still returns 500 --

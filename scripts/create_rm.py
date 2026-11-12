@@ -6,7 +6,7 @@ auth user, profiles row, rm_profiles row with auto-generated employee_id), but
 runs as a standalone script with its own fresh Supabase client instead of
 going through the running backend process. Use this when the admin panel's
 "Create Relationship Manager" flow is broken (e.g. the process-wide
-service-role client has been poisoned - see docs/INCIDENT_admin_user_not_allowed.md
+service-role client has been poisoned - see docs/incidents/2026-09-21_admin_user_not_allowed.md
 and the fix in app/services/vendor_service.py) and you need to create one now.
 
 This deliberately does NOT read this repo's default .env - your local .env may

@@ -6,14 +6,14 @@
 # --- Project locations -----------------------------------------------------
 $BackendDir   = "g:\vescavia\Projects\backend"
 $AdminDir     = "g:\vescavia\Projects\salon-admin-panel"
-$AppDir       = "g:\vescavia\Projects\salon-management-app"
+$AppDir       = "g:\vescavia\Projects\salon_management_next"
 
 Write-Host ""
 Write-Host "Which apps do you want to start?" -ForegroundColor Green
 Write-Host ""
 Write-Host "  1) Backend            (FastAPI @ http://localhost:8000)" -ForegroundColor Cyan
 Write-Host "  2) Salon Admin Panel  (Vite dev server)"                 -ForegroundColor Cyan
-Write-Host "  3) Salon Management App (Vite dev server)"               -ForegroundColor Cyan
+Write-Host "  3) Lubist Web (Next.js dev server, port 3000)"          -ForegroundColor Cyan
 Write-Host "  4) All of the above (apps only)"                         -ForegroundColor Cyan
 Write-Host "  5) Backend Tests      (pytest: smoke + integration)"     -ForegroundColor Cyan
 Write-Host ""

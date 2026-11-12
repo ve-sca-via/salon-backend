@@ -1,7 +1,7 @@
 """
 Malformed identifiers must never produce a 5xx.
 
-Regression cover for docs/INCIDENT_salon_id_500.md: a path id that is not a
+Regression cover for docs/incidents/2026-09-23_salon_id_500.md: a path id that is not a
 well-formed UUID reached Postgres, which rejected the comparison with SQLSTATE
 22P02, and every service's `except Exception` turned that into a 500 -- on
 public, unauthenticated routes.
@@ -99,7 +99,7 @@ def test_the_route_inventory_is_not_empty(app):
 @pytest.mark.parametrize("suffix", ["", "/related", "/reviews", "/services"])
 def test_malformed_salon_id_is_rejected_not_500(client, app, suffix):
     """
-    The exact reproduction table from docs/INCIDENT_salon_id_500.md. Each of
+    The exact reproduction table from docs/incidents/2026-09-23_salon_id_500.md. Each of
     these returned 500 in production; all are public and unauthenticated.
     """
     from app.core.config import settings
