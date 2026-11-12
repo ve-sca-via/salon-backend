@@ -1331,6 +1331,13 @@ class AuthService:
                 # Fall through to anonymisation - the user still gets their deletion.
                 logger.warning(f"Hard delete failed for {user_id}, anonymising instead: {e}")
 
+        # The anonymised profile row survives, so its push tokens must not: a deleted
+        # user must stop getting banners on their phone.
+        try:
+            self.db.table("device_tokens").delete().eq("user_id", user_id).execute()
+        except Exception as e:
+            logger.warning(f"Account deletion: could not remove push tokens for {user_id}: {e}")
+
         # 4b. Scrub every identifying field. age/gender are NOT NULL, so they are
         #     reset to neutral placeholders rather than nulled.
         try:

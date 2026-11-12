@@ -3,7 +3,7 @@ title: Push notifications — plan
 area: backend
 type: plan
 status: planned
-updated: 2026-11-12
+updated: 2026-11-13
 read_when: Starting push notifications (marketing or transactional), or the client asks about order/booking notifications.
 related:
   - backend/docs/MIGRATION_SAFETY.md
@@ -19,8 +19,12 @@ tags: [backend, mobile, partner, admin, plan, planned, notifications]
 > Lubist mobile app. Plus an in-app notification center so users see history.
 >
 > **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done
-> **Status (2026-11-12): PLANNED — nothing built.** The mobile `notificationService.ts` is
-> still a stub returning `not-configured`; no backend tables or routes exist.
+> **Status (2026-11-13): stage 1 BUILT, not yet live.** Vendor new-booking / cancellation
+> push is implemented in the backend and the Partner app (below). Still needed before it works
+> on a phone: apply the migration, upload the FCM key to EAS, install the new preview build.
+> Everything after stage 1 (admin campaigns, in-app center, customer-app push) is still
+> **planned — nothing built** (phases 1-10 further down). The customer app's
+> `notificationService.ts` is still a stub.
 >
 > **Changed since this plan was written:** vendors now use the separate **Lubist Partner**
 > app (`lubist_vendor_application`, its own EAS project). "Vendors" as an audience means
@@ -57,6 +61,51 @@ Mobile (Expo)  --register push token-->  FastAPI  <--compose & send--  Admin pan
 - Backend: router w/ `prefix` in `main.py`; service class wrapping Supabase; `require_admin` for admin routes; migrations `supabase/migrations/<ts>_*.sql`; static path segments before `/{id}`.
 - Admin panel: RTK Query API service (`src/services/api/*Api.js` + `baseQuery.js`); page in `src/pages/`; nav entry in `src/components/layout/Sidebar.jsx`; `Card/Button/Modal/Badge` + `react-toastify`.
 - Mobile: TanStack Query hooks in `src/services/api/hooks/`; `apiGet/apiPost` from `services/api/client.ts`; existing stub at `src/services/notifications/notificationService.ts`.
+
+---
+
+## Stage 1 — Vendor "new booking" push (Partner app)
+
+Banner on the vendor's phone when a customer books (or cancels) their salon. It uses the
+same table and send service the later admin campaigns will use.
+
+**Flow:** customer books -> `BookingService.create_booking` queues
+`_send_booking_created_emails` (after the response) -> `_push_new_booking_to_vendor` ->
+`PushService.send_to_user(salon.vendor_id)` -> Expo Push API -> FCM -> banner. Customer
+cancellation goes through `_send_cancellation_emails`, which pushes "Booking cancelled".
+Payload `data`: `{ type: "booking", booking_id, booking_number }`. A push failure is logged
+and swallowed; it can never fail a booking. Push goes out before the vendor email, so an
+email failure can't skip it.
+
+| Piece | Where |
+|---|---|
+| Table | `supabase/migrations/20261113000000_create_device_tokens.sql` — `device_tokens` (user_id, unique expo_push_token, platform, app `partner-app`/`customer-app`, is_active). **Not applied anywhere yet.** |
+| Endpoints | `app/api/notifications.py`: `POST /notifications/devices` (register / move token to the signed-in user, any authenticated role), `DELETE /notifications/devices` (own token only). |
+| Sending | `app/services/push_service.py`: chunks of 100, `sound: default`, `priority: high`, `channelId: bookings`; a token Expo reports as `DeviceNotRegistered` is set `is_active = false`. Receipts are not polled. Optional `EXPO_ACCESS_TOKEN` env var. |
+| Account deletion | `auth_service` deletes the user's tokens when it anonymises the profile (a hard delete cascades). |
+| Partner app | `src/services/notifications/pushService.ts` (permission, Android channel `bookings`, token fetch + register, unregister), `usePushNotifications.ts` (mounted in `VendorStackNavigator`: registers on sign-in, refreshes bookings/analytics when a push arrives, tap -> `BookingDetails`, retries the killed-state tap until navigation is ready), `navigation/navigationRef.ts`. `AuthContext.signOut` unregisters first (capped at 3 s). |
+| Config | `app.json`: `expo-notifications` plugin (white `assets/notification-icon.png`, accent `#F89E07`, default channel), `android.googleServicesFile` -> `google-services.json` (client config, committed). Version bumped to 1.1.0 (versionCode 2) so the old APK never receives JS that needs the native module. |
+| Tests | `tests/test_push_mocked.py`, plus a booking-hook test in `tests/test_booking_mocked.py`. The post-response query budget in `test_customer_mocked.py` now includes one `device_tokens` read. |
+
+**Go-live steps (in order)**
+1. Apply the migration to staging, then prod when promoting (see MIGRATION_SAFETY.md).
+2. Upload the Firebase **service-account key** (FCM V1) for project `lubist-partner` to EAS:
+   expo.dev -> project `lubist-vendor-application` -> Credentials -> Android -> Service
+   Credentials -> FCM V1, or `eas credentials`. The key is a secret: never commit it
+   (`.gitignore` blocks the usual file names). `google-services.json` is the client config
+   and is committed.
+3. Install the new preview APK (version 1.1.0). It is a native change, so not OTA-able; later
+   JS-only changes go OTA again.
+4. Quick device check without a booking: sign in on the phone, then run
+   `python scripts/send_test_push.py` (sample banner to `e2e.vendor@example.com`; `--list` shows
+   registered phones). Then, for the real path: sign in as a vendor, accept the notification permission, book that salon as a customer on
+   staging: expect the banner within seconds. Check app open, backgrounded, and killed; tap
+   lands on the booking.
+5. Repeat on production (prod migration, `production` build) before vendors rely on it.
+
+**Known limits:** emulators and Expo Go can't receive pushes (real device only); no
+delivery-receipt polling; owner-only (no staff accounts exist); a vendor who signs out
+offline keeps their token until another account signs in on that phone.
 
 ---
 
