@@ -131,6 +131,13 @@ need (e.g. no order was created), the later steps **skip** with
 * Carts / payment intents of the fixed accounts are wiped at cleanup (those
   accounts exist only for this suite).
 
+**Push notifications.** The vendor flow checks device-token registration
+(`POST/DELETE /notifications/devices`). The new-booking push itself is not asserted end to
+end: the booking flow needs Razorpay test keys on staging (payments are off there), and
+`test_booking_fallback_seed` inserts the booking with the service role, which bypasses the
+backend and so sends no push. To see a banner on a real phone use
+`python scripts/send_test_push.py` (see NOTIFICATIONS_FEATURE_PLAN.md).
+
 ### Things the suite fakes, and why
 
 | Real path | Why we can't drive it | What the suite does instead |

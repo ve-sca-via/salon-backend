@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     # warning instead of crashing at import.
     RESEND_API_KEY: str = ""
 
+    # Expo push service (https://docs.expo.dev/push-notifications/sending-notifications/).
+    # Optional: sending works without a token; set one to enable Expo's
+    # "enhanced security" mode and higher rate limits.
+    EXPO_ACCESS_TOKEN: str = ""
+
     # In development ENVIRONMENT, every email is routed to Mailpit's SMTP
     # listener instead of Resend — regardless of RESEND_API_KEY — so local
     # runs never mail a real inbox. This is `supabase start`'s inbucket

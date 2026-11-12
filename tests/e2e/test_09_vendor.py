@@ -145,3 +145,18 @@ def test_vendor_analytics_and_promotions(api, world):
     assert resp.status_code in (200, 404), f"analytics -> {resp.status_code}: {resp.text[:200]}"
     expect(api.get("/vendors/promotions", token=token), 200)
     expect(api.get("/vendors/promotions/active", token=token), 200)
+
+
+def test_vendor_registers_and_removes_push_device(api, world):
+    """POST/DELETE /notifications/devices: a vendor can register a phone's push token and remove it"""
+    token = world.token("vendor")
+    push_token = "ExponentPushToken[E2E" + world.cfg.run_id[-12:] + "]"
+    body = {"expo_push_token": push_token, "platform": "android", "app": "partner-app"}
+    expect(api.post("/notifications/devices", token=token, json=body), 200)
+    expect(api.post("/notifications/devices", token=token, json=body), 200)  # idempotent
+    rows = world.db.table("device_tokens").select("*").eq("expo_push_token", push_token).execute().data
+    assert len(rows) == 1 and rows[0]["is_active"] is True, rows
+    bad = api.post("/notifications/devices", token=token, json={**body, "expo_push_token": "nope"})
+    assert bad.status_code == 422, bad.status_code
+    expect(api.delete("/notifications/devices", token=token, json={"expo_push_token": push_token}), 200)
+    assert not world.db.table("device_tokens").select("id").eq("expo_push_token", push_token).execute().data
