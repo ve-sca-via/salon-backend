@@ -109,6 +109,7 @@ class VendorApprovalService:
             request_data.owner_email,
             getattr(request_data, "owner_phone", None),
             exclude_request_id=request_id,
+            request_type=getattr(request_data, "request_type", None),
         )
         if conflicts:
             logger.warning(

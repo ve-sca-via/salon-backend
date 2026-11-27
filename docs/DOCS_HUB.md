@@ -289,7 +289,7 @@ flowchart LR
 
 | Doc | Type | Status | Read when |
 |---|---|---|---|
-| [Lubist Partner (vendor app) — README](../../lubist_vendor_application/README.md) | guide | ✅ current | Working on the vendor (salon-owner) mobile app — setup, first-build prerequisites, code map, performance rules, what mirrors the web portal, gotchas. |
+| [Lubist Partner (vendor app) — README](../../lubist_vendor_application/README.md) | guide | ✅ current | Working on the Partner mobile app (salon owners + business buyers) — setup, first-build prerequisites, code map, performance rules, what mirrors the web portal, gotchas. |
 | [Partner app — API contract, client headers, force-update](../../lubist_vendor_application/docs/API_CONTRACT.md) | reference | ✅ current | Regenerating the Partner app's API types, its force-update / customer-account redirect, or its client-identification headers. |
 
 <!-- END GENERATED: build_docs_hub.py -->
