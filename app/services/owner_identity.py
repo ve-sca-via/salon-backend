@@ -23,9 +23,12 @@ The rule
     owner_phone  conflicts with any other draft / pending / approved join
                  request only
 
-The phone deliberately is not checked against ``profiles``: an owner's number
-may legitimately already sit on a customer account (their own, or a family
-member's), and the email is the identity that actually breaks registration.
+For a salon owner the phone deliberately is not checked against ``profiles``: an
+owner's number may legitimately already sit on a customer account (their own, or
+a family member's), and the email is the identity that actually breaks
+registration. A ``regular_buyer`` is the exception: it logs in by phone and its
+account is created with that phone at approval, so its number must not already
+be on a live account (``request_type='regular_buyer'``).
 Rejected requests never conflict - they are history, and an RM must be able to
 resubmit the same owner after a rejection.
 
@@ -77,6 +80,7 @@ def find_owner_conflicts(
     owner_phone: Optional[str] = None,
     *,
     exclude_request_id: Optional[str] = None,
+    request_type: Optional[str] = None,
 ) -> List[OwnerConflict]:
     """
     Return every reason this owner's email/phone cannot start a new salon.
@@ -87,6 +91,8 @@ def find_owner_conflicts(
         owner_phone: The owner's contact number, if supplied.
         exclude_request_id: The request being edited or approved, so it does not
             conflict with itself.
+        request_type: 'salon' or 'regular_buyer'. For a regular_buyer the phone
+            is also checked against existing accounts.
 
     Returns:
         A list of conflicts, empty when the owner is clear. Read-only: callers
@@ -125,6 +131,21 @@ def find_owner_conflicts(
                 "Use the owner's own number for this salon.",
             ))
 
+        # A regular_buyer logs in by phone and its account is created at approval
+        # with that phone, so for this role the phone IS the identity - unlike a
+        # salon owner (see the module docstring). A number already on a live
+        # account would make that creation fail after the admin had approved.
+        if request_type == "regular_buyer":
+            account = _find_account_by_phone(db, owner_phone)
+            if account:
+                role = ROLE_LABELS.get(account.get("user_role"), "an account")
+                conflicts.append(OwnerConflict(
+                    "owner_phone",
+                    f"{owner_phone} already has {role} on Lubist. A business buyer "
+                    "logs in with their phone number, so it can't be shared with "
+                    "another account - use a different number for this buyer.",
+                ))
+
     return conflicts
 
 
@@ -152,6 +173,22 @@ def _find_account_by_email(db, email: str) -> Optional[Dict[str, Any]]:
         # A duplicate check that cannot run must not block onboarding; approval
         # re-runs it, and registration still fails loudly if it was real.
         logger.error(f"Owner email conflict check failed for {email}: {e}")
+        return None
+
+    return (response.data or [None])[0]
+
+
+def _find_account_by_phone(db, phone: str) -> Optional[Dict[str, Any]]:
+    """A live profile on that number. Account deletion clears the phone from both
+    the profile and the auth user, so deleted accounts no longer hold it."""
+    variants = phone_lookup_variants(phone) or [phone.strip()]
+    try:
+        response = db.table("profiles").select(
+            "id, phone, user_role"
+        ).in_("phone", variants).is_("deleted_at", "null").limit(1).execute()
+    except Exception as e:
+        # Same fail-open rule as the email check: approval re-runs it.
+        logger.error(f"Owner phone account check failed: {e}")
         return None
 
     return (response.data or [None])[0]

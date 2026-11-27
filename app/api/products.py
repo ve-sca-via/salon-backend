@@ -203,7 +203,7 @@ async def create_product(
     - Auto-calculates discount_percentage from price/discount_price
     """
     product_data = payload.model_dump(exclude_none=True)
-    product = await product_service.create_product(product_data)
+    product = await product_service.create_product(product_data, actor_id=current_user.user_id)
 
     return {
         "success": True,
@@ -297,9 +297,15 @@ async def update_product(
     Only the fields present in the body are updated; a field sent as `null` is
     cleared, and one sent as `""` is treated as untouched.
     Auto-recalculates discount_percentage when price or discount_price changes.
+
+    `stock_quantity` here means "set the count to N": the difference is written
+    to the stock ledger as an `adjustment`. Prefer
+    `POST /admin/inventory/{product_id}/adjust` (restock / damaged with a note).
     """
     update_data = payload.model_dump(exclude_unset=True)
-    product = await product_service.update_product(product_id, update_data)
+    product = await product_service.update_product(
+        product_id, update_data, actor_id=current_user.user_id
+    )
 
     return {
         "success": True,

@@ -88,6 +88,11 @@ class _Query:
         self._filters.append(("in", col, list(vals)))
         return self
 
+    def is_(self, col, val):
+        # Only `.is_(col, "null")` is used (live-profile phone check).
+        self._filters.append(("isnull", col, None))
+        return self
+
     def ilike(self, col, pattern):
         # The duplicate-owner check matches emails case-insensitively, escaping
         # ILIKE's own wildcards; no test needs wildcard matching, so unescape and
@@ -119,6 +124,8 @@ class _Query:
             if op == "neq" and actual == val:
                 return False
             if op == "in" and actual not in val:
+                return False
+            if op == "isnull" and actual is not None:
                 return False
             if op == "ilike":
                 literal = val.replace("\\_", "_").replace("\\%", "%").replace("\\\\", "\\")
@@ -236,7 +243,7 @@ class Handle:
             "id": rm_id,
             "full_name": prof.get("full_name", "RM Person"),
             "email": prof.get("email", f"rm+{rm_id[:8]}@example.com"),
-            "phone": prof.get("phone", "9876543210"),
+            "phone": prof.get("phone", "9000000001"),
             "is_active": is_active,
             "user_role": "relationship_manager",
             "avatar_url": None,
@@ -914,6 +921,56 @@ def test_submitting_a_draft_still_clashes_with_a_different_request(rm):
     r = rm.client.put(f"{RM}/vendor-requests/{draft['id']}", json=_vr_payload())
     assert r.status_code == 409, r.text
     assert "Other Salon" in r.text
+
+
+def _allow_buyer_token(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.rm_service.verify_phone_verification_token",
+        lambda token: "+919876543210" if token == "good-token" else None,
+    )
+
+
+def _seed_account(rm, phone, user_role="customer", deleted_at=None):
+    rm.db.table("profiles").rows.append({
+        "id": str(uuid.uuid4()), "full_name": "Someone", "email": f"{uuid.uuid4().hex[:8]}@example.com",
+        "phone": phone, "user_role": user_role, "is_active": True, "deleted_at": deleted_at,
+    })
+
+
+@pytest.mark.parametrize("stored", ["+919876543210", "9876543210"])
+def test_regular_buyer_submission_rejects_a_phone_already_on_an_account(rm, monkeypatch, stored):
+    """A buyer logs in by phone and is created with it at approval, so a number
+    that is already a customer account would make approval fail silently."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    _allow_buyer_token(monkeypatch)
+    _seed_account(rm, stored)
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_regular_buyer_payload())
+
+    assert r.status_code == 409, r.text
+    assert "customer account" in r.text
+    assert rm.db.table("vendor_join_requests").rows == []
+
+
+def test_regular_buyer_submission_ignores_a_deleted_account_on_the_phone(rm, monkeypatch):
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    _allow_buyer_token(monkeypatch)
+    _seed_account(rm, "+919876543210", deleted_at=datetime.utcnow().isoformat())
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_regular_buyer_payload())
+    assert r.status_code == 200, r.text
+
+
+def test_salon_submission_still_allows_a_phone_on_a_customer_account(rm):
+    """Unchanged for salons: the owner's number may be their own customer login."""
+    rm_id = rm.seed_rm(is_active=True)
+    rm.login_rm(rm_id)
+    _seed_account(rm, "+919876543210")
+
+    r = rm.client.post(f"{RM}/vendor-requests", json=_vr_payload())
+    assert r.status_code == 200, r.text
 
 
 # =====================================================================

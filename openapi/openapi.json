@@ -8281,6 +8281,43 @@
         "title": "StatusToggle",
         "type": "object"
       },
+      "StockAdjustRequest": {
+        "properties": {
+          "change": {
+            "maximum": 100000.0,
+            "minimum": -100000.0,
+            "title": "Change",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "enum": [
+              "restock",
+              "adjustment",
+              "damaged"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "change",
+          "reason"
+        ],
+        "title": "StockAdjustRequest",
+        "type": "object"
+      },
       "SuccessResponse": {
         "properties": {
           "data": {
@@ -8476,8 +8513,80 @@
         "title": "SystemConfigUpdate",
         "type": "object"
       },
+      "UpdateShipmentRequest": {
+        "description": "Blank = untouched, null = clear (docs/PARTIAL_UPDATES.md).",
+        "properties": {
+          "courier_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Courier Name"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          },
+          "tracking_url": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Url"
+          }
+        },
+        "title": "UpdateShipmentRequest",
+        "type": "object"
+      },
       "UpdateStatusRequest": {
         "properties": {
+          "courier_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Courier Name"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "restock": {
+            "default": true,
+            "title": "Restock",
+            "type": "boolean"
+          },
           "status": {
             "enum": [
               "pending",
@@ -8488,6 +8597,30 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          },
+          "tracking_url": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Url"
           }
         },
         "required": [
@@ -10625,6 +10758,128 @@
         ]
       }
     },
+    "/api/v1/admin/inventory/{product_id}/adjust": {
+      "post": {
+        "description": "Add or remove units with a reason. Returns the new stock balance.",
+        "operationId": "adjust_stock_api_v1_admin_inventory__product_id__adjust_post",
+        "parameters": [
+          {
+            "description": "Resource UUID",
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "description": "Resource UUID",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockAdjustRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Adjust Stock",
+        "tags": [
+          "admin",
+          "admin-inventory"
+        ]
+      }
+    },
+    "/api/v1/admin/inventory/{product_id}/movements": {
+      "get": {
+        "description": "A product's stock history, newest first.",
+        "operationId": "list_movements_api_v1_admin_inventory__product_id__movements_get",
+        "parameters": [
+          {
+            "description": "Resource UUID",
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "description": "Resource UUID",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "title": "Product Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Movements",
+        "tags": [
+          "admin",
+          "admin-inventory"
+        ]
+      }
+    },
     "/api/v1/admin/product-orders/": {
       "get": {
         "description": "Get all product orders for admin",
@@ -10651,9 +10906,119 @@
         ]
       }
     },
+    "/api/v1/admin/product-orders/{order_id}/events": {
+      "get": {
+        "description": "The order's timeline: admin status changes and delivery-partner updates.",
+        "operationId": "get_order_events_api_v1_admin_product_orders__order_id__events_get",
+        "parameters": [
+          {
+            "description": "Resource UUID",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "Resource UUID",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Order Events",
+        "tags": [
+          "admin",
+          "admin-product-orders"
+        ]
+      }
+    },
+    "/api/v1/admin/product-orders/{order_id}/shipment": {
+      "patch": {
+        "description": "Set or correct courier / tracking details without changing the status.",
+        "operationId": "update_order_shipment_api_v1_admin_product_orders__order_id__shipment_patch",
+        "parameters": [
+          {
+            "description": "Resource UUID",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "Resource UUID",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateShipmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Order Shipment",
+        "tags": [
+          "admin",
+          "admin-product-orders"
+        ]
+      }
+    },
     "/api/v1/admin/product-orders/{order_id}/status": {
       "patch": {
-        "description": "Update order status",
+        "description": "Move an order to its next status.\n\nAllowed: pending→cancelled, paid→shipped/delivered/cancelled,\nshipped→delivered/cancelled. `paid` is set only by the payment flow.\nCancelling a paid order returns its units to stock (unless `restock` is\nfalse) but does not refund — `refund_required` says when to refund in Razorpay.",
         "operationId": "update_order_status_api_v1_admin_product_orders__order_id__status_patch",
         "parameters": [
           {
@@ -16938,7 +17303,7 @@
         ]
       },
       "put": {
-        "description": "Update an existing product.\n\n**Admin only** — requires admin authentication.\n\nOnly the fields present in the body are updated; a field sent as `null` is\ncleared, and one sent as `\"\"` is treated as untouched.\nAuto-recalculates discount_percentage when price or discount_price changes.",
+        "description": "Update an existing product.\n\n**Admin only** — requires admin authentication.\n\nOnly the fields present in the body are updated; a field sent as `null` is\ncleared, and one sent as `\"\"` is treated as untouched.\nAuto-recalculates discount_percentage when price or discount_price changes.\n\n`stock_quantity` here means \"set the count to N\": the difference is written\nto the stock ledger as an `adjustment`. Prefer\n`POST /admin/inventory/{product_id}/adjust` (restock / damaged with a note).",
         "operationId": "update_product_api_v1_products__product_id__put",
         "parameters": [
           {

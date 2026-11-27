@@ -83,7 +83,7 @@ python scripts/run_e2e.py -- -x -vv                # extra pytest args after --
 ```
 
 Flows (one file each, run in this order): `public`, `auth`, `boundaries`, `rm`,
-`admin`, `buyer`, `products`, `booking`, `vendor`, `forms`. Every flow can run on
+`admin`, `buyer`, `products`, `booking`, `vendor`, `forms`, `inventory`. Every flow can run on
 its own — anything it needs from another role is seeded or created inside it.
 
 A full run takes ~6–8 minutes: requests are throttled to stay under the

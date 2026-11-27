@@ -118,8 +118,8 @@ behind switches that are **all off by default**:
 
 | Switch | Effect when on |
 |---|---|
-| `enforce_partner_app_for_vendors` | Vendor in the customer app → 403 `USE_PARTNER_APP`; regular buyer → `USE_WEB_PORTAL`. Applies at login, refresh, OTP login and on every authenticated call, so restored sessions are blocked too. |
-| `enforce_partner_app_roles` | Non-vendors in the Partner app → `USE_CUSTOMER_APP` / `USE_WEB_PORTAL` |
+| `enforce_partner_app_for_vendors` | Vendor in the customer app → 403 `USE_PARTNER_APP`; regular buyer → `USE_PARTNER_APP` too (buyer wording). Applies at login, refresh, OTP login and on every authenticated call, so restored sessions are blocked too. |
+| `enforce_partner_app_roles` | Anyone but vendors / regular buyers in the Partner app → `USE_CUSTOMER_APP` |
 | `require_client_app_header_for_vendors` | Vendor requests with no `X-Client-App` header → blocked. This closes the door on old customer-app builds. Turn it on last. |
 
 Each one can be flipped in System Config, which takes effect within 60 seconds,

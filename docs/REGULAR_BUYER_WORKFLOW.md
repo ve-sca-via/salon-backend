@@ -3,7 +3,7 @@ title: Regular buyer (B2B) workflow
 area: backend
 type: reference
 status: current
-updated: 2026-11-12
+updated: 2026-11-25
 read_when: Anything about the regular_buyer role — RM intake, admin approval, how the buyer logs in, the registration fee, wholesale (B2B) prices, or a buyer who can't order.
 related:
   - backend/docs/system_config.md
@@ -16,8 +16,9 @@ tags: [backend, web, admin, reference, current, regular-buyer, products]
 # Regular buyer (B2B) workflow
 
 A **regular buyer** is a salon/shop owner who buys **products from us at wholesale (B2B)
-prices** but does **not** list a bookable salon. They use the **website only** — not the
-customer app, not the Partner app.
+prices** but does **not** list a bookable salon. They use the **Lubist Partner app**
+(phone-OTP login, shop, orders) or the **website**; not the customer app. The registration
+fee is always paid on the website (Google Play payments policy).
 
 ## How it differs from a vendor
 
@@ -30,7 +31,7 @@ customer app, not the Partner app.
 | How the account is created | owner completes registration from an emailed link | **created automatically at admin approval** |
 | Logs in with | email + password | **phone OTP** (no password they know) |
 | Registration fee key | `registration_fee_amount` | `regular_buyer_registration_fee_amount` |
-| Apps | web + Partner app | web only — the apps answer `403 USE_WEB_PORTAL` |
+| Apps | web + Partner app | web + Partner app (Home / Shop / Orders / Profile); the customer app sends them to the Partner app (`USE_PARTNER_APP`) |
 
 Wholesale pricing: `app/services/product_service.py` → `is_b2b_role()` (true for `vendor` and
 `regular_buyer`) swaps `products.b2b_discount_price` into the price. Anonymous visitors never
@@ -56,6 +57,10 @@ RM (web /rm)                    Admin (admin panel)               Buyer (web)
    needs them). **Owner email is optional.**
    Backend: `rm_service._apply_regular_buyer_phone_verification` rejects a missing,
    expired or mismatched token with 400.
+   **The phone must not already be on a live Lubist account** (any role, e.g. the owner's
+   own customer login): the buyer logs in by phone and is created with it at approval, so
+   `owner_identity.find_owner_conflicts(request_type='regular_buyer')` answers 409 at
+   submission and refuses the approval too. Salon owners are exempt from this rule.
 2. **Approval.** Same pending queue as salons, with a "Regular Buyer" badge.
    `POST /admin/vendor-requests/{id}/approve` accepts an optional
    `custom_registration_fee_amount` for this one buyer.

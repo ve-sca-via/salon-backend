@@ -137,9 +137,9 @@ before its release (`1.5.0-beta.1 < 1.5.0`); build metadata is ignored.
 
 | Rule | Switch (env / system_config) | Effect |
 | --- | --- | --- |
-| Vendors out of the customer app | `ENFORCE_PARTNER_APP_FOR_VENDORS` / `enforce_partner_app_for_vendors` | `vendor` + `X-Client-App: customer-app` -> `403 {"message": "Salon partner accounts use the Lubist Partner app.", "error_code": "USE_PARTNER_APP"}`. `regular_buyer` + `customer-app` -> `403 error_code: "USE_WEB_PORTAL"` ("Business buyer accounts are managed on the Lubist website ...") |
-| Partner app is vendor-only | `ENFORCE_PARTNER_APP_ROLES` / `enforce_partner_app_roles` | `X-Client-App: partner-app` + any role other than `vendor` -> `403 USE_CUSTOMER_APP`; `regular_buyer` gets `USE_WEB_PORTAL` instead |
-| Strict: vendors must identify their app | `REQUIRE_CLIENT_APP_HEADER_FOR_VENDORS` / `require_client_app_header_for_vendors` | `vendor` with no (or an unrecognised) `X-Client-App` -> `403 USE_PARTNER_APP`; `regular_buyer` -> `403 USE_WEB_PORTAL` |
+| Vendors out of the customer app | `ENFORCE_PARTNER_APP_FOR_VENDORS` / `enforce_partner_app_for_vendors` | `vendor` + `X-Client-App: customer-app` -> `403 {"message": "Salon partner accounts use the Lubist Partner app.", "error_code": "USE_PARTNER_APP"}`. `regular_buyer` + `customer-app` -> same `USE_PARTNER_APP` code, message "Business buyer accounts use the Lubist Partner app." |
+| Partner app is for business accounts | `ENFORCE_PARTNER_APP_ROLES` / `enforce_partner_app_roles` | `X-Client-App: partner-app` + any role other than `vendor` / `regular_buyer` -> `403 USE_CUSTOMER_APP` |
+| Strict: vendors must identify their app | `REQUIRE_CLIENT_APP_HEADER_FOR_VENDORS` / `require_client_app_header_for_vendors` | `vendor` or `regular_buyer` with no (or an unrecognised) `X-Client-App` -> `403 USE_PARTNER_APP` |
 
 All three default **off**. `web` and `admin-panel` are never blocked by any rule.
 Customers, admins and RMs are only ever affected by the partner-app rule.
@@ -158,14 +158,12 @@ Customers, admins and RMs are only ever affected by the partner-app rule.
 - NOT in `get_optional_user`: on public endpoints a blocked user is simply
   treated as anonymous (that dependency swallows auth errors by design).
 
-**Decision: `regular_buyer` is not a Partner-app role.** Regular buyers are
-onboarded by an RM, complete registration via an emailed link that opens the
-website, and buy products on the website (docs/REGULAR_BUYER_WORKFLOW.md). The
-Partner app (`lubist_vendor_application`) only routes `role === 'vendor'` and
-rejects everything else at login. So they are kept out of both native apps and
-pointed at the website with `USE_WEB_PORTAL`. Revisit if the Partner app ever
-grows a buyer flow (add `regular_buyer` to `PARTNER_APP_ROLES` and drop it from
-the `USE_WEB_PORTAL` branches).
+**Decision (2026-11-25): `regular_buyer` is a Partner-app role.** Business buyers
+log in to the Partner app by phone OTP and shop wholesale there (catalog, cart,
+checkout, orders); only the registration fee is paid on the website, because of
+Google Play's payments policy. `PARTNER_APP_ROLES = ("vendor", "regular_buyer")`.
+The backend no longer sends `USE_WEB_PORTAL`; both apps still understand the code
+so older builds keep working if it ever comes back.
 
 ---
 

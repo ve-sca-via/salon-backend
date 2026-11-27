@@ -85,6 +85,10 @@ class _Query:
         self._order.append((col, desc))
         return self
 
+    def limit(self, n):
+        self._limit = n
+        return self
+
     def single(self):
         self._single = True
         return self
@@ -117,6 +121,8 @@ class _Query:
             matched = [dict(r) for r in rows if self._match(r)]
             for col, desc in reversed(self._order):
                 matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
+            if getattr(self, "_limit", None) is not None:
+                matched = matched[: self._limit]
             if self._single:
                 if len(matched) != 1:
                     raise Exception("PGRST116: results contain 0 or multiple rows")
@@ -190,7 +196,60 @@ class _Rpc:
             return self._decrement_product_stock()
         if self.fn_name == "redeem_product_coupon":
             return self._redeem_product_coupon()
+        if self.fn_name == "restore_order_stock":
+            return self._restore_order_stock()
+        if self.fn_name == "adjust_product_stock":
+            return self._adjust_product_stock()
+        if self.fn_name == "set_product_stock":
+            return self._set_product_stock()
         raise Exception(f"FakeSupabase.rpc: unknown function {self.fn_name!r}")
+
+    # ---- Inventory ledger (migration 20261127000000) ----
+    def _ledger(self, product_id, change, balance, reason, order_id=None, note=None, actor=None):
+        self.db.table("product_stock_movements").rows.append({
+            "id": str(uuid.uuid4()), "product_id": product_id, "order_id": order_id,
+            "change": change, "balance_after": balance, "reason": reason,
+            "note": note, "created_by": actor, "created_at": datetime.utcnow().isoformat(),
+        })
+
+    def _product(self, product_id):
+        return next((p for p in self.db.table("products").rows if p["id"] == product_id), None)
+
+    def _adjust_product_stock(self, p=None):
+        p = p or self.params
+        product = self._product(p["p_product_id"])
+        if product is None:
+            raise Exception(f"product_not_found_{p['p_product_id']}")
+        new = (product.get("stock_quantity") or 0) + p["p_change"]
+        if new < 0:
+            raise Exception(f"insufficient_stock_for_product_{p['p_product_id']}")
+        product["stock_quantity"] = new
+        self._ledger(product["id"], p["p_change"], new, p["p_reason"], note=p.get("p_note"), actor=p.get("p_actor"))
+        return _Resp(new)
+
+    def _set_product_stock(self):
+        p = self.params
+        product = self._product(p["p_product_id"])
+        if product is None:
+            raise Exception(f"product_not_found_{p['p_product_id']}")
+        current = product.get("stock_quantity") or 0
+        if current == p["p_new_qty"]:
+            return _Resp(current)
+        return self._adjust_product_stock({**p, "p_change": p["p_new_qty"] - current})
+
+    def _restore_order_stock(self):
+        order_id = self.params["p_order_id"]
+        order = next((o for o in self.db.table("product_orders").rows if o["id"] == order_id), None)
+        if not order or not order.get("stock_decremented") or order.get("stock_restored"):
+            return _Resp(False)
+        order["stock_restored"] = True
+        for item in [i for i in self.db.table("product_order_items").rows if i["order_id"] == order_id]:
+            product = self._product(item["product_id"])
+            if product is not None:
+                product["stock_quantity"] = (product.get("stock_quantity") or 0) + item["quantity"]
+                self._ledger(product["id"], item["quantity"], product["stock_quantity"],
+                             "order_cancelled", order_id=order_id, actor=self.params.get("p_actor"))
+        return _Resp(True)
 
     def _decrement_product_stock(self):
         order_id = self.params["p_order_id"]
@@ -213,6 +272,7 @@ class _Rpc:
         for item in items:
             product = next(p for p in products if p["id"] == item["product_id"])
             product["stock_quantity"] = product["stock_quantity"] - item["quantity"]
+            self._ledger(product["id"], -item["quantity"], product["stock_quantity"], "sale", order_id=order_id)
 
         order["stock_decremented"] = True
         return _Resp(True)
@@ -1064,3 +1124,134 @@ def test_dev_verify_redeems_coupon(od):
     assert r.status_code == 200, r.text
     assert len(od.db.table("coupon_redemptions").rows) == 1
     assert od.db.table("coupons").rows[0]["used_count"] == 1
+
+
+# =====================================================================
+# Only a pending order becomes paid (bug found by staging E2E 2026-11-27):
+# cancelling left payment_status='pending', so a late payment revived the
+# order and took stock; verify had no status guard at all.
+# =====================================================================
+def _events(od, order_id):
+    return [e for e in od.db.table("product_order_events").rows if e["order_id"] == order_id]
+
+
+def test_verify_after_cancel_keeps_order_cancelled_and_flags_refund(od):
+    order = od.seed_order("u1", razorpay_order_id="order_x", status="cancelled")
+    p = od.seed_product(stock_quantity=10)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=3)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 409, r.text
+    assert "refunded" in r.text.lower(), r.text
+    row = od.db.table("product_orders").rows[0]
+    assert row["status"] == "cancelled"
+    assert row["payment_status"] == "completed" and row["razorpay_payment_id"] == "pay_1"
+    assert od.db.table("products").rows[0]["stock_quantity"] == 10, "cancelled order took stock"
+    assert [e["event"] for e in _events(od, order["id"])] == ["paid_after_cancel"]
+
+    # Retrying the same verify gets the same answer (not "order placed") and
+    # does not log a second refund note.
+    r2 = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r2.status_code == 409, r2.text
+    assert len(_events(od, order["id"])) == 1
+
+
+@pytest.mark.parametrize("current", ["shipped", "delivered"])
+def test_replayed_verify_never_moves_an_order_backwards(od, current):
+    od.seed_order("u1", razorpay_order_id="order_x", status=current,
+                  payment_status="completed", razorpay_payment_id="pay_1")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert od.db.table("product_orders").rows[0]["status"] == current
+
+
+def test_webhook_payment_after_cancel_records_but_does_not_revive(od):
+    import asyncio
+    order = od.seed_order("u1", razorpay_order_id="order_w", status="cancelled")
+    p = od.seed_product(stock_quantity=5)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=2)
+
+    svc = ProductOrderService(od.db)
+    assert asyncio.run(svc.mark_order_paid_from_webhook("order_w", "pay_w")) is None
+    row = od.db.table("product_orders").rows[0]
+    assert row["status"] == "cancelled" and row["payment_status"] == "completed"
+    assert od.db.table("products").rows[0]["stock_quantity"] == 5
+    assert [e["event"] for e in _events(od, order["id"])] == ["paid_after_cancel"]
+
+
+def test_successful_payment_lands_on_the_timeline(od):
+    order = od.seed_order("u1", razorpay_order_id="order_x")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    ev = _events(od, order["id"])
+    assert [(e["event"], e["from_status"], e["to_status"], e["source"]) for e in ev] == \
+        [("paid", "pending", "paid", "system")]
+
+
+def test_dev_verify_after_cancel_is_409(od):
+    order = od.seed_order("u1", status="cancelled")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/dev-verify/{order['id']}")
+    assert r.status_code == 409, r.text
+    assert od.db.table("product_orders").rows[0]["status"] == "cancelled"
+
+
+# =====================================================================
+# POST /admin/product-orders/{id}/mark-refunded
+# =====================================================================
+def _refund(od, order_id, **body):
+    return od.client.post(f"{ADMIN_ORDERS}/{order_id}/mark-refunded", json=body)
+
+
+def test_mark_refunded_records_refund_once(od):
+    order = od.seed_order("u1", status="cancelled", payment_status="completed")
+    od.login_admin()
+    r = _refund(od, order["id"], refund_reference=" rfnd_123 ", note="refunded in dashboard")
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] is True
+    assert od.db.table("product_orders").rows[0]["payment_status"] == "refunded"
+    ev = _events(od, order["id"])
+    assert [(e["event"], e["source"], e["created_by"]) for e in ev] == [("refunded", "admin", "admin-1")]
+    assert ev[0]["payload"] == {"refund_reference": "rfnd_123"} and "rfnd_123" in ev[0]["note"]
+
+    again = _refund(od, order["id"])
+    assert again.status_code == 200 and again.json()["changed"] is False, again.text
+    assert len(_events(od, order["id"])) == 1
+
+
+@pytest.mark.parametrize("status,payment_status", [
+    ("cancelled", "pending"),    # never paid: nothing to refund
+    ("paid", "completed"),       # still live: cancel it first
+    ("delivered", "completed"),
+])
+def test_mark_refunded_rejects_orders_without_a_refund_owed(od, status, payment_status):
+    order = od.seed_order("u1", status=status, payment_status=payment_status)
+    od.login_admin()
+    r = _refund(od, order["id"])
+    assert r.status_code == 400, r.text
+    assert od.db.table("product_orders").rows[0]["payment_status"] == payment_status
+
+
+def test_mark_refunded_missing_order_is_404(od):
+    od.login_admin()
+    assert _refund(od, str(uuid.uuid4())).status_code == 404
+
+
+def test_mark_refunded_is_admin_only(od):
+    order = od.seed_order("u1", status="cancelled", payment_status="completed")
+    od.login_as("u1")
+    assert _refund(od, order["id"]).status_code in (401, 403)
+
+
+def test_payment_replay_after_refund_changes_nothing(od):
+    od.seed_order("u1", razorpay_order_id="order_x", status="cancelled",
+                  payment_status="refunded", razorpay_payment_id="pay_1")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 409, r.text
+    row = od.db.table("product_orders").rows[0]
+    assert (row["status"], row["payment_status"]) == ("cancelled", "refunded")
+    assert _events(od, row["id"]) == []
