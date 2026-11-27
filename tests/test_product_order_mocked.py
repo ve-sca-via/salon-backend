@@ -1124,3 +1124,75 @@ def test_dev_verify_redeems_coupon(od):
     assert r.status_code == 200, r.text
     assert len(od.db.table("coupon_redemptions").rows) == 1
     assert od.db.table("coupons").rows[0]["used_count"] == 1
+
+
+# =====================================================================
+# Only a pending order becomes paid (bug found by staging E2E 2026-11-27):
+# cancelling left payment_status='pending', so a late payment revived the
+# order and took stock; verify had no status guard at all.
+# =====================================================================
+def _events(od, order_id):
+    return [e for e in od.db.table("product_order_events").rows if e["order_id"] == order_id]
+
+
+def test_verify_after_cancel_keeps_order_cancelled_and_flags_refund(od):
+    order = od.seed_order("u1", razorpay_order_id="order_x", status="cancelled")
+    p = od.seed_product(stock_quantity=10)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=3)
+    od.login_as("u1")
+
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 409, r.text
+    assert "refunded" in r.text.lower(), r.text
+    row = od.db.table("product_orders").rows[0]
+    assert row["status"] == "cancelled"
+    assert row["payment_status"] == "completed" and row["razorpay_payment_id"] == "pay_1"
+    assert od.db.table("products").rows[0]["stock_quantity"] == 10, "cancelled order took stock"
+    assert [e["event"] for e in _events(od, order["id"])] == ["paid_after_cancel"]
+
+    # Retrying the same verify must not log a second refund note.
+    r2 = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r2.status_code == 200, r2.text
+    assert len(_events(od, order["id"])) == 1
+
+
+@pytest.mark.parametrize("current", ["shipped", "delivered"])
+def test_replayed_verify_never_moves_an_order_backwards(od, current):
+    od.seed_order("u1", razorpay_order_id="order_x", status=current,
+                  payment_status="completed", razorpay_payment_id="pay_1")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    assert od.db.table("product_orders").rows[0]["status"] == current
+
+
+def test_webhook_payment_after_cancel_records_but_does_not_revive(od):
+    import asyncio
+    order = od.seed_order("u1", razorpay_order_id="order_w", status="cancelled")
+    p = od.seed_product(stock_quantity=5)
+    od.seed_order_item(order["id"], product_id=p["id"], quantity=2)
+
+    svc = ProductOrderService(od.db)
+    assert asyncio.run(svc.mark_order_paid_from_webhook("order_w", "pay_w")) is None
+    row = od.db.table("product_orders").rows[0]
+    assert row["status"] == "cancelled" and row["payment_status"] == "completed"
+    assert od.db.table("products").rows[0]["stock_quantity"] == 5
+    assert [e["event"] for e in _events(od, order["id"])] == ["paid_after_cancel"]
+
+
+def test_successful_payment_lands_on_the_timeline(od):
+    order = od.seed_order("u1", razorpay_order_id="order_x")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 200, r.text
+    ev = _events(od, order["id"])
+    assert [(e["event"], e["from_status"], e["to_status"], e["source"]) for e in ev] == \
+        [("paid", "pending", "paid", "system")]
+
+
+def test_dev_verify_after_cancel_is_409(od):
+    order = od.seed_order("u1", status="cancelled")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/dev-verify/{order['id']}")
+    assert r.status_code == 409, r.text
+    assert od.db.table("product_orders").rows[0]["status"] == "cancelled"

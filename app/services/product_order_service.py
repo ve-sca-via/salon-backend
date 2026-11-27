@@ -360,29 +360,108 @@ class ProductOrderService:
         except Exception as e:
             logger.error(f"Coupon redemption failed for order {order.get('id')}: {e}")
 
+    PAID_AFTER_CANCEL_DETAIL = (
+        "This order was cancelled before your payment reached us. "
+        "Your payment will be refunded to the original payment method."
+    )
+
+    async def _settle_payment(
+        self, filters: Dict[str, Any], payment_id: str, *, source: str
+    ) -> tuple:
+        """
+        Apply a verified payment to the one order `filters` selects. Every
+        payment path (browser verify, Razorpay webhook, dev-verify) goes
+        through here so they agree on what a payment may change.
+
+        Returns (outcome, order):
+          "paid"              pending -> paid; stock taken, coupon redeemed
+          "already_paid"      payment already recorded (retry/replay): no change
+          "paid_after_cancel" order was cancelled before the money arrived: it
+                              stays cancelled and takes no stock; the payment is
+                              recorded and the timeline says to refund it
+          "not_found"         no such order (for this user)
+
+        Only a pending order can become paid. Without that guard a late webhook
+        revived cancelled orders, and a replayed verify moved shipped or
+        delivered orders back to paid.
+        """
+        def scoped(query):
+            for col, val in filters.items():
+                query = query.eq(col, val)
+            return query
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        result = await db_exec(scoped(self.db.table("product_orders").update({
+            "status": "paid",
+            "payment_status": "completed",
+            "razorpay_payment_id": payment_id,
+            "updated_at": now,
+        })).eq("status", "pending").eq("payment_status", "pending"))
+
+        if result.data:
+            order = result.data[0]
+            await self._decrement_stock_for_order(order["id"])
+            await self._redeem_coupon_for_order(order)
+            await self._log_event(
+                order["id"], "system", "paid", from_status="pending", to_status="paid",
+                note=f"Payment {payment_id} ({source})",
+            )
+            return "paid", order
+
+        rows = (await db_exec(scoped(self.db.table("product_orders").select("*")))).data or []
+        if not rows:
+            return "not_found", None
+        order = rows[0]
+
+        if order.get("payment_status") == "completed":
+            return "already_paid", order
+
+        if order.get("status") == "cancelled":
+            recorded = await db_exec(scoped(self.db.table("product_orders").update({
+                "payment_status": "completed",
+                "razorpay_payment_id": payment_id,
+                "updated_at": now,
+            })).eq("status", "cancelled").eq("payment_status", "pending"))
+            if not recorded.data:
+                return "already_paid", order  # another path recorded it first
+            order = recorded.data[0]
+            logger.warning(
+                f"Payment {payment_id} arrived for cancelled product order "
+                f"{order.get('order_number')} ({source}) - refund required"
+            )
+            await self._log_event(
+                order["id"], "system", "paid_after_cancel",
+                note=(f"Payment {payment_id} arrived after the order was cancelled. "
+                      "Refund it from the Razorpay dashboard."),
+                payload={"razorpay_payment_id": payment_id, "source": source},
+            )
+            return "paid_after_cancel", order
+
+        # Unreachable with today's statuses (only pending orders are unpaid).
+        logger.error(
+            f"Payment {payment_id} for product order {order.get('order_number')} in "
+            f"unexpected state status={order.get('status')!r} "
+            f"payment_status={order.get('payment_status')!r}; left unchanged"
+        )
+        return "already_paid", order
+
     async def dev_complete_order(self, user_id: str, order_id: str) -> Dict[str, Any]:
         """DEV ONLY: Mark order as paid without Razorpay verification"""
         try:
-            update_data = {
-                "status": "paid",
-                "payment_status": "completed",
-                "razorpay_payment_id": f"dev_pay_{uuid.uuid4().hex[:12]}",
-                "updated_at": datetime.datetime.now().isoformat()
-            }
-            result = await db_exec(self.db.table("product_orders").update(update_data)\
-                .eq("id", order_id)\
-                .eq("user_id", user_id))
-
-            if not result.data:
+            outcome, order = await self._settle_payment(
+                {"id": order_id, "user_id": user_id},
+                f"dev_pay_{uuid.uuid4().hex[:12]}",
+                source="dev_verify",
+            )
+            if outcome == "not_found":
                 raise HTTPException(status_code=404, detail="Order not found")
-
-            await self._decrement_stock_for_order(result.data[0]["id"])
-            await self._redeem_coupon_for_order(result.data[0])
+            if outcome == "paid_after_cancel":
+                raise HTTPException(status_code=409, detail=self.PAID_AFTER_CANCEL_DETAIL)
 
             return {
                 "success": True,
-                "order_id": result.data[0]["id"],
-                "order_number": result.data[0]["order_number"],
+                "order_id": order["id"],
+                "order_number": order["order_number"],
                 "dev_mode": True
             }
         except HTTPException:
@@ -412,28 +491,21 @@ class ProductOrderService:
             if not is_valid:
                 raise HTTPException(status_code=400, detail="Invalid payment signature")
 
-            # 2. Update order status in DB
-            update_data = {
-                "status": "paid",
-                "payment_status": "completed",
-                "razorpay_payment_id": razorpay_payment_id,
-                "updated_at": datetime.datetime.now().isoformat()
-            }
-
-            result = await db_exec(self.db.table("product_orders").update(update_data)\
-                .eq("razorpay_order_id", razorpay_order_id)\
-                .eq("user_id", user_id))
-
-            if not result.data:
+            # 2. Apply it - only a pending order becomes paid (see _settle_payment)
+            outcome, order = await self._settle_payment(
+                {"razorpay_order_id": razorpay_order_id, "user_id": user_id},
+                razorpay_payment_id,
+                source="verify",
+            )
+            if outcome == "not_found":
                 raise HTTPException(status_code=404, detail="Order not found")
-
-            await self._decrement_stock_for_order(result.data[0]['id'])
-            await self._redeem_coupon_for_order(result.data[0])
+            if outcome == "paid_after_cancel":
+                raise HTTPException(status_code=409, detail=self.PAID_AFTER_CANCEL_DETAIL)
 
             return {
                 "success": True,
-                "order_id": result.data[0]['id'],
-                "order_number": result.data[0]['order_number']
+                "order_id": order['id'],
+                "order_number": order['order_number']
             }
 
         except HTTPException:
@@ -454,35 +526,26 @@ class ProductOrderService:
         The browser path (`verify_payment`) proves the payment with an
         order|payment signature and scopes the update to the signed-in user. A
         webhook has neither: its proof is the HMAC over the webhook body, already
-        verified by the caller, and there is no session to scope to — so the order
+        verified by the caller, and there is no session to scope to - so the order
         id alone identifies the row.
 
-        Guarded on `payment_status = 'pending'`, which also means a webhook cannot
-        resurrect an order someone has since cancelled.
+        Only a pending order becomes paid. A payment for an order cancelled in
+        the meantime is recorded and flagged for refund, and the order stays
+        cancelled (`_settle_payment`).
 
-        Returns the updated order, or None when there was nothing pending to
-        update (already paid, cancelled, or no such order).
+        Returns the updated order when it became paid, else None (already paid,
+        paid after cancel, or no such order).
         """
         try:
-            result = await db_exec(self.db.table("product_orders").update({
-                "status": "paid",
-                "payment_status": "completed",
-                "razorpay_payment_id": razorpay_payment_id,
-                "updated_at": datetime.datetime.now().isoformat()
-            })\
-                .eq("razorpay_order_id", razorpay_order_id)\
-                .eq("payment_status", "pending"))
-
-            if not result.data:
+            outcome, order = await self._settle_payment(
+                {"razorpay_order_id": razorpay_order_id}, razorpay_payment_id, source="webhook"
+            )
+            if outcome != "paid":
                 return None
-
-            order = result.data[0]
             logger.info(
                 f"Product order {order.get('order_number')} marked paid by webhook "
                 f"(payment {razorpay_payment_id})"
             )
-            await self._decrement_stock_for_order(order["id"])
-            await self._redeem_coupon_for_order(order)
             return order
         except Exception as e:
             logger.error(

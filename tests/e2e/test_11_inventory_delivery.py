@@ -9,16 +9,19 @@ admin ship / cancel with restock + refund flag -> hand delivery -> ledger sums
 to the stock balance.
 
 Needs `delivery_webhook_secret` set on the target (read back through the admin
-config API to sign requests). Payment is simulated the way the payment flow
-does it (paid/completed + decrement_product_stock), as in test_07.
+config API to sign requests). Orders are paid through the real backend path: a
+`payment.captured` event signed with the target's `razorpay_webhook_secret`,
+posted to our own /webhooks/razorpay (nothing reaches Razorpay). Without that
+secret it falls back to simulating the paid flip in the DB.
 """
 import hashlib
 import hmac
 import json
+import uuid
 
 import pytest
 
-from .support.client import expect, xfail_if
+from .support.client import expect
 
 FLOW = "inventory"
 FLOW_TITLE = "Inventory, fulfilment & delivery webhook"
@@ -67,13 +70,30 @@ def _order(api, world, product_id, qty):
     return data["order"]
 
 
-def _pay(world, order):
-    """What verify / payment.captured do: guarded flip to paid, then the stock RPC."""
-    upd = world.db.table("product_orders").update({"status": "paid", "payment_status": "completed"}) \
-        .eq("id", order["id"]).eq("payment_status", "pending").execute()
-    if upd.data:
-        world.db.rpc("decrement_product_stock", {"p_order_id": order["id"]}).execute()
-    return bool(upd.data)
+def _rzp_secret(api, world, flow):
+    if "rzp" not in flow:
+        r = api.get("/admin/config/razorpay_webhook_secret", token=world.token("admin"))
+        flow["rzp"] = (r.json() or {}).get("config_value") if r.status_code == 200 else None
+    return flow["rzp"]
+
+
+def _pay(api, world, flow, order):
+    """Pay the order the way Razorpay would tell us. True when it became paid."""
+    secret = _rzp_secret(api, world, flow)
+    if not secret:  # fallback: mirror _settle_payment's guarded flip
+        upd = world.db.table("product_orders").update({"status": "paid", "payment_status": "completed"})             .eq("id", order["id"]).eq("status", "pending").eq("payment_status", "pending").execute()
+        if upd.data:
+            world.db.rpc("decrement_product_stock", {"p_order_id": order["id"]}).execute()
+        return bool(upd.data)
+    event = {"event": "payment.captured", "payload": {"payment": {"entity": {
+        "id": f"pay_e2e{uuid.uuid4().hex[:12]}", "order_id": order["razorpay_order_id"],
+        "amount": int(round(float(order["total_amount"]) * 100)), "currency": "INR",
+        "status": "captured"}}}}
+    raw = json.dumps(event, separators=(",", ":")).encode()
+    sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    data = expect(api.post("/webhooks/razorpay", content=raw,
+                           headers={"Content-Type": "application/json", "X-Razorpay-Signature": sig}), 200)
+    return data.get("action") == "order_paid"
 
 
 def _status(api, world, order_id, **body):
@@ -175,8 +195,8 @@ def test_pending_order_takes_no_stock_and_cannot_be_paid_by_hand(api, world, flo
 def test_payment_takes_stock_once(api, world, flow):
     """Paid -> one 'sale' movement of -2; a repeated payment signal changes nothing"""
     order, pid = flow.need("order_a")["id"], flow["product"]["id"]
-    assert _pay(world, flow["order_a"]) is True
-    assert _pay(world, flow["order_a"]) is False
+    assert _pay(api, world, flow, flow["order_a"]) is True
+    assert _pay(api, world, flow, flow["order_a"]) is False
     world.db.rpc("decrement_product_stock", {"p_order_id": order}).execute()  # idempotent RPC
     flow["stock"] -= 2
     assert _stock(api, pid) == flow["stock"]
@@ -246,7 +266,7 @@ def test_courier_return_cancels_and_restocks(api, world, flow):
     """paid -> picked_up -> rto_delivered = cancelled + 3 units back ('order_cancelled')"""
     pid = flow.need("product")["id"]
     o = _order(api, world, pid, 3)
-    _pay(world, o)
+    _pay(api, world, flow, o)
     flow["stock"] -= 3
     assert _stock(api, pid) == flow["stock"]
     expect(_hook(api, world, flow, {"order_number": o["order_number"], "event": "picked_up",
@@ -268,7 +288,7 @@ def test_admin_ships_with_tracking_and_edits_shipment(api, world, flow):
     """Admin paid -> shipped with tracking; shipment PATCH: blank untouched, null clears"""
     pid = flow.need("product")["id"]
     o = _order(api, world, pid, 1)
-    _pay(world, o)
+    _pay(api, world, flow, o)
     flow["stock"] -= 1
     flow["order_c"] = o
     r = expect(_status(api, world, o["id"], status="shipped", courier_name="Hand Courier",
@@ -297,26 +317,28 @@ def test_admin_cancel_restocks_and_flags_refund(api, world, flow):
 
 # ---------------------------------------------------------------- orders D, E
 def test_cancel_unpaid_order_takes_nothing_back(api, world, flow):
-    """Cancelling a pending order: no restock, no refund"""
+    """Cancelling a pending order: no restock, no refund; a late payment does not revive it"""
     pid = flow.need("product")["id"]
     o = _order(api, world, pid, 4)
     r = expect(_status(api, world, o["id"], status="cancelled"), 200)
     assert r["refund_required"] is False and not r.get("stock_restored"), r
     assert _stock(api, pid) == flow["stock"]
-    # Known bug (found 2026-11-27): cancelling leaves payment_status='pending', and
-    # the payment paths guard only on that, so a late payment revives the order
-    # and takes stock. Keep the ledger expectation in step, then report it.
-    revived = _pay(world, o)
-    if revived:
-        flow["stock"] -= 4
-    xfail_if(revived, "BUG: a cancelled (unpaid) order can still be marked paid and take stock")
+    # A payment that lands after the cancel (regression, fixed 2026-11-27): the
+    # order stays cancelled, takes no stock, and the timeline asks for a refund.
+    assert _pay(api, world, flow, o) is False, "a cancelled order was revived by a late payment"
+    row = _row(world, o["id"])
+    assert row["status"] == "cancelled", row
+    assert _stock(api, pid) == flow["stock"], "cancelled order took stock"
+    if flow["rzp"]:
+        assert row["payment_status"] == "completed", row
+        assert "paid_after_cancel" in [e["event"] for e in _events(api, world, o["id"])]
 
 
 def test_hand_delivery(api, world, flow):
     """paid -> delivered directly (no courier)"""
     pid = flow.need("product")["id"]
     o = _order(api, world, pid, 1)
-    _pay(world, o)
+    _pay(api, world, flow, o)
     flow["stock"] -= 1
     r = expect(_status(api, world, o["id"], status="delivered"), 200)
     assert r["order"]["status"] == "delivered", r
