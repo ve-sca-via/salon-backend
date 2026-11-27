@@ -67,6 +67,13 @@ options to show.
   timeline entry: refund it from the Razorpay dashboard. The customer's verify
   call gets 409 saying the payment will be refunded. A successful payment adds
   a `paid` timeline entry (`source = system`).
+- **Refunds** are done by hand in the Razorpay dashboard, then recorded with
+  `POST /admin/product-orders/{id}/mark-refunded` `{refund_reference?, note?}`
+  (admin panel: *Mark refunded* on the order). Only a `cancelled` order with
+  `payment_status = completed` qualifies. It sets `payment_status = refunded`
+  and adds a `refunded` timeline entry; repeating it is a no-op. It moves no
+  money. A payment signal for a cancelled order (even after the refund) gets
+  409 from verify and changes nothing.
 - `delivered` and `cancelled` are final.
 - Setting the status an order already has is a no-op success (webhooks repeat).
 - The update is guarded on the status that was read: if two moves happen at
@@ -81,6 +88,7 @@ Endpoints (admin):
 - `PATCH /admin/product-orders/{id}/status`: `{status, courier_name?, tracking_number?, tracking_url?, restock?, note?}`
 - `PATCH /admin/product-orders/{id}/shipment`: set, correct or clear tracking without changing the status (partial-update contract: blank = untouched, null = clear)
 - `GET /admin/product-orders/{id}/events`: the order timeline
+- `POST /admin/product-orders/{id}/mark-refunded`: record a refund done in Razorpay
 
 Every status change and courier update appends to `product_order_events`
 (`source` = `admin` | `delivery_webhook` | `system`, with the raw webhook body
@@ -145,7 +153,7 @@ curl -X POST localhost:8000/api/v1/webhooks/delivery \
 
 ## Not built (on purpose, for now)
 
-- Refunds on cancel: done by hand in Razorpay.
+- Refunds through the Razorpay API: refunds are done by hand in the dashboard and recorded with mark-refunded.
 - Creating shipments or pickups via a partner API: needs a chosen partner.
 - Showing tracking to customers in the web or mobile apps: the fields are
   already returned by `/product-orders/my-orders` and `/product-orders/{id}`.

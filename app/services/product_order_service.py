@@ -413,7 +413,7 @@ class ProductOrderService:
             return "not_found", None
         order = rows[0]
 
-        if order.get("payment_status") == "completed":
+        if order.get("payment_status") in ("completed", "refunded"):
             return "already_paid", order
 
         if order.get("status") == "cancelled":
@@ -455,7 +455,7 @@ class ProductOrderService:
             )
             if outcome == "not_found":
                 raise HTTPException(status_code=404, detail="Order not found")
-            if outcome == "paid_after_cancel":
+            if outcome == "paid_after_cancel" or order.get("status") == "cancelled":
                 raise HTTPException(status_code=409, detail=self.PAID_AFTER_CANCEL_DETAIL)
 
             return {
@@ -499,7 +499,7 @@ class ProductOrderService:
             )
             if outcome == "not_found":
                 raise HTTPException(status_code=404, detail="Order not found")
-            if outcome == "paid_after_cancel":
+            if outcome == "paid_after_cancel" or order.get("status") == "cancelled":
                 raise HTTPException(status_code=409, detail=self.PAID_AFTER_CANCEL_DETAIL)
 
             return {
@@ -828,6 +828,50 @@ class ProductOrderService:
         except Exception as e:
             logger.error(f"Failed to update shipment for order {order_id}: {e}")
             raise HTTPException(status_code=500, detail="Failed to update shipment")
+
+    async def mark_refunded(
+        self,
+        order_id: str,
+        *,
+        actor_id: Optional[str] = None,
+        refund_reference: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Record that a cancelled order's payment was refunded (by hand, in the
+        Razorpay dashboard). Only a cancelled order whose payment completed
+        qualifies. Sets payment_status = 'refunded' and adds a `refunded`
+        timeline entry. Marking it again is a no-op.
+        """
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            result = await db_exec(self.db.table("product_orders").update({
+                "payment_status": "refunded",
+                "updated_at": now,
+            }).eq("id", order_id).eq("status", "cancelled").eq("payment_status", "completed"))
+
+            if not result.data:
+                order = await self._get_order_row(order_id)  # 404 when missing
+                if order.get("payment_status") == "refunded":
+                    return {"success": True, "changed": False, "order": order}
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only a cancelled order that was paid can be marked refunded",
+                )
+
+            order = result.data[0]
+            parts = [f"Razorpay refund {refund_reference}" if refund_reference else None, note]
+            await self._log_event(
+                order_id, "admin", "refunded", actor_id=actor_id,
+                note=" - ".join(p for p in parts if p) or None,
+                payload={"refund_reference": refund_reference} if refund_reference else None,
+            )
+            return {"success": True, "changed": True, "order": order}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to mark order {order_id} refunded: {e}")
+            raise HTTPException(status_code=500, detail="Failed to mark order refunded")
 
     async def get_order_events(self, order_id: str) -> List[Dict[str, Any]]:
         """An order's timeline, oldest first."""

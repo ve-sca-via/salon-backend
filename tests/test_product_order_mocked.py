@@ -1150,9 +1150,10 @@ def test_verify_after_cancel_keeps_order_cancelled_and_flags_refund(od):
     assert od.db.table("products").rows[0]["stock_quantity"] == 10, "cancelled order took stock"
     assert [e["event"] for e in _events(od, order["id"])] == ["paid_after_cancel"]
 
-    # Retrying the same verify must not log a second refund note.
+    # Retrying the same verify gets the same answer (not "order placed") and
+    # does not log a second refund note.
     r2 = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
-    assert r2.status_code == 200, r2.text
+    assert r2.status_code == 409, r2.text
     assert len(_events(od, order["id"])) == 1
 
 
@@ -1196,3 +1197,61 @@ def test_dev_verify_after_cancel_is_409(od):
     r = od.client.post(f"{ORDERS}/dev-verify/{order['id']}")
     assert r.status_code == 409, r.text
     assert od.db.table("product_orders").rows[0]["status"] == "cancelled"
+
+
+# =====================================================================
+# POST /admin/product-orders/{id}/mark-refunded
+# =====================================================================
+def _refund(od, order_id, **body):
+    return od.client.post(f"{ADMIN_ORDERS}/{order_id}/mark-refunded", json=body)
+
+
+def test_mark_refunded_records_refund_once(od):
+    order = od.seed_order("u1", status="cancelled", payment_status="completed")
+    od.login_admin()
+    r = _refund(od, order["id"], refund_reference=" rfnd_123 ", note="refunded in dashboard")
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] is True
+    assert od.db.table("product_orders").rows[0]["payment_status"] == "refunded"
+    ev = _events(od, order["id"])
+    assert [(e["event"], e["source"], e["created_by"]) for e in ev] == [("refunded", "admin", "admin-1")]
+    assert ev[0]["payload"] == {"refund_reference": "rfnd_123"} and "rfnd_123" in ev[0]["note"]
+
+    again = _refund(od, order["id"])
+    assert again.status_code == 200 and again.json()["changed"] is False, again.text
+    assert len(_events(od, order["id"])) == 1
+
+
+@pytest.mark.parametrize("status,payment_status", [
+    ("cancelled", "pending"),    # never paid: nothing to refund
+    ("paid", "completed"),       # still live: cancel it first
+    ("delivered", "completed"),
+])
+def test_mark_refunded_rejects_orders_without_a_refund_owed(od, status, payment_status):
+    order = od.seed_order("u1", status=status, payment_status=payment_status)
+    od.login_admin()
+    r = _refund(od, order["id"])
+    assert r.status_code == 400, r.text
+    assert od.db.table("product_orders").rows[0]["payment_status"] == payment_status
+
+
+def test_mark_refunded_missing_order_is_404(od):
+    od.login_admin()
+    assert _refund(od, str(uuid.uuid4())).status_code == 404
+
+
+def test_mark_refunded_is_admin_only(od):
+    order = od.seed_order("u1", status="cancelled", payment_status="completed")
+    od.login_as("u1")
+    assert _refund(od, order["id"]).status_code in (401, 403)
+
+
+def test_payment_replay_after_refund_changes_nothing(od):
+    od.seed_order("u1", razorpay_order_id="order_x", status="cancelled",
+                  payment_status="refunded", razorpay_payment_id="pay_1")
+    od.login_as("u1")
+    r = od.client.post(f"{ORDERS}/verify", json=_verify_payload("order_x"))
+    assert r.status_code == 409, r.text
+    row = od.db.table("product_orders").rows[0]
+    assert (row["status"], row["payment_status"]) == ("cancelled", "refunded")
+    assert _events(od, row["id"]) == []
