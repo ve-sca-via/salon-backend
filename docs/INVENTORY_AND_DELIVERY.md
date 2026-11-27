@@ -59,6 +59,14 @@ options to show.
 
 - `paid` is set **only** by the payment flow (verify / Razorpay webhook / dev-verify),
   never by hand, because marking an order paid by hand would skip the stock decrement.
+- Every payment path (verify, Razorpay webhook, dev-verify) goes through
+  `ProductOrderService._settle_payment`, and **only a `pending` order becomes
+  `paid`**. A repeated payment signal is a no-op. A payment that arrives after
+  the order was cancelled leaves it `cancelled` with no stock taken, records the
+  payment (`payment_status = completed`), and adds a `paid_after_cancel`
+  timeline entry: refund it from the Razorpay dashboard. The customer's verify
+  call gets 409 saying the payment will be refunded. A successful payment adds
+  a `paid` timeline entry (`source = system`).
 - `delivered` and `cancelled` are final.
 - Setting the status an order already has is a no-op success (webhooks repeat).
 - The update is guarded on the status that was read: if two moves happen at
