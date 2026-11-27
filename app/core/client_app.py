@@ -69,20 +69,16 @@ NATIVE_PLATFORMS = (PLATFORM_IOS, PLATFORM_ANDROID)
 
 # Roles that run a salon/business account. Kept out of the customer app.
 BUSINESS_ROLES = ("vendor", "regular_buyer")
-# Roles the Lubist Partner app supports. regular_buyer is deliberately NOT here:
-# regular buyers onboard and buy products on the website (see
-# docs/REGULAR_BUYER_WORKFLOW.md), and the partner app only routes `vendor`.
-PARTNER_APP_ROLES = ("vendor",)
+# Roles the Lubist Partner app supports: salon partners and business buyers
+# (regular_buyer, who shop wholesale there - see docs/REGULAR_BUYER_WORKFLOW.md).
+PARTNER_APP_ROLES = ("vendor", "regular_buyer")
 
 APP_UPDATE_REQUIRED = "APP_UPDATE_REQUIRED"
 USE_PARTNER_APP = "USE_PARTNER_APP"
 USE_CUSTOMER_APP = "USE_CUSTOMER_APP"
-USE_WEB_PORTAL = "USE_WEB_PORTAL"
 
 USE_PARTNER_APP_MESSAGE = "Salon partner accounts use the Lubist Partner app."
-REGULAR_BUYER_MESSAGE = (
-    "Business buyer accounts are managed on the Lubist website (www.lubist.com)."
-)
+REGULAR_BUYER_MESSAGE = "Business buyer accounts use the Lubist Partner app."
 USE_CUSTOMER_APP_MESSAGE = (
     "The Lubist Partner app is for salon partner accounts. "
     "Please use the Lubist app instead."
@@ -470,19 +466,15 @@ def client_role_violation(
             or (client_app is None and policy.require_client_app_header_for_vendors)
         )
         if blocked:
-            # Regular buyers operate on the website, not the Partner app, so
-            # they get their own code (both mobile apps handle USE_WEB_PORTAL).
-            if role == "regular_buyer":
-                return AppException(status.HTTP_403_FORBIDDEN, REGULAR_BUYER_MESSAGE, error_code=USE_WEB_PORTAL)
-            return AppException(status.HTTP_403_FORBIDDEN, USE_PARTNER_APP_MESSAGE, error_code=USE_PARTNER_APP)
+            # Both business roles belong in the Partner app; only the wording differs.
+            message = REGULAR_BUYER_MESSAGE if role == "regular_buyer" else USE_PARTNER_APP_MESSAGE
+            return AppException(status.HTTP_403_FORBIDDEN, message, error_code=USE_PARTNER_APP)
 
     if (
         client_app == PARTNER_APP
         and role not in PARTNER_APP_ROLES
         and policy.enforce_partner_app_roles
     ):
-        if role == "regular_buyer":
-            return AppException(status.HTTP_403_FORBIDDEN, REGULAR_BUYER_MESSAGE, error_code=USE_WEB_PORTAL)
         return AppException(status.HTTP_403_FORBIDDEN, USE_CUSTOMER_APP_MESSAGE, error_code=USE_CUSTOMER_APP)
 
     return None

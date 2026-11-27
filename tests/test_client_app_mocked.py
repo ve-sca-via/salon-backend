@@ -437,8 +437,8 @@ def test_vendor_block_decisions():
     v = ca.client_role_violation("customer-app", "vendor", VENDOR_BLOCK)
     assert (v.status_code, v.error_code, v.detail) == (403, "USE_PARTNER_APP", "Salon partner accounts use the Lubist Partner app.")
     rb = ca.client_role_violation("customer-app", "regular_buyer", VENDOR_BLOCK)
-    assert (rb.status_code, rb.error_code) == (403, "USE_WEB_PORTAL")
-    assert "website" in rb.detail
+    assert (rb.status_code, rb.error_code) == (403, "USE_PARTNER_APP")
+    assert "business buyer" in rb.detail.lower()
     for app_name in (None, "web", "partner-app", "admin-panel"):
         assert ca.client_role_violation(app_name, "vendor", VENDOR_BLOCK) is None
     for role in ("customer", "admin", "relationship_manager"):
@@ -446,12 +446,12 @@ def test_vendor_block_decisions():
 
 
 def test_partner_app_role_decisions():
-    assert ca.client_role_violation("partner-app", "vendor", PARTNER_ROLES) is None
+    # Business buyers shop in the Partner app too.
+    for role in ("vendor", "regular_buyer"):
+        assert ca.client_role_violation("partner-app", role, PARTNER_ROLES) is None
     for role in ("customer", "admin", "relationship_manager"):
         v = ca.client_role_violation("partner-app", role, PARTNER_ROLES)
         assert (v.status_code, v.error_code) == (403, "USE_CUSTOMER_APP")
-    rb = ca.client_role_violation("partner-app", "regular_buyer", PARTNER_ROLES)
-    assert (rb.status_code, rb.error_code) == (403, "USE_WEB_PORTAL")
     # Rule is scoped to the partner app.
     assert ca.client_role_violation("customer-app", "customer", PARTNER_ROLES) is None
     assert ca.client_role_violation("web", "admin", PARTNER_ROLES) is None
@@ -460,7 +460,7 @@ def test_partner_app_role_decisions():
 def test_strict_mode_decisions():
     v = ca.client_role_violation(None, "vendor", STRICT)
     assert (v.status_code, v.error_code) == (403, "USE_PARTNER_APP")
-    assert ca.client_role_violation(None, "regular_buyer", STRICT).error_code == "USE_WEB_PORTAL"
+    assert ca.client_role_violation(None, "regular_buyer", STRICT).error_code == "USE_PARTNER_APP"
     for app_name in ("web", "partner-app", "admin-panel"):
         assert ca.client_role_violation(app_name, "vendor", STRICT) is None
     # Strict mode alone does not block an identified customer-app vendor.
@@ -528,7 +528,7 @@ def test_login_regular_buyer_on_customer_app_blocked(auth_env, flags):
     flags(ENFORCE_PARTNER_APP_FOR_VENDORS=True)
     r = _vendor_login(mock_auth, role="regular_buyer", headers=CUSTOMER_APP_HDR)
     assert r.status_code == 403
-    assert r.json()["error_code"] == "USE_WEB_PORTAL"
+    assert r.json()["error_code"] == "USE_PARTNER_APP"
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Client-App": "web"}, PARTNER_APP_HDR, {"X-Client-App": "admin-panel"}])
@@ -612,8 +612,12 @@ def test_phone_otp_login_blocked_for_regular_buyer_on_customer_app(auth_env, fla
     body = {"phone": "9876543210", "otp": "123456", "verification_id": "vid-test-123", "country_code": "91"}
     r = mock_auth.client.post(f"{API}/auth/login/phone/verify-otp", json=body, headers=CUSTOMER_APP_HDR)
     assert r.status_code == 403, r.text
-    assert r.json()["error_code"] == "USE_WEB_PORTAL"
+    assert r.json()["error_code"] == "USE_PARTNER_APP"
     r = mock_auth.client.post(f"{API}/auth/login/phone/verify-otp", json=body, headers={"X-Client-App": "web"})
+    assert r.status_code == 200, r.text
+    # ...and in the Partner app, where buyers now belong, even with role enforcement on.
+    flags(ENFORCE_PARTNER_APP_FOR_VENDORS=True, ENFORCE_PARTNER_APP_ROLES=True)
+    r = mock_auth.client.post(f"{API}/auth/login/phone/verify-otp", json=body, headers=PARTNER_APP_HDR)
     assert r.status_code == 200, r.text
     assert prof["id"]
 

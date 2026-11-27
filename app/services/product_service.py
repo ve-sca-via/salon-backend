@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, status
 
 from app.core.database import db_exec
+from app.services.inventory_service import InventoryService
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +370,9 @@ class ProductService:
     # WRITE OPERATIONS (Admin)
     # =====================================================
 
-    async def create_product(self, product_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_product(
+        self, product_data: Dict[str, Any], actor_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Create a new product.
 
@@ -422,6 +425,9 @@ class ProductService:
 
             created = response.data[0]
             logger.info(f"Product created: {created['id']} ({created['name']})")
+            await InventoryService(self.db).record_initial_stock(
+                created["id"], created.get("stock_quantity") or 0, actor_id
+            )
             return created
 
         except HTTPException:
@@ -447,7 +453,7 @@ class ProductService:
             )
 
     async def update_product(
-        self, product_id: str, updates: Dict[str, Any]
+        self, product_id: str, updates: Dict[str, Any], actor_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Update an existing product.
@@ -476,6 +482,16 @@ class ProductService:
             # Protect immutable fields
             safe_updates.pop("id", None)
             safe_updates.pop("created_at", None)
+
+            # Stock never goes through a plain UPDATE: the ledger RPC computes
+            # the difference under a row lock and records it as an adjustment.
+            new_stock = safe_updates.pop("stock_quantity", None)
+            if new_stock is not None:
+                await InventoryService(self.db).set_stock(
+                    product_id, new_stock, "adjustment", "Set on product edit form", actor_id
+                )
+                if not safe_updates:
+                    return await self.get_product_by_id(product_id)
 
             # If slug is being updated, ensure uniqueness
             if "slug" in safe_updates:

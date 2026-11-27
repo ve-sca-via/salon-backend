@@ -15,6 +15,7 @@ from .service_categories import router as service_categories_router
 from .service_subcategories import router as service_subcategories_router
 from .product_orders import router as product_orders_router
 from .coupons import router as coupons_router
+from .inventory import router as inventory_router
 
 # Create the main admin router
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -30,4 +31,5 @@ router.include_router(bookings_router, prefix="/bookings", tags=["admin-bookings
 router.include_router(service_categories_router, prefix="/service-categories", tags=["admin-service-categories"])
 router.include_router(service_subcategories_router, prefix="/service-categories", tags=["admin-service-subcategories"])
 router.include_router(product_orders_router, prefix="/product-orders", tags=["admin-product-orders"])
-router.include_router(coupons_router, prefix="/coupons", tags=["admin-coupons"])
+router.include_router(coupons_router, prefix="/coupons", tags=["admin-coupons"])
+router.include_router(inventory_router, prefix="/inventory", tags=["admin-inventory"])

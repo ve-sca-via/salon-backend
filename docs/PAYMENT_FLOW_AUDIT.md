@@ -1214,6 +1214,8 @@ reasons worth weighing:
 
 **Related:** [Coupons & discounts](COUPONS.md) · [system_config keys](system_config.md) · [Backend tech debt & open loose ends](TECH_DEBT.md) · [Observability (Better Stack logs & uptime)](OBSERVABILITY.md)
 
+**Referenced by:** [Inventory & delivery — stock ledger, order fulfilment, delivery webhook](INVENTORY_AND_DELIVERY.md)
+
 [↑ All docs](DOCS_HUB.md)
 
 <!-- END RELATED -->

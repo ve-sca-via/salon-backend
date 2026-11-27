@@ -465,6 +465,7 @@ class RMService:
             getattr(request_data, "owner_email", None),
             getattr(request_data, "owner_phone", None),
             exclude_request_id=exclude_request_id,
+            request_type=getattr(request_data, "request_type", None),
         )
 
         if not conflicts:

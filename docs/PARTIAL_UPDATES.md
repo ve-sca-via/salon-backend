@@ -153,6 +153,8 @@ route-walking test is there because that mistake is easy to repeat.
 
 **Related:** [Coupons & discounts](COUPONS.md) · [Lubist Web — coding conventions](../../salon_management_next/docs/CONVENTIONS.md)
 
+**Referenced by:** [Inventory & delivery — stock ledger, order fulfilment, delivery webhook](INVENTORY_AND_DELIVERY.md)
+
 [↑ All docs](DOCS_HUB.md)
 
 <!-- END RELATED -->
