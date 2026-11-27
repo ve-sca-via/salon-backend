@@ -325,6 +325,7 @@ def test_cancel_unpaid_order_takes_nothing_back(api, world, flow):
     assert _stock(api, pid) == flow["stock"]
     # A payment that lands after the cancel (regression, fixed 2026-11-27): the
     # order stays cancelled, takes no stock, and the timeline asks for a refund.
+    flow["order_d"] = o
     assert _pay(api, world, flow, o) is False, "a cancelled order was revived by a late payment"
     row = _row(world, o["id"])
     assert row["status"] == "cancelled", row
@@ -332,6 +333,24 @@ def test_cancel_unpaid_order_takes_nothing_back(api, world, flow):
     if flow["rzp"]:
         assert row["payment_status"] == "completed", row
         assert "paid_after_cancel" in [e["event"] for e in _events(api, world, o["id"])]
+
+
+def test_admin_marks_refunds(api, world, flow):
+    """Refund owed -> mark refunded (once); orders with nothing owed are refused"""
+    admin = world.token("admin")
+    mark = lambda oid, **b: api.post(f"/admin/product-orders/{oid}/mark-refunded", token=admin, json=b)
+    c = flow.need("order_c")  # paid, then cancelled by admin
+    r = expect(mark(c["id"], refund_reference="rfnd_e2e1"), 200)
+    assert r["changed"] is True and r["order"]["payment_status"] == "refunded", r
+    assert expect(mark(c["id"]), 200)["changed"] is False
+    ev = [e for e in _events(api, world, c["id"]) if e["event"] == "refunded"]
+    assert len(ev) == 1 and "rfnd_e2e1" in (ev[0]["note"] or ""), ev
+    assert mark(flow["order_a"]["id"]).status_code == 400, "refunded a delivered order"
+    assert api.post(f"/admin/product-orders/{c['id']}/mark-refunded", token=world.token("customer"),
+                    json={}).status_code == 403
+    if flow.get("rzp"):  # paid after cancel -> refundable too
+        expect(mark(flow["order_d"]["id"]), 200)
+        assert _row(world, flow["order_d"]["id"])["payment_status"] == "refunded"
 
 
 def test_hand_delivery(api, world, flow):

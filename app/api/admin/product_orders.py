@@ -29,6 +29,11 @@ class UpdateShipmentRequest(PartialUpdateModel):
     tracking_url: Optional[str] = Field(None, max_length=500)
 
 
+class MarkRefundedRequest(BaseModel):
+    refund_reference: Optional[str] = Field(None, max_length=100)  # Razorpay refund id (rfnd_...)
+    note: Optional[str] = Field(None, max_length=500)
+
+
 def get_product_order_service(db: Client = Depends(get_db_client)) -> ProductOrderService:
     """Dependency injection for ProductOrderService"""
     return ProductOrderService(db_client=db)
@@ -77,6 +82,25 @@ async def update_order_shipment(
     """Set or correct courier / tracking details without changing the status."""
     return await product_order_service.update_shipment(
         order_id, request.model_dump(exclude_unset=True), actor_id=current_user.user_id
+    )
+
+
+@router.post("/{order_id}/mark-refunded")
+async def mark_order_refunded(
+    order_id: UUIDPath,
+    request: MarkRefundedRequest,
+    current_user: TokenData = Depends(require_admin),
+    product_order_service: ProductOrderService = Depends(get_product_order_service)
+):
+    """
+    Record that a cancelled, paid order was refunded in the Razorpay dashboard.
+    This does not move money; it only records that the refund was done.
+    """
+    return await product_order_service.mark_refunded(
+        order_id,
+        actor_id=current_user.user_id,
+        refund_reference=(request.refund_reference or "").strip() or None,
+        note=(request.note or "").strip() or None,
     )
 
 
