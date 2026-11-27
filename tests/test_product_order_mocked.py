@@ -85,6 +85,10 @@ class _Query:
         self._order.append((col, desc))
         return self
 
+    def limit(self, n):
+        self._limit = n
+        return self
+
     def single(self):
         self._single = True
         return self
@@ -117,6 +121,8 @@ class _Query:
             matched = [dict(r) for r in rows if self._match(r)]
             for col, desc in reversed(self._order):
                 matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
+            if getattr(self, "_limit", None) is not None:
+                matched = matched[: self._limit]
             if self._single:
                 if len(matched) != 1:
                     raise Exception("PGRST116: results contain 0 or multiple rows")
@@ -190,7 +196,60 @@ class _Rpc:
             return self._decrement_product_stock()
         if self.fn_name == "redeem_product_coupon":
             return self._redeem_product_coupon()
+        if self.fn_name == "restore_order_stock":
+            return self._restore_order_stock()
+        if self.fn_name == "adjust_product_stock":
+            return self._adjust_product_stock()
+        if self.fn_name == "set_product_stock":
+            return self._set_product_stock()
         raise Exception(f"FakeSupabase.rpc: unknown function {self.fn_name!r}")
+
+    # ---- Inventory ledger (migration 20261127000000) ----
+    def _ledger(self, product_id, change, balance, reason, order_id=None, note=None, actor=None):
+        self.db.table("product_stock_movements").rows.append({
+            "id": str(uuid.uuid4()), "product_id": product_id, "order_id": order_id,
+            "change": change, "balance_after": balance, "reason": reason,
+            "note": note, "created_by": actor, "created_at": datetime.utcnow().isoformat(),
+        })
+
+    def _product(self, product_id):
+        return next((p for p in self.db.table("products").rows if p["id"] == product_id), None)
+
+    def _adjust_product_stock(self, p=None):
+        p = p or self.params
+        product = self._product(p["p_product_id"])
+        if product is None:
+            raise Exception(f"product_not_found_{p['p_product_id']}")
+        new = (product.get("stock_quantity") or 0) + p["p_change"]
+        if new < 0:
+            raise Exception(f"insufficient_stock_for_product_{p['p_product_id']}")
+        product["stock_quantity"] = new
+        self._ledger(product["id"], p["p_change"], new, p["p_reason"], note=p.get("p_note"), actor=p.get("p_actor"))
+        return _Resp(new)
+
+    def _set_product_stock(self):
+        p = self.params
+        product = self._product(p["p_product_id"])
+        if product is None:
+            raise Exception(f"product_not_found_{p['p_product_id']}")
+        current = product.get("stock_quantity") or 0
+        if current == p["p_new_qty"]:
+            return _Resp(current)
+        return self._adjust_product_stock({**p, "p_change": p["p_new_qty"] - current})
+
+    def _restore_order_stock(self):
+        order_id = self.params["p_order_id"]
+        order = next((o for o in self.db.table("product_orders").rows if o["id"] == order_id), None)
+        if not order or not order.get("stock_decremented") or order.get("stock_restored"):
+            return _Resp(False)
+        order["stock_restored"] = True
+        for item in [i for i in self.db.table("product_order_items").rows if i["order_id"] == order_id]:
+            product = self._product(item["product_id"])
+            if product is not None:
+                product["stock_quantity"] = (product.get("stock_quantity") or 0) + item["quantity"]
+                self._ledger(product["id"], item["quantity"], product["stock_quantity"],
+                             "order_cancelled", order_id=order_id, actor=self.params.get("p_actor"))
+        return _Resp(True)
 
     def _decrement_product_stock(self):
         order_id = self.params["p_order_id"]
@@ -213,6 +272,7 @@ class _Rpc:
         for item in items:
             product = next(p for p in products if p["id"] == item["product_id"])
             product["stock_quantity"] = product["stock_quantity"] - item["quantity"]
+            self._ledger(product["id"], -item["quantity"], product["stock_quantity"], "sale", order_id=order_id)
 
         order["stock_decremented"] = True
         return _Resp(True)

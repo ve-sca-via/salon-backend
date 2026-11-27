@@ -2,6 +2,7 @@
 Webhook Endpoints - Thin Layer
 
     POST /webhooks/razorpay — Razorpay event deliveries
+    POST /webhooks/delivery — delivery-partner shipment updates (neutral format)
 
 Unauthenticated by necessity: Razorpay has no token of ours. The HMAC in
 `X-Razorpay-Signature`, computed over the exact request body with the webhook
@@ -100,4 +101,61 @@ async def razorpay_webhook(
         return {"status": "error"}
 
     logger.info(f"Razorpay webhook handled: {result}")
+    return {"status": "ok", **result}
+
+
+# =====================================================
+# Delivery partner (partner-neutral)
+# =====================================================
+
+@router.post("/delivery", include_in_schema=False)
+@limiter.exempt
+async def delivery_webhook(
+    request: Request,
+    response: Response,
+    x_delivery_signature: str = Header(None),
+    db: Client = Depends(get_db_client),
+):
+    """
+    Shipment status updates from a delivery partner, in our own neutral format
+    (see app/services/delivery_webhook_service.py and docs/INVENTORY_AND_DELIVERY.md).
+
+    Same status-code contract as the Razorpay webhook: 200 = received (acted on
+    or deliberately ignored), 400 = bad signature/body (never redeliver),
+    503 = no secret configured, 500 = our failure (redeliver).
+    """
+    from app.services.delivery_webhook_service import (
+        DeliveryWebhookService,
+        DeliveryWebhookSecretMissing,
+    )
+
+    service = DeliveryWebhookService(db)
+    try:
+        secret = await service.resolve_secret()
+    except DeliveryWebhookSecretMissing as e:
+        logger.error(f"Delivery webhook rejected — {e}.")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_configured"}
+
+    raw_body = await request.body()
+    if not service.signature_is_valid(raw_body, x_delivery_signature, secret):
+        logger.warning(
+            f"Delivery webhook rejected — signature did not verify ({len(raw_body)} byte body)"
+        )
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return {"status": "invalid_signature"}
+
+    body = service.parse_body(raw_body)
+    if body is None:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return {"status": "invalid_body"}
+
+    try:
+        result = await service.handle_update(body)
+    except Exception as e:
+        logger.error(f"Delivery webhook handling failed for event {body.get('event')!r}: {e}", exc_info=True)
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"status": "error"}
+
+    logger.info(f"Delivery webhook handled: {result}")
     return {"status": "ok", **result}

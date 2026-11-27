@@ -59,7 +59,7 @@ tags: [backend, reference, current, coupons]
 
 <!-- BEGIN GENERATED: build_docs_hub.py -->
 
-_36 docs. Regenerate with `python scripts/build_docs_hub.py`._
+_37 docs. Regenerate with `python scripts/build_docs_hub.py`._
 
 ## Needs attention
 
@@ -86,6 +86,7 @@ flowchart LR
     backend_docs_COUPONS_md["Coupons & discounts"]
     backend_docs_E2E_TESTING_md["Staging end-to-end flow tests"]
     backend_docs_FEATURE_FLAGS_md["Feature flags (entitlements)"]
+    backend_docs_INVENTORY_AND_DELIVERY_md["Inventory & delivery — stock ledger, order fulfilment, delivery webhook"]
     backend_docs_MIGRATION_SAFETY_md["Database migrations — workflow & safety"]
     backend_docs_NOTIFICATIONS_FEATURE_PLAN_md["Push notifications — plan"]
     backend_docs_OBSERVABILITY_md["Observability (Better Stack logs & uptime)"]
@@ -139,6 +140,9 @@ flowchart LR
   backend_docs_E2E_TESTING_md --- backend_docs_QUALITY_SYSTEM_md
   backend_docs_E2E_TESTING_md --- backend_docs_MANUAL_QA_CHECKLIST_md
   backend_docs_E2E_TESTING_md --- backend_docs_REGULAR_BUYER_WORKFLOW_md
+  backend_docs_INVENTORY_AND_DELIVERY_md --- backend_docs_MIGRATION_SAFETY_md
+  backend_docs_INVENTORY_AND_DELIVERY_md --- backend_docs_PARTIAL_UPDATES_md
+  backend_docs_INVENTORY_AND_DELIVERY_md --- backend_docs_PAYMENT_FLOW_AUDIT_md
   backend_docs_MANUAL_QA_CHECKLIST_md --- backend_docs_QUALITY_SYSTEM_md
   backend_docs_MANUAL_QA_CHECKLIST_md --- lubist_mobile_application_docs_RELEASING_md
   backend_docs_MIGRATION_SAFETY_md --- backend_docs_QUALITY_SYSTEM_md
@@ -195,6 +199,7 @@ flowchart LR
   click backend_docs_COUPONS_md "COUPONS.md"
   click backend_docs_E2E_TESTING_md "E2E_TESTING.md"
   click backend_docs_FEATURE_FLAGS_md "FEATURE_FLAGS.md"
+  click backend_docs_INVENTORY_AND_DELIVERY_md "INVENTORY_AND_DELIVERY.md"
   click backend_docs_MANUAL_QA_CHECKLIST_md "MANUAL_QA_CHECKLIST.md"
   click backend_docs_MIGRATION_SAFETY_md "MIGRATION_SAFETY.md"
   click backend_docs_NOTIFICATIONS_FEATURE_PLAN_md "NOTIFICATIONS_FEATURE_PLAN.md"
@@ -256,6 +261,7 @@ flowchart LR
 | [Coupons & discounts](COUPONS.md) | reference | ✅ current | Building or debugging anything coupon-related — admin/vendor coupon CRUD, applying a code at checkout (services or products), the "available offers" lists, or why a discount did/didn't apply. |
 | [Home banner (carousel) API](BANNER_API.md) | reference | ✅ current | Changing the home-screen hero carousel — admin banner management, the public banner feed, or how web/mobile render it. |
 | [Insylo AI WhatsApp API (vendor reference)](insyloai_api_docs.md) | reference | ⛔ blocked | Resuming the WhatsApp booking-notification integration. BLOCKED: messages are accepted (201) but Meta rejects delivery with error 131042 (WABA payment/billing) — the client must fix billing first. Third-party docs, not ours. |
+| [Inventory & delivery — stock ledger, order fulfilment, delivery webhook](INVENTORY_AND_DELIVERY.md) | reference | ✅ current | Changing product stock, the product-order lifecycle, or integrating a delivery partner (Shiprocket, Delhivery, Porter, ...). |
 | [Product favorites API](PRODUCT_FAVORITES_API.md) | reference | ✅ current | Working on saved/wishlist products — the mobile Saved tab, or adding product favorites to the website (not built there yet). |
 | [Rate limiting](rate-limiting-guide.md) | reference | ✅ current | A client or test gets 429s, scripted logins start failing, or you're adding a sensitive endpoint that needs a limit. |
 | [Regular buyer (B2B) workflow](REGULAR_BUYER_WORKFLOW.md) | reference | ✅ current | Anything about the regular_buyer role — RM intake, admin approval, how the buyer logs in, the registration fee, wholesale (B2B) prices, or a buyer who can't order. |

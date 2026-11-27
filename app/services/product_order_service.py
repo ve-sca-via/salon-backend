@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 # and the product_orders table comment).
 VALID_ORDER_STATUSES = {"pending", "paid", "shipped", "delivered", "cancelled"}
 
+# Where an order may go next. `paid` is only ever set by the payment flow
+# (verify / webhook), never by hand: a hand-marked "paid" order would skip the
+# stock decrement. paid -> delivered covers hand delivery with no courier.
+# delivered and cancelled are final.
+ALLOWED_TRANSITIONS = {
+    "pending": {"cancelled"},
+    "paid": {"shipped", "delivered", "cancelled"},
+    "shipped": {"delivered", "cancelled"},
+    "delivered": set(),
+    "cancelled": set(),
+}
+
 class ProductOrderService:
     def __init__(self, db_client):
         self.db = db_client
@@ -591,28 +603,190 @@ class ProductOrderService:
             logger.error(f"Error fetching all orders: {e}")
             raise HTTPException(status_code=500, detail="Failed to fetch orders")
 
-    async def update_order_status(self, order_id: str, status: str) -> Dict[str, Any]:
-        """Update order status (e.g., shipped, delivered, cancelled)"""
+    async def _log_event(
+        self,
+        order_id: str,
+        source: str,
+        event: str,
+        from_status: Optional[str] = None,
+        to_status: Optional[str] = None,
+        note: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        actor_id: Optional[str] = None,
+    ) -> None:
+        """Append to the order timeline. Best-effort: never fails the caller."""
+        try:
+            await db_exec(self.db.table("product_order_events").insert({
+                "order_id": order_id,
+                "source": source,
+                "event": event,
+                "from_status": from_status,
+                "to_status": to_status,
+                "note": note,
+                "payload": payload,
+                "created_by": actor_id,
+            }))
+        except Exception as e:
+            logger.error(f"Could not log event {event!r} for product order {order_id}: {e}")
+
+    async def _get_order_row(self, order_id: str) -> Dict[str, Any]:
+        resp = await db_exec(
+            self.db.table("product_orders").select("*").eq("id", order_id).maybe_single()
+        )
+        order = getattr(resp, "data", None) if resp else None
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        return order
+
+    async def update_order_status(
+        self,
+        order_id: str,
+        status: str,
+        *,
+        actor_id: Optional[str] = None,
+        source: str = "admin",
+        event: Optional[str] = None,
+        courier_name: Optional[str] = None,
+        tracking_number: Optional[str] = None,
+        tracking_url: Optional[str] = None,
+        restock: bool = True,
+        note: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Move an order along its lifecycle (see ALLOWED_TRANSITIONS).
+
+        Used by the admin panel and the delivery-partner webhook. Setting the
+        status an order already has is a no-op success (webhooks repeat). The
+        update is guarded on the status we read, so two concurrent moves cannot
+        both win.
+
+        Cancelling returns the units to stock when `restock` is true — only if
+        the order ever took stock (was paid), and only once. It does NOT refund:
+        `refund_required` tells the admin to refund in the Razorpay dashboard.
+        """
         if status not in VALID_ORDER_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid order status")
         try:
-            update_data = {
-                "status": status,
-                "updated_at": datetime.datetime.now().isoformat()
-            }
+            order = await self._get_order_row(order_id)
+            current = order.get("status")
 
-            result = await db_exec(self.db.table("product_orders").update(update_data)\
-                .eq("id", order_id))
+            if current == status:
+                return {"success": True, "changed": False, "order": order,
+                        "stock_restored": False, "refund_required": False}
 
+            if status not in ALLOWED_TRANSITIONS.get(current, set()):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot move an order from '{current}' to '{status}'",
+                )
+
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            update_data: Dict[str, Any] = {"status": status, "updated_at": now}
+            if status == "shipped":
+                update_data["shipped_at"] = now
+            elif status == "delivered":
+                update_data["delivered_at"] = now
+                if not order.get("shipped_at"):
+                    update_data["shipped_at"] = now
+            elif status == "cancelled":
+                update_data["cancelled_at"] = now
+            for col, val in (("courier_name", courier_name),
+                             ("tracking_number", tracking_number),
+                             ("tracking_url", tracking_url)):
+                if val:
+                    update_data[col] = val
+
+            result = await db_exec(self.db.table("product_orders").update(update_data)
+                .eq("id", order_id).eq("status", current))
             if not result.data:
-                raise HTTPException(status_code=404, detail="Order not found")
+                raise HTTPException(
+                    status_code=409,
+                    detail="Order was changed by someone else — reload and try again",
+                )
+            updated = result.data[0]
+
+            stock_restored = False
+            if status == "cancelled" and restock:
+                try:
+                    from app.services.inventory_service import InventoryService
+                    stock_restored = await InventoryService(self.db).restore_order_stock(order_id, actor_id)
+                except Exception as e:
+                    logger.error(f"Restock failed for cancelled order {order_id}: {e}")
+
+            await self._log_event(
+                order_id, source, event or status, from_status=current, to_status=status,
+                note=note, payload=payload, actor_id=actor_id,
+            )
 
             return {
                 "success": True,
-                "order": result.data[0]
+                "changed": True,
+                "order": updated,
+                "stock_restored": stock_restored,
+                "refund_required": status == "cancelled" and order.get("payment_status") == "completed",
             }
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Failed to update order status: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to update order status")
+
+    async def update_shipment(
+        self,
+        order_id: str,
+        fields: Dict[str, Any],
+        *,
+        actor_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Set, correct or clear courier/tracking details without changing status.
+
+        `fields` holds only the keys the admin touched (None = clear).
+        """
+        allowed = {"courier_name", "tracking_number", "tracking_url"}
+        fields = {k: v for k, v in fields.items() if k in allowed}
+        if not fields:
+            raise HTTPException(status_code=400, detail="No shipment fields provided")
+        try:
+            result = await db_exec(self.db.table("product_orders").update({
+                **fields,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }).eq("id", order_id))
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Order not found")
+            await self._log_event(
+                order_id, "admin", "shipment_updated", actor_id=actor_id,
+                note=", ".join(f"{k}={v}" for k, v in fields.items()),
+            )
+            return {"success": True, "order": result.data[0]}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to update shipment for order {order_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to update shipment")
+
+    async def get_order_events(self, order_id: str) -> List[Dict[str, Any]]:
+        """An order's timeline, oldest first."""
+        try:
+            resp = await db_exec(
+                self.db.table("product_order_events").select("*")
+                .eq("order_id", order_id).order("created_at")
+            )
+            return resp.data or []
+        except Exception as e:
+            logger.error(f"Failed to fetch events for order {order_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch order timeline")
+
+    async def find_order_for_delivery(
+        self, order_number: Optional[str], tracking_number: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a delivery-partner update to one order: order number first, then AWB."""
+        for col, val in (("order_number", order_number), ("tracking_number", tracking_number)):
+            if not val:
+                continue
+            resp = await db_exec(self.db.table("product_orders").select("*").eq(col, val))
+            rows = resp.data or []
+            if len(rows) == 1:
+                return rows[0]
+        return None

@@ -154,7 +154,7 @@ That's the bookkeeping table (`supabase_migrations.schema_migrations`), not your
 
 **Related:** [Quality system (start here for testing)](QUALITY_SYSTEM.md) · [Client apps & versioning (force-update, Partner split)](CLIENT_APPS_AND_VERSIONING.md) · [Backend local setup](../SETUP.md)
 
-**Referenced by:** [Push notifications — plan](NOTIFICATIONS_FEATURE_PLAN.md)
+**Referenced by:** [Inventory & delivery — stock ledger, order fulfilment, delivery webhook](INVENTORY_AND_DELIVERY.md) · [Push notifications — plan](NOTIFICATIONS_FEATURE_PLAN.md)
 
 [↑ All docs](DOCS_HUB.md)
 
