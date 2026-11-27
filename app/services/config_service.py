@@ -18,6 +18,7 @@ SENSITIVE_CONFIG_KEYS = {
     'razorpay_key_id',
     'razorpay_webhook_secret',
     'resend_api_key',
+    'delivery_webhook_secret',
 }
 
 # =====================================================
@@ -236,6 +237,12 @@ AVAILABLE_SYSTEM_CONFIGS = [
         "label": "Razorpay Webhook Secret",
         "config_type": "string",
         "description": "Secret from the Razorpay webhook settings, used to authenticate payment.captured deliveries. Without it, a payment whose browser callback is lost never becomes a booking. Protected and encrypted."
+    },
+    {
+        "config_key": "delivery_webhook_secret",
+        "label": "Delivery Webhook Secret",
+        "config_type": "string",
+        "description": "Shared secret for POST /webhooks/delivery (HMAC-SHA256 of the raw body, sent as X-Delivery-Signature). Until it is set, the delivery webhook returns 503. Protected and encrypted."
     }
 ] + _client_app_config_entries()
 

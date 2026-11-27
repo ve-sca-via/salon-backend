@@ -11,7 +11,7 @@ from app.schemas import (
     SystemConfigUpdate
 )
 from app.schemas.request.admin import SystemConfigCreate
-from app.services.config_service import ConfigService, AVAILABLE_SYSTEM_CONFIGS
+from app.services.config_service import ConfigService, AVAILABLE_SYSTEM_CONFIGS, SENSITIVE_CONFIG_KEYS
 from app.services.activity_log_service import ActivityLogger
 import logging
 
@@ -107,6 +107,11 @@ async def update_config(
 
         # Get the new value from the updated config
         new_value = updated_config.get('config_value') if updated_config else None
+
+        # Secrets come back decrypted: never write them to the app log or the
+        # activity log. Record only that the value changed.
+        if config_key in SENSITIVE_CONFIG_KEYS:
+            old_value = new_value = "[redacted]"
         logger.info(f"System config updated: {config_key} = {new_value}")
 
         # Log activity

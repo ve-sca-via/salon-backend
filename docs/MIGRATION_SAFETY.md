@@ -3,7 +3,7 @@ title: Database migrations — workflow & safety
 area: backend
 type: runbook
 status: current
-updated: 2026-11-12
+updated: 2026-11-27
 read_when: Before writing ANY schema change, before `supabase db push`, or when local and remote migration history disagree.
 related:
   - backend/docs/QUALITY_SYSTEM.md
@@ -114,7 +114,7 @@ python -m pytest tests/ -m integration
 ```powershell
 supabase migration new descriptive_name   # creates supabase/migrations/<timestamp>_descriptive_name.sql
 # write the SQL, then dry-run locally (above), then:
-supabase migration list --linked          # Local and Remote columns must match row for row
+supabase migration list --db-url "$STAGING_DB"   # Local and Remote must match row for row (see below for $STAGING_DB)
 ```
 
 Rules:
@@ -124,14 +124,35 @@ Rules:
 3. **The live schema is `db-schema/current_schema.sql`** (regenerate with
    `supabase db dump --linked`). `supabase/schema.sql` is stale — don't trust it.
 
-## Production rollout (Supabase CLI)
+## Rollout (Supabase CLI)
 
-> ⚠️ **Check which project you're linked to first:** `cat supabase/.temp/project-ref`.
-> The backend repo's link points at **staging**. Prod is pushed separately.
+> ⚠️ **The repo's `supabase link` is NOT staging.** `supabase/.temp/project-ref` is
+> `xqtaebvovddqzagnyewo` (project "lubist", most likely **production**). Staging is
+> `uqcckstwaddrnxxwgtov` ("lubist_staging"). So a bare `supabase db push` or anything
+> `--linked` does **not** go to staging. Target staging explicitly with `--db-url`.
+
+| Project | Ref | Used by |
+|---|---|---|
+| Staging | `uqcckstwaddrnxxwgtov` | Railway "Lubist Staging" (`SUPABASE_URL`) |
+| Linked in this repo | `xqtaebvovddqzagnyewo` | most likely production; confirm before using |
+
+**Staging** (from the backend folder, which is railway-linked to "Lubist Staging"):
 
 ```bash
-supabase db push   # apply pending migrations to the linked project
+STAGING_DB=$(railway variables --kv | grep '^DATABASE_URL=' | cut -d= -f2-)
+echo "$STAGING_DB" | sed -E 's#:[^:@]*@#:***@#'        # host must be db.uqcckstwaddrnxxwgtov...
+supabase migration list --db-url "$STAGING_DB"         # only the new file(s) should be missing remotely
+supabase db push --db-url "$STAGING_DB" --dry-run
+supabase db push --db-url "$STAGING_DB" --yes
 ```
+
+Smoke-test new functions with `psql "$STAGING_DB"` inside `BEGIN; … ROLLBACK;`. Staging
+may have no products or orders, so insert throwaway rows inside the same transaction.
+
+**Production:** confirm the target's ref against the production backend's
+`SUPABASE_URL` before pushing, whether that's the linked project or a `--db-url`.
+Never assume the link is the right project.
+
 Order: **staging first, then prod**, and DB before the code that needs it. Deploy
 **Expand** migrations + code first, confirm healthy, and only then open the follow-up PR
 for the **Contract** migration. Never push a destructive migration ahead of the code that
