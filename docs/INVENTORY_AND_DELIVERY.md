@@ -107,6 +107,7 @@ Content-Type: application/json
 ```
 
 Secret: system config key **`delivery_webhook_secret`** (Admin panel → Config,
+encrypted at rest like the Razorpay secrets,
 same place as `razorpay_webhook_secret`). Until it is set, the endpoint returns 503.
 
 | `event` | Effect on the order |
